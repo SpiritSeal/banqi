@@ -59,6 +59,22 @@ Serve the static page locally:
 4. Setup completes in under a second; click any face-down cell to flip it. The
    color of the flipped piece becomes yours.
 
+### Networking notes
+
+Connection setup uses PeerJS's free WebRTC signalling broker; gameplay flows
+end-to-end over a WebRTC DataChannel.  Because no TURN relay is configured by
+default, **two peers behind the same router won't connect unless that router
+supports NAT hairpinning** — a common failure mode in home-network testing.
+Workarounds:
+
+* Put one peer on a different network (e.g. cellular) for testing, or
+* Pass your own TURN server in the URL:
+  `https://…/?turn=turn:host:port&user=U&pass=P`.
+  The credentials get supplied to `RTCPeerConnection`'s `iceServers` config.
+
+If the connection cannot be established, the lobby panel surfaces the ICE
+state and times out after 20 seconds with a diagnostic message.
+
 ## Architecture
 
 ```

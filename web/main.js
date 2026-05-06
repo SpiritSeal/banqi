@@ -9,11 +9,13 @@ const log = (msg) => {
   el.textContent += msg + '\n';
   el.scrollTop = el.scrollHeight;
 };
+const setStatus = (html) => { $('lobby-status').innerHTML = html; };
 
 let peer = null;          // PeerJS Peer
 let conn = null;          // DataConnection
 let game = null;          // GameWrapper from C++
 let selected = null;      // currently-selected source cell index (move pending)
+let watchdog = null;      // setTimeout handle for connection-establish timeout
 
 function genGameId() {
   const a = new Uint8Array(8);
@@ -25,17 +27,62 @@ function modeInt() {
   return parseInt($('mode-select').value, 10);
 }
 
+// Optional TURN server via URL params, e.g.
+//   ?turn=turn:turn.example.com:3478&user=foo&pass=bar
+// If absent, PeerJS uses Google STUN only — fine for cross-NAT but cannot
+// hairpin two peers behind the same router.
+function makePeerOptions() {
+  const params = new URLSearchParams(location.search);
+  const turnUrl = params.get('turn');
+  if (!turnUrl) return undefined;
+  return {
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: turnUrl,
+          username:   params.get('user') || '',
+          credential: params.get('pass') || '' },
+      ],
+    },
+  };
+}
+
+function teardownPeer() {
+  if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+  if (conn) { try { conn.close(); } catch (_) {} conn = null; }
+  if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
+}
+
+function startWatchdog(label) {
+  if (watchdog) clearTimeout(watchdog);
+  watchdog = setTimeout(() => {
+    setStatus(
+      label + ' is taking too long. The WebRTC peer-to-peer link could not be ' +
+      'established. This usually happens when both peers are on the same ' +
+      'router and it does not support NAT hairpinning. Try one peer on a ' +
+      'different network (e.g. cellular), or pass a TURN server in the URL: ' +
+      '<code>?turn=turn:host:port&amp;user=U&amp;pass=P</code>.'
+    );
+  }, 20000);
+}
+
 // ---------- network ----------
 function sendOutbound(strs) {
   if (!strs) return;
   for (const line of strs.split('\n')) {
     if (!line) continue;
-    if (conn && conn.open) conn.send(line);
-    log('→ ' + line.slice(0, 120));
+    if (conn && conn.open) {
+      conn.send(line);
+      log('→ ' + line.slice(0, 120));
+    } else {
+      log('!! dropped (not connected): ' + line.slice(0, 120));
+      $('status-label').textContent = 'connection lost';
+    }
   }
 }
 
 function onConnOpen(isHost, gameId) {
+  if (watchdog) { clearTimeout(watchdog); watchdog = null; }
   $('lobby').classList.add('hidden');
   $('play').classList.remove('hidden');
   $('mode-label').textContent = $('mode-select').selectedOptions[0].text;
@@ -63,47 +110,112 @@ function onConnOpen(isHost, gameId) {
 }
 
 function setupCreate() {
+  teardownPeer();
   const gameId = genGameId();
-  peer = new Peer();
+  setStatus('initializing peer…');
+  peer = new Peer(makePeerOptions());
   peer.on('open', (id) => {
-    $('lobby-status').innerHTML =
+    setStatus(
       'Your peer ID: <code>' + id + '</code>' +
       '<br>Share this with your friend so they can join. Mode: ' +
       $('mode-select').selectedOptions[0].text +
-      '<br>Game id: <code>' + gameId + '</code>';
+      '<br>Game id: <code>' + gameId + '</code>' +
+      '<br><small>Waiting for opponent…</small>'
+    );
+    startWatchdog('Waiting for an opponent to join');
   });
   peer.on('connection', (c) => {
     conn = c;
+    setStatus('opponent connecting…');
+    startWatchdog('Establishing the data channel');
+    attachConnDiagnostics(conn);
     conn.on('open', () => {
       // Send the game_id and mode to the joiner so they can construct.
       conn.send(JSON.stringify({_lobby: true, gameId, mode: modeInt()}));
       onConnOpen(true, gameId);
     });
+    conn.on('error', (e) => {
+      setStatus('Data-channel error: ' + (e.message || e.type || e));
+      log('conn error: ' + JSON.stringify(e.message || e.type || e));
+    });
+    conn.on('close', () => {
+      log('conn closed');
+    });
   });
-  peer.on('error', (e) => log('peer error: ' + e));
+  peer.on('error', (e) => {
+    setStatus('Peer error: ' + (e.message || e.type || e));
+    log('peer error: ' + JSON.stringify(e.message || e.type || e));
+  });
+  peer.on('disconnected', () => log('peer disconnected from broker'));
 }
 
 function setupJoin() {
   const remoteId = $('join-id').value.trim();
-  if (!remoteId) { $('lobby-status').textContent = 'Enter a peer ID first.'; return; }
-  peer = new Peer();
+  if (!remoteId) { setStatus('Enter a peer ID first.'); return; }
+  teardownPeer();
+  setStatus('connecting to <code>' + remoteId.slice(0, 8) + '…</code>');
+  peer = new Peer(makePeerOptions());
+  startWatchdog('Connecting to ' + remoteId.slice(0, 8));
   peer.on('open', () => {
-    conn = peer.connect(remoteId);
+    conn = peer.connect(remoteId, { reliable: true });
+    attachConnDiagnostics(conn);
     conn.on('open', () => {
-      // Wait for the host's lobby announcement (gameId + mode), then proceed.
+      setStatus('connected, awaiting lobby announcement…');
       conn.once('data', (data) => {
         let lobby;
         try { lobby = JSON.parse(String(data)); } catch (e) { lobby = null; }
         if (!lobby || !lobby._lobby) {
-          log('!! expected lobby announcement first'); return;
+          setStatus('Expected lobby announcement first; got something else.');
+          return;
         }
         $('mode-select').value = String(lobby.mode);
         onConnOpen(false, lobby.gameId);
       });
     });
-    conn.on('error', (e) => log('conn error: ' + e));
+    conn.on('error', (e) => {
+      setStatus('Data-channel error: ' + (e.message || e.type || e));
+      log('conn error: ' + JSON.stringify(e.message || e.type || e));
+    });
+    conn.on('close', () => {
+      log('conn closed');
+      if (!game) setStatus('Connection closed before the game started.');
+    });
   });
-  peer.on('error', (e) => log('peer error: ' + e));
+  peer.on('error', (e) => {
+    setStatus('Peer error: ' + (e.message || e.type || e));
+    log('peer error: ' + JSON.stringify(e.message || e.type || e));
+  });
+  peer.on('disconnected', () => log('peer disconnected from broker'));
+}
+
+// Attach an ICE-state observer so the user can see WebRTC progress.
+function attachConnDiagnostics(c) {
+  // PeerJS exposes the underlying RTCPeerConnection on `peerConnection`.
+  const tryAttach = () => {
+    const pc = c && c.peerConnection;
+    if (!pc) return false;
+    const onChange = () => {
+      log('ice: ' + pc.iceConnectionState + ' / dtls: ' +
+          (pc.connectionState || 'n/a'));
+      if (pc.iceConnectionState === 'failed' ||
+          pc.connectionState === 'failed') {
+        setStatus(
+          'WebRTC ICE failed — no usable network path between the two peers. ' +
+          'Most common cause: both peers behind the same router with no NAT ' +
+          'hairpinning. Try a different network, or supply a TURN server: ' +
+          '<code>?turn=turn:host:port&amp;user=U&amp;pass=P</code>.'
+        );
+      }
+    };
+    pc.addEventListener('iceconnectionstatechange', onChange);
+    pc.addEventListener('connectionstatechange', onChange);
+    return true;
+  };
+  if (!tryAttach()) {
+    // peerConnection isn't always set immediately; poll briefly.
+    let n = 0;
+    const t = setInterval(() => { if (tryAttach() || ++n > 40) clearInterval(t); }, 100);
+  }
 }
 
 // ---------- UI ----------
