@@ -14,6 +14,22 @@ Two interchangeable shuffle protocols, selectable per game:
   until both players publish their per-square decryption keys. No client ever
   sees an unflipped piece's identity.
 
+## Live demo
+
+A pre-built copy is deployed automatically to GitHub Pages on every push to
+`main`.  Open the URL shown in the repo's **Pages** settings — no install
+needed.
+
+## CI / CD
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| `ci.yml` | every push / PR | runs the native doctest suite (83 tests) |
+| `deploy.yml` | push to `main` or `claude/…` branch, or manual | installs emsdk, runs `make wasm`, deploys `web/` to GitHub Pages |
+
+To enable GitHub Pages in a fork:  
+*Settings → Pages → Source → GitHub Actions.*
+
 ## Build
 
 Native test suite (no Emscripten needed):

@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Native test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install g++
+        run: sudo apt-get update && sudo apt-get install -y g++
+
+      - name: Build and run doctest suite
+        working-directory: ${{ github.workspace }}
+        run: make test
