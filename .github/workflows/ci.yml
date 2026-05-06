@@ -17,3 +17,28 @@ jobs:
       - name: Build and run doctest suite
         working-directory: ${{ github.workspace }}
         run: make test
+
+  e2e:
+    name: Real-browser E2E (PeerJS / WebRTC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install npm deps
+        run: npm install
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: WASM smoke (in-process)
+        run: node tests/wasm_smoke.mjs
+
+      - name: Browser E2E — casual mode
+        run: node tests/e2e_browser.mjs casual
+
+      - name: Browser E2E — crypto mode
+        run: node tests/e2e_browser.mjs crypto

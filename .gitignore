@@ -4,3 +4,4 @@ build/
 tests/run_tests
 emsdk/
 .DS_Store
+node_modules/

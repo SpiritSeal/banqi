@@ -110,6 +110,14 @@ $(WASM_BUILD_DIR)/%.o: $(THIRD_PARTY)/%.c
 wasm-test: wasm
 	node tests/wasm_smoke.mjs
 
+# Real-browser end-to-end test. Spawns a static server, a local PeerServer,
+# and two Chromium pages, then drives a full game through PeerJS / WebRTC.
+# Requires: npm install && npx playwright install chromium
+.PHONY: e2e
+e2e:
+	node tests/e2e_browser.mjs casual
+	node tests/e2e_browser.mjs crypto
+
 .PHONY: serve
 serve:
 	cd $(WEB_DIR) && python3 -m http.server 8080

@@ -8,6 +8,9 @@ const log = (msg) => {
   const el = $('log');
   el.textContent += msg + '\n';
   el.scrollTop = el.scrollHeight;
+  // Also forward to the dev console so headless tests / browser devtools can
+  // see the message stream without expanding the <details>.
+  try { console.log('[banqi]', msg); } catch (_) {}
 };
 const setStatus = (html) => { $('lobby-status').innerHTML = html; };
 
@@ -27,24 +30,35 @@ function modeInt() {
   return parseInt($('mode-select').value, 10);
 }
 
-// Optional TURN server via URL params, e.g.
-//   ?turn=turn:turn.example.com:3478&user=foo&pass=bar
-// If absent, PeerJS uses Google STUN only — fine for cross-NAT but cannot
-// hairpin two peers behind the same router.
+// Optional URL params:
+//   ?turn=turn:host:port&user=U&pass=P     custom TURN server
+//   ?peerHost=...&peerPort=...&peerPath=...&peerSecure=0|1
+//                                          custom PeerJS signalling broker
+//                                          (e.g. for local E2E tests)
+// If absent, defaults are: PeerJS public broker, Google STUN only — which is
+// fine for cross-NAT but cannot hairpin two peers behind the same router.
 function makePeerOptions() {
   const params = new URLSearchParams(location.search);
+  const opts = {};
   const turnUrl = params.get('turn');
-  if (!turnUrl) return undefined;
-  return {
-    config: {
+  if (turnUrl) {
+    opts.config = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: turnUrl,
           username:   params.get('user') || '',
           credential: params.get('pass') || '' },
       ],
-    },
-  };
+    };
+  }
+  const peerHost = params.get('peerHost');
+  if (peerHost) {
+    opts.host = peerHost;
+    if (params.has('peerPort')) opts.port = parseInt(params.get('peerPort'), 10);
+    if (params.has('peerPath')) opts.path = params.get('peerPath');
+    if (params.has('peerSecure')) opts.secure = params.get('peerSecure') === '1';
+  }
+  return Object.keys(opts).length ? opts : undefined;
 }
 
 function teardownPeer() {
@@ -81,6 +95,57 @@ function sendOutbound(strs) {
   }
 }
 
+// Single conn.on('data') handler. Registered exactly once per conn, before any
+// 'open' handlers, so a message arriving early is never lost.
+//
+// On the host side: the game is constructed locally before any inbound data
+// can arrive (the host owns gameId + mode), so this handler always sees `game`
+// already defined.
+//
+// On the joiner side: the very first inbound message is the host's HELLO,
+// which carries `game_id` and `mode`. The joiner uses those to construct its
+// Game synchronously, then re-dispatches the same HELLO into game.handleMessage
+// so the protocol's HELLO-handler runs normally. (We used to send a separate
+// "_lobby" announcement before HELLO, but PeerJS occasionally drops the first
+// send right after `open` — so we made HELLO self-bootstrapping instead.)
+function attachDataHandler(isHost) {
+  conn.on('data', (data) => {
+    const s = String(data);
+    log('← ' + s.slice(0, 120));
+    if (!game) {
+      // Joiner: first inbound must be HELLO. Use it to construct the game.
+      let parsed;
+      try { parsed = JSON.parse(s); } catch (_) { parsed = null; }
+      if (!parsed || parsed.type !== 'HELLO' ||
+          typeof parsed.game_id !== 'string' ||
+          (parsed.mode !== 'casual' && parsed.mode !== 'crypto')) {
+        setStatus('Expected HELLO from host first; got something else.');
+        log('!! pre-HELLO data, ignored: ' + s.slice(0, 120));
+        return;
+      }
+      const modeNum = parsed.mode === 'crypto' ? 2 : 1;
+      $('mode-select').value = String(modeNum);
+      onConnOpen(false, parsed.game_id);
+      // Re-dispatch HELLO into the freshly-constructed game.
+      try {
+        const out = game.handleMessage(s);
+        sendOutbound(out);
+      } catch (e) {
+        log('!! HELLO handle: ' + (e.message || e));
+      }
+      refresh();
+      return;
+    }
+    try {
+      const out = game.handleMessage(s);
+      sendOutbound(out);
+    } catch (e) {
+      log('!! ' + (e.message || e));
+    }
+    refresh();
+  });
+}
+
 function onConnOpen(isHost, gameId) {
   if (watchdog) { clearTimeout(watchdog); watchdog = null; }
   $('lobby').classList.add('hidden');
@@ -91,17 +156,6 @@ function onConnOpen(isHost, gameId) {
     ? Module.Game.createHost(modeInt(), gameId)
     : Module.Game.createJoin(modeInt(), gameId);
   log('game created (' + (isHost ? 'host' : 'join') + ')');
-
-  conn.on('data', (data) => {
-    log('← ' + String(data).slice(0, 120));
-    try {
-      const out = game.handleMessage(String(data));
-      sendOutbound(out);
-    } catch (e) {
-      log('!! ' + (e.message || e));
-    }
-    refresh();
-  });
 
   // Send our HELLO immediately.
   const out = game.start();
@@ -129,9 +183,10 @@ function setupCreate() {
     setStatus('opponent connecting…');
     startWatchdog('Establishing the data channel');
     attachConnDiagnostics(conn);
+    attachDataHandler(true);
     conn.on('open', () => {
-      // Send the game_id and mode to the joiner so they can construct.
-      conn.send(JSON.stringify({_lobby: true, gameId, mode: modeInt()}));
+      // game.start() emits HELLO which carries gameId + mode, so the joiner
+      // can construct its Game from HELLO directly. No separate lobby send.
       onConnOpen(true, gameId);
     });
     conn.on('error', (e) => {
@@ -159,18 +214,11 @@ function setupJoin() {
   peer.on('open', () => {
     conn = peer.connect(remoteId, { reliable: true });
     attachConnDiagnostics(conn);
+    // Register the data handler BEFORE 'open' so a lobby message that arrives
+    // early (PeerJS data event firing the same tick as open) is never dropped.
+    attachDataHandler(false);
     conn.on('open', () => {
       setStatus('connected, awaiting lobby announcement…');
-      conn.once('data', (data) => {
-        let lobby;
-        try { lobby = JSON.parse(String(data)); } catch (e) { lobby = null; }
-        if (!lobby || !lobby._lobby) {
-          setStatus('Expected lobby announcement first; got something else.');
-          return;
-        }
-        $('mode-select').value = String(lobby.mode);
-        onConnOpen(false, lobby.gameId);
-      });
     });
     conn.on('error', (e) => {
       setStatus('Data-channel error: ' + (e.message || e.type || e));

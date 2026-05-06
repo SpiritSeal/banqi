@@ -142,7 +142,19 @@ themselves. That is out of scope here.
 
 ## Test coverage
 
-`make test` runs the doctest suite — 83 test cases / ~25 000 assertions:
+Three layers, each catching a different class of bug:
+
+* `make test` — native doctest suite (83 cases, ~25 000 assertions). Pure
+  C++ unit + integration tests; runs in <1 s.
+* `make wasm-test` — node loads the WASM module and runs the full protocol
+  end-to-end, in-process, both modes. Catches WASM-binding regressions.
+* `make e2e` — **real-browser** Playwright test. Spawns a static server, a
+  local PeerServer (so it works offline), and two Chromium pages, then drives
+  Create + Join through actual PeerJS / WebRTC, runs ~6 moves, asserts board
+  convergence after each. Requires `npm install && npx playwright install
+  chromium`.
+
+`make test` covers:
 
 * BigInt: round-trips, comparisons, modexp via Fermat's little theorem on
   secp256k1's field prime, modular inverse round-trip, multiplicative
