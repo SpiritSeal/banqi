@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Banqi P2P (半棋)</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Banqi P2P · 半棋</h1>
+    <div class="subtitle">Peer-to-peer Chinese Dark Chess. Taiwanese rules.</div>
+  </header>
+
+  <section id="lobby" class="panel">
+    <h2>Start</h2>
+    <div class="controls">
+      <label>Mode:
+        <select id="mode-select">
+          <option value="1">Casual (commit-reveal)</option>
+          <option value="2">Crypto (mental poker)</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <button id="btn-create">Create game</button>
+      <span class="sep">or</span>
+      <input type="text" id="join-id" placeholder="Paste peer ID here">
+      <button id="btn-join">Join game</button>
+    </div>
+    <div id="lobby-status" class="status"></div>
+  </section>
+
+  <section id="play" class="panel hidden">
+    <h2>Game</h2>
+    <div class="play-grid">
+      <div class="meta">
+        <div><b>You are:</b> <span id="me-label">—</span></div>
+        <div><b>Mode:</b> <span id="mode-label">—</span></div>
+        <div><b>Turn:</b> <span id="turn-label">—</span></div>
+        <div><b>Status:</b> <span id="status-label">setting up…</span></div>
+        <div><b>Moves:</b> <span id="seq-label">0</span></div>
+        <button id="btn-resign" disabled>Resign</button>
+      </div>
+      <div id="board" class="board"></div>
+    </div>
+    <details class="log">
+      <summary>Log</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+</div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
