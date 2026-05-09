@@ -14,6 +14,16 @@ const log = (msg) => {
 };
 const setStatus = (html) => { $('lobby-status').innerHTML = html; };
 
+// Big top-of-page error banner. Use for serious problems the user must act on.
+function showBanner(html) {
+  const b = $('conn-banner');
+  b.innerHTML = html;
+  b.classList.remove('hidden');
+}
+function hideBanner() {
+  $('conn-banner').classList.add('hidden');
+}
+
 let peer = null;          // PeerJS Peer
 let conn = null;          // DataConnection
 let game = null;          // GameWrapper from C++
@@ -30,27 +40,36 @@ function modeInt() {
   return parseInt($('mode-select').value, 10);
 }
 
-// Optional URL params:
-//   ?turn=turn:host:port&user=U&pass=P     custom TURN server
+// TURN configuration: prefer the in-page form (#turn-url etc.), fall back to
+// URL params (?turn=...&user=...&pass=...).  Either source lets the user point
+// the WebRTC stack at a TURN relay so two peers behind the same NAT can
+// connect.
+//
+// Other URL params:
 //   ?peerHost=...&peerPort=...&peerPath=...&peerSecure=0|1
-//                                          custom PeerJS signalling broker
-//                                          (e.g. for local E2E tests)
-// If absent, defaults are: PeerJS public broker, Google STUN only — which is
-// fine for cross-NAT but cannot hairpin two peers behind the same router.
+//      Custom PeerJS signalling broker (used by the E2E test).
+function readTurnConfig() {
+  const params = new URLSearchParams(location.search);
+  const url  = ($('turn-url')?.value  || '').trim() || params.get('turn')  || '';
+  const user = ($('turn-user')?.value || '').trim() || params.get('user')  || '';
+  const pass = ($('turn-pass')?.value || '').trim() || params.get('pass')  || '';
+  if (!url) return null;
+  return { urls: url, username: user, credential: pass };
+}
+
+let lastTurnUsed = null;   // exposed in error messages so the user can see what was tried
+
 function makePeerOptions() {
   const params = new URLSearchParams(location.search);
   const opts = {};
-  const turnUrl = params.get('turn');
-  if (turnUrl) {
-    opts.config = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: turnUrl,
-          username:   params.get('user') || '',
-          credential: params.get('pass') || '' },
-      ],
-    };
-  }
+  const turn = readTurnConfig();
+  lastTurnUsed = turn;
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+  if (turn) iceServers.push(turn);
+  opts.config = { iceServers };
   const peerHost = params.get('peerHost');
   if (peerHost) {
     opts.host = peerHost;
@@ -58,7 +77,7 @@ function makePeerOptions() {
     if (params.has('peerPath')) opts.path = params.get('peerPath');
     if (params.has('peerSecure')) opts.secure = params.get('peerSecure') === '1';
   }
-  return Object.keys(opts).length ? opts : undefined;
+  return opts;
 }
 
 function teardownPeer() {
@@ -70,14 +89,31 @@ function teardownPeer() {
 function startWatchdog(label) {
   if (watchdog) clearTimeout(watchdog);
   watchdog = setTimeout(() => {
-    setStatus(
-      label + ' is taking too long. The WebRTC peer-to-peer link could not be ' +
-      'established. This usually happens when both peers are on the same ' +
-      'router and it does not support NAT hairpinning. Try one peer on a ' +
-      'different network (e.g. cellular), or pass a TURN server in the URL: ' +
-      '<code>?turn=turn:host:port&amp;user=U&amp;pass=P</code>.'
-    );
+    showConnectionFailure(label + ' did not complete within 20 s.');
   }, 20000);
+}
+
+// Render a clear, action-oriented failure banner. Always reachable, regardless
+// of which lobby step the failure came from.
+function showConnectionFailure(reason) {
+  const used = lastTurnUsed
+    ? `TURN attempted: <code>${lastTurnUsed.urls}</code> (auth ${lastTurnUsed.username ? 'set' : 'absent'})`
+    : 'No TURN server configured — only STUN was tried.';
+  showBanner(`
+    <h3>WebRTC could not establish a peer-to-peer link</h3>
+    <div>${reason}</div>
+    <div style="margin-top:6px">
+      The most common cause is <b>both peers behind the same router</b> with
+      no NAT hairpinning. Either move one peer to a different network
+      (cellular works), or supply a TURN relay.
+    </div>
+    <div style="margin-top:6px">${used}</div>
+    <div style="margin-top:6px">Open <em>Advanced: TURN server</em> below
+      and paste credentials, then click Create / Join again. Free credentials
+      are available at
+      <a href="https://www.metered.ca/tools/openrelay/" target="_blank" rel="noopener">metered.ca</a>.
+    </div>`);
+  setStatus('connection failed — see banner above');
 }
 
 // ---------- network ----------
@@ -165,6 +201,7 @@ function onConnOpen(isHost, gameId) {
 
 function setupCreate() {
   teardownPeer();
+  hideBanner();
   const gameId = genGameId();
   setStatus('initializing peer…');
   peer = new Peer(makePeerOptions());
@@ -208,6 +245,7 @@ function setupJoin() {
   const remoteId = $('join-id').value.trim();
   if (!remoteId) { setStatus('Enter a peer ID first.'); return; }
   teardownPeer();
+  hideBanner();
   setStatus('connecting to <code>' + remoteId.slice(0, 8) + '…</code>');
   peer = new Peer(makePeerOptions());
   startWatchdog('Connecting to ' + remoteId.slice(0, 8));
@@ -247,12 +285,7 @@ function attachConnDiagnostics(c) {
           (pc.connectionState || 'n/a'));
       if (pc.iceConnectionState === 'failed' ||
           pc.connectionState === 'failed') {
-        setStatus(
-          'WebRTC ICE failed — no usable network path between the two peers. ' +
-          'Most common cause: both peers behind the same router with no NAT ' +
-          'hairpinning. Try a different network, or supply a TURN server: ' +
-          '<code>?turn=turn:host:port&amp;user=U&amp;pass=P</code>.'
-        );
+        showConnectionFailure('ICE state reached <b>failed</b> — no path between the two peers.');
       }
     };
     pc.addEventListener('iceconnectionstatechange', onChange);

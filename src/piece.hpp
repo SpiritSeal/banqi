@@ -106,4 +106,28 @@ inline char piece_glyph(const Piece& p) {
     return c;
 }
 
+// Traditional Chinese glyph (Taiwanese variant). Red and Black use distinct
+// characters per traditional xiangqi convention.
+//   General : 帥 (Red) / 將 (Black)
+//   Advisor : 仕 (Red) / 士 (Black)
+//   Elephant: 相 (Red) / 象 (Black)
+//   Chariot : 俥 (Red) / 車 (Black)
+//   Horse   : 傌 (Red) / 馬 (Black)
+//   Cannon  : 炮 (Red) / 砲 (Black)
+//   Soldier : 兵 (Red) / 卒 (Black)
+inline const char* piece_glyph_zh(const Piece& p) {
+    if (p.empty()) return ".";
+    const bool red = (p.color == Color::Red);
+    switch (p.type) {
+        case PieceType::General:  return red ? "帥" : "將";
+        case PieceType::Advisor:  return red ? "仕" : "士";
+        case PieceType::Elephant: return red ? "相" : "象";
+        case PieceType::Chariot:  return red ? "俥" : "車";
+        case PieceType::Horse:    return red ? "傌" : "馬";
+        case PieceType::Cannon:   return red ? "炮" : "砲";
+        case PieceType::Soldier:  return red ? "兵" : "卒";
+        default:                  return "?";
+    }
+}
+
 }  // namespace banqi

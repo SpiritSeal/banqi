@@ -109,7 +109,8 @@ public:
                     cj["state"] = "faceup";
                     cj["color"] = (int)c.piece.color;
                     cj["type"]  = (int)c.piece.type;
-                    cj["glyph"] = std::string(1, piece_glyph(c.piece));
+                    cj["glyph"] = piece_glyph_zh(c.piece);   // Traditional Chinese
+                    cj["ascii"] = std::string(1, piece_glyph(c.piece));
                     break;
             }
             cells.push_back(cj);

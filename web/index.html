@@ -14,6 +14,8 @@
     <div class="subtitle">Peer-to-peer Chinese Dark Chess. Taiwanese rules.</div>
   </header>
 
+  <div id="conn-banner" class="banner hidden"></div>
+
   <section id="lobby" class="panel">
     <h2>Start</h2>
     <div class="controls">
@@ -30,6 +32,19 @@
       <input type="text" id="join-id" placeholder="Paste peer ID here">
       <button id="btn-join">Join game</button>
     </div>
+    <details class="advanced">
+      <summary>Advanced: TURN server (only needed if both peers are behind the same router)</summary>
+      <div class="row">
+        <input type="text" id="turn-url" placeholder="turn:host:port">
+        <input type="text" id="turn-user" placeholder="username">
+        <input type="text" id="turn-pass" placeholder="credential">
+      </div>
+      <div class="hint">Free option: register at
+        <a href="https://www.metered.ca/tools/openrelay/" target="_blank" rel="noopener">metered.ca</a>
+        for free TURN credentials, paste the URL/user/pass here.
+        Settings persist in this tab only.
+        Or share a URL with <code>?turn=…&amp;user=…&amp;pass=…</code> baked in.</div>
+    </details>
     <div id="lobby-status" class="status"></div>
   </section>
 
@@ -50,6 +65,38 @@
       <summary>Log</summary>
       <pre id="log"></pre>
     </details>
+  </section>
+
+  <section id="crib" class="panel">
+    <h2>Pieces &amp; rules</h2>
+    <div class="crib-grid">
+      <div>
+        <h3>Pieces (rank high → low)</h3>
+        <table class="crib">
+          <thead><tr><th>Rank</th><th>Red</th><th>Black</th><th>Name</th><th>×</th></tr></thead>
+          <tbody>
+            <tr><td>7</td><td class="zh red">帥</td><td class="zh black">將</td><td>General (jiàng)</td><td>1</td></tr>
+            <tr><td>6</td><td class="zh red">仕</td><td class="zh black">士</td><td>Advisor (shì)</td><td>2</td></tr>
+            <tr><td>5</td><td class="zh red">相</td><td class="zh black">象</td><td>Elephant (xiàng)</td><td>2</td></tr>
+            <tr><td>4</td><td class="zh red">俥</td><td class="zh black">車</td><td>Chariot (jū)</td><td>2</td></tr>
+            <tr><td>3</td><td class="zh red">傌</td><td class="zh black">馬</td><td>Horse (mǎ)</td><td>2</td></tr>
+            <tr><td>2</td><td class="zh red">炮</td><td class="zh black">砲</td><td>Cannon (pào)</td><td>2</td></tr>
+            <tr><td>1</td><td class="zh red">兵</td><td class="zh black">卒</td><td>Soldier (bīng/zú)</td><td>5</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Capture rules</h3>
+        <ul class="crib-rules">
+          <li><b>Default:</b> a piece captures any adjacent enemy of <b>equal or lower rank</b>.</li>
+          <li><b>Soldier 兵/卒</b> captures <b>General 帥/將</b> (rank 1 beats rank 7).</li>
+          <li><b>General</b> cannot capture Soldier.</li>
+          <li><b>Cannon 炮/砲</b> never captures adjacently. It jumps along a row or column over <b>exactly one</b> screen piece (any color, face-up or face-down) and lands on the target. Cannon ignores rank and may capture face-down pieces — they're revealed on capture.</li>
+          <li>You may flip any face-down piece on your turn instead of moving. The very first flip determines your color: the first flipper plays the revealed color.</li>
+          <li><b>Win:</b> opponent has no legal move (no flips, no movable pieces) or no remaining pieces.</li>
+        </ul>
+      </div>
+    </div>
   </section>
 </div>
 

@@ -79,8 +79,9 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
-  font-weight: bold;
+  font-size: 34px;
+  font-weight: 600;
+  font-family: "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", "Heiti TC", system-ui, sans-serif;
   cursor: pointer;
   transition: background 0.15s, transform 0.05s;
   color: #2a1502;
@@ -106,4 +107,70 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* --- top-of-page connection-failure banner --- */
+.banner {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border-radius: 6px;
+  border: 1px solid #d24343;
+  background: #3b1c1c;
+  color: #fbd0c5;
+  line-height: 1.5;
+}
+.banner h3 { margin: 0 0 6px 0; font-size: 15px; color: #ffb43a; }
+.banner code {
+  background: #1a0e07;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+/* --- advanced (TURN) lobby block --- */
+.advanced { margin-top: 12px; color: var(--muted); }
+.advanced summary { cursor: pointer; font-size: 13px; }
+.advanced .row input { font-size: 12px; min-width: 130px; }
+.advanced .hint { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.advanced .hint a { color: var(--accent); }
+
+/* --- crib sheet --- */
+.crib-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.crib-grid h3 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+table.crib {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 14px;
+}
+table.crib th, table.crib td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #2f2f33;
+  text-align: left;
+}
+table.crib th { color: var(--muted); font-weight: 500; }
+table.crib td.zh {
+  font-family: "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", "Heiti TC", system-ui, sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  text-align: center;
+  width: 1.7em;
+}
+table.crib td.zh.red    { color: var(--red); }
+table.crib td.zh.black  { color: #d8d8d8; }
+.crib-rules { margin: 0; padding-left: 20px; line-height: 1.6; }
+.crib-rules li { margin-bottom: 4px; }
+.crib-rules b { color: var(--accent); font-weight: 600; }
+@media (max-width: 700px) {
+  .crib-grid { grid-template-columns: 1fr; }
+  .play-grid { grid-template-columns: 1fr; }
 }

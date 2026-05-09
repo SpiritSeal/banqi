@@ -230,6 +230,15 @@ async function run() {
     if (s0h.seq !== s0j.seq) fail(`seq mismatch at start: ${s0h.seq} vs ${s0j.seq}`);
     console.log(`[e2e] initial state synced (seq=${s0h.seq})`);
 
+    // Sanity-check the crib sheet is present and has the expected piece names.
+    const cribGlyphs = await host.evaluate(() =>
+      [...document.querySelectorAll('table.crib td.zh')].map(e => e.textContent));
+    const expected = ['帥','將','仕','士','相','象','俥','車','傌','馬','炮','砲','兵','卒'];
+    for (const g of expected) {
+      if (!cribGlyphs.includes(g)) fail(`crib sheet missing piece glyph "${g}"`);
+    }
+    console.log(`[e2e] crib sheet has all 14 piece glyphs`);
+
     // Play several moves, alternating sides as dictated by the UI's "your turn"
     // hint. After each move, re-check that the boards stay in sync.
     const N_MOVES = 6;
@@ -294,6 +303,13 @@ async function run() {
       }
       if (sh.seq !== sj.seq) fail(`step ${step}: seq diverged ${sh.seq} vs ${sj.seq}`);
       if (sh.seq <= seqBefore) fail(`step ${step}: seq did not advance (${sh.seq} <= ${seqBefore})`);
+      // Verify any face-up cells render a Traditional Chinese glyph (not ASCII).
+      for (const c of sh.cells) {
+        if (c.state === 'faceup' && c.glyph) {
+          const cp = c.glyph.codePointAt(0) || 0;
+          if (cp < 0x3400) fail(`face-up cell shows non-CJK glyph "${c.glyph}" (U+${cp.toString(16)})`);
+        }
+      }
       console.log(`[e2e] step ${step}: ${moverName} ${moveDesc} → seq=${sh.seq} (synced)`);
 
       if (sh.status.startsWith('game over')) {
