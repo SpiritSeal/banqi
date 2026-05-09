@@ -98,6 +98,12 @@ public:
     // has already been removed).
     void apply_capture_reveal(int captured_cell, Piece revealed);
 
+    // Mark the game as over because `loser_player` (0 or 1) resigned. The
+    // other side is recorded as the winner. If colors haven't been assigned
+    // yet (pre-first-flip), `winner_` is set to Color::None but game_over_
+    // becomes true so the UI can render "winner: —".
+    void apply_resign(int loser_player);
+
     // Compact ASCII rendering for debugging.
     std::string render() const;
 

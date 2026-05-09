@@ -115,10 +115,21 @@ wasm-test: wasm
 # Requires: npm install && npx playwright install chromium
 .PHONY: e2e
 e2e:
+	node tests/test_relay.mjs
 	node tests/e2e_browser.mjs casual
 	node tests/e2e_browser.mjs crypto
 	node tests/e2e_relay.mjs casual
 	node tests/e2e_relay.mjs crypto
+	node tests/e2e_scenarios.mjs
+
+# Just the fast Node-level relay-protocol tests (no browser).
+.PHONY: test-relay
+test-relay:
+	node tests/test_relay.mjs
+
+# All E2E variants — slowest target. ~3 minutes total.
+.PHONY: e2e-all
+e2e-all: e2e
 
 .PHONY: serve
 serve:

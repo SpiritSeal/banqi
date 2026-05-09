@@ -268,6 +268,14 @@ void BanqiRules::apply_capture_reveal(int /*captured_cell*/, Piece /*revealed*/)
     // and UI can record what was captured. Hook left here for future use.
 }
 
+void BanqiRules::apply_resign(int loser_player) {
+    if (game_over_) return;
+    game_over_ = true;
+    // Winner is the OTHER player's color, if colors are assigned.
+    const int winner_player = 1 - loser_player;
+    winner_ = player_color_[winner_player];   // may be Color::None if pre-first-flip
+}
+
 void BanqiRules::force_color_assignment(int side_to_move_player, Color p0_color) {
     // State-only setter; does NOT recompute terminal so callers can finish
     // assembling the board before play begins. Terminal detection happens

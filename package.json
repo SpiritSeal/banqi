@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "relay": "node infra/relay.mjs",
+    "test-relay": "node tests/test_relay.mjs",
     "e2e": "node tests/e2e_browser.mjs",
     "e2e-relay": "node tests/e2e_relay.mjs",
+    "e2e-scenarios": "node tests/e2e_scenarios.mjs",
     "wasm-test": "node tests/wasm_smoke.mjs"
   },
   "dependencies": {

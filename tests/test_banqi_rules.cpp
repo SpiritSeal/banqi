@@ -286,3 +286,93 @@ TEST_CASE("BanqiRules: legal_moves returns nothing if not your turn") {
     CHECK(!b.legal_moves(0).empty());
     CHECK(b.legal_moves(1).empty());
 }
+
+// --- resign ---
+
+TEST_CASE("BanqiRules::apply_resign — game_over flips, winner is opponent's color") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(/*side_to_move=*/0, Color::Red);   // P0=Red, P1=Black
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(8, Piece{Color::Black, PieceType::General});
+    REQUIRE_FALSE(b.game_over());
+    b.apply_resign(0);                                          // P0 (Red) resigns
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::Black);                          // P1 wins
+}
+
+TEST_CASE("BanqiRules::apply_resign — second call is a no-op (idempotent)") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(8, Piece{Color::Black, PieceType::General});
+    b.apply_resign(0);
+    Color first_winner = b.winner();
+    b.apply_resign(1);                                          // would say P1 resigned, but ignored
+    CHECK(b.game_over());
+    CHECK(b.winner() == first_winner);                          // still the original
+}
+
+TEST_CASE("BanqiRules::apply_resign — pre-first-flip resign still ends the game") {
+    BanqiRules b;                                               // all face-down, no colors yet
+    REQUIRE_FALSE(b.first_flip_done());
+    b.apply_resign(0);
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::None);                           // no color to pick
+}
+
+// --- piece_glyph_zh: Traditional Chinese glyphs (Taiwanese xiangqi convention) ---
+
+TEST_CASE("piece_glyph_zh: every (color, type) pair maps to the right CJK char") {
+    // Red side (帥仕相俥傌炮兵)
+    CHECK(std::string(piece_glyph_zh({Color::Red,   PieceType::General}))  == "帥");
+    CHECK(std::string(piece_glyph_zh({Color::Red,   PieceType::Advisor}))  == "仕");
+    CHECK(std::string(piece_glyph_zh({Color::Red,   PieceType::Elephant})) == "相");
+    CHECK(std::string(piece_glyph_zh({Color::Red,   PieceType::Chariot}))  == "俥");
+    CHECK(std::string(piece_glyph_zh({Color::Red,   PieceType::Horse}))    == "傌");
+    CHECK(std::string(piece_glyph_zh({Color::Red,   PieceType::Cannon}))   == "炮");
+    CHECK(std::string(piece_glyph_zh({Color::Red,   PieceType::Soldier}))  == "兵");
+    // Black side (將士象車馬砲卒)
+    CHECK(std::string(piece_glyph_zh({Color::Black, PieceType::General}))  == "將");
+    CHECK(std::string(piece_glyph_zh({Color::Black, PieceType::Advisor}))  == "士");
+    CHECK(std::string(piece_glyph_zh({Color::Black, PieceType::Elephant})) == "象");
+    CHECK(std::string(piece_glyph_zh({Color::Black, PieceType::Chariot}))  == "車");
+    CHECK(std::string(piece_glyph_zh({Color::Black, PieceType::Horse}))    == "馬");
+    CHECK(std::string(piece_glyph_zh({Color::Black, PieceType::Cannon}))   == "砲");
+    CHECK(std::string(piece_glyph_zh({Color::Black, PieceType::Soldier}))  == "卒");
+}
+
+TEST_CASE("piece_glyph_zh: red and black glyphs differ for every piece type") {
+    for (int t = (int)PieceType::Soldier; t <= (int)PieceType::General; ++t) {
+        Piece red  {Color::Red,   (PieceType)t};
+        Piece black{Color::Black, (PieceType)t};
+        std::string r = piece_glyph_zh(red);
+        std::string b = piece_glyph_zh(black);
+        CAPTURE(t);
+        CHECK(r != b);                          // distinct chars per side
+        CHECK(r.size() == 3);                   // single 3-byte UTF-8 codepoint
+        CHECK(b.size() == 3);
+        CHECK((unsigned char)r[0] >= 0xE0);     // UTF-8 leading byte for U+0800+
+        CHECK((unsigned char)b[0] >= 0xE0);
+    }
+}
+
+TEST_CASE("piece_glyph_zh: empty piece returns dot") {
+    CHECK(std::string(piece_glyph_zh({})) == ".");
+}
+
+TEST_CASE("piece_glyph_zh: full deck coverage — every code 1..32 maps to a CJK glyph") {
+    std::set<std::string> seen_glyphs;
+    for (int code = 1; code <= 32; ++code) {
+        Piece p = code_to_piece(code);
+        std::string g = piece_glyph_zh(p);
+        CAPTURE(code);
+        CHECK(g != ".");
+        CHECK(g != "?");
+        CHECK(g.size() == 3);                   // 3-byte UTF-8 (CJK Unified Ideographs)
+        seen_glyphs.insert(g);
+    }
+    // 7 piece types × 2 colors = 14 distinct glyphs across the 32-piece deck.
+    CHECK(seen_glyphs.size() == 14);
+}

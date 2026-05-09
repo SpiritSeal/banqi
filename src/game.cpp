@@ -142,14 +142,9 @@ void Game::on_move_entry(const json& msg, std::vector<json>& out) {
             }
         }
     } else if (action.kind == MoveAction::Kind::Resign) {
-        // Mark the resigner as having lost.
-        // Use BanqiRules' game_over_/winner_ via a synthetic mechanism: clear
-        // the resigning player's pieces and rerun terminal check. Simpler:
-        // direct flag.
-        // For now we just set rules into terminal by emptying their pieces.
-        // (Implemented below via a helper in BanqiRules in future; for this
-        // demo we leave the no-op and let the UI announce the resign.)
-        (void)peer_idx;   // unused
+        // The peer resigned: they're the loser, and the rule engine flips
+        // game_over so the UI surfaces it.
+        rules_.apply_resign(peer_idx);
     }
 }
 
@@ -202,6 +197,9 @@ void Game::local_resign(std::vector<json>& out) {
     MoveAction a{MoveAction::Kind::Resign, -1, -1};
     auto entry = transcript_.append_local(me_, encode_move_action(a));
     out.push_back(transcript_entry_to_json(entry));
+    // Apply the same terminal flip locally so the UI shows game-over without
+    // waiting for the peer's echo.
+    rules_.apply_resign(my_player_index());
 }
 
 void Game::apply_resolved_flip_if_pending(int /*cell*/, const Piece& /*p*/) {

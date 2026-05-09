@@ -37,6 +37,9 @@ jobs:
       - name: WASM smoke (in-process)
         run: node tests/wasm_smoke.mjs
 
+      - name: Relay protocol tests (Node-level, no browser)
+        run: node tests/test_relay.mjs
+
       - name: Browser E2E (PeerJS) — casual mode
         run: node tests/e2e_browser.mjs casual
 
@@ -48,3 +51,6 @@ jobs:
 
       - name: Browser E2E (LAN relay) — crypto mode
         run: node tests/e2e_relay.mjs crypto
+
+      - name: Browser E2E scenarios (third-client, resign, full game, …)
+        run: node tests/e2e_scenarios.mjs
