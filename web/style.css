@@ -109,6 +109,20 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
   word-break: break-all;
 }
 
+/* In LAN-relay mode (?relay=...), the page auto-connects through a local
+   relay process. Hide the PeerJS Create/Join row and the TURN form (TURN is
+   irrelevant on a LAN relay). The mode select stays so the host can pick
+   casual vs crypto; the joiner's select is overwritten when HELLO arrives. */
+body.relay-mode #lobby .row,
+body.relay-mode #lobby .advanced { display: none; }
+body.relay-mode #lobby h2::after {
+  content: " (LAN relay mode)";
+  color: var(--accent);
+  font-size: 0.7em;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+
 /* --- top-of-page connection-failure banner --- */
 .banner {
   margin-top: 16px;

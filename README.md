@@ -61,19 +61,39 @@ Serve the static page locally:
 
 ### Networking notes
 
-Connection setup uses PeerJS's free WebRTC signalling broker; gameplay flows
-end-to-end over a WebRTC DataChannel.  Because no TURN relay is configured by
-default, **two peers behind the same router won't connect unless that router
-supports NAT hairpinning** — a common failure mode in home-network testing.
-Workarounds:
+The default transport is PeerJS over WebRTC (signalling broker is free, game
+data flows end-to-end over a DataChannel).  Two peers behind the **same
+router** won't connect on this transport unless the router supports NAT
+hairpinning — that's a property of the LAN, not the code.  Three workarounds,
+in order of effort:
 
-* Put one peer on a different network (e.g. cellular) for testing, or
-* Pass your own TURN server in the URL:
-  `https://…/?turn=turn:host:port&user=U&pass=P`.
-  The credentials get supplied to `RTCPeerConnection`'s `iceServers` config.
+1. **LAN relay (recommended for same-network play).** One peer runs a tiny
+   Node.js process that serves the page **and** brokers a WebSocket pair on
+   the LAN.  No TURN, no STUN, no NAT shenanigans:
 
-If the connection cannot be established, the lobby panel surfaces the ICE
-state and times out after 20 seconds with a diagnostic message.
+   ```
+   git clone https://github.com/spiritseal/banqi-p2p
+   cd banqi-p2p
+   npm install
+   node infra/relay.mjs                  # or `make serve-lan`
+   # → [relay] LAN: http://192.168.x.y:3000/
+   ```
+
+   Open the printed `http://…` URL in two browsers on the same network.  The
+   first to connect becomes host, the second becomes joiner.  The relay sees
+   only opaque bytes — in **crypto** mode the layout stays hidden from it,
+   exactly like with a remote PeerJS broker.
+
+2. **Cross-network play (different ISPs).** Just use the deployed page;
+   PeerJS + STUN handles it.
+
+3. **Same-router play without running anything locally.** Provide a TURN
+   relay either in the lobby's *Advanced: TURN server* form or via URL
+   params: `https://…/?turn=turn:host:port&user=U&pass=P`.  Free credentials
+   at [metered.ca](https://www.metered.ca/tools/openrelay/).
+
+If the WebRTC path can't connect, the lobby surfaces the ICE state, times out
+after 20 seconds, and pops up a banner with what to try next.
 
 ## Architecture
 
@@ -92,6 +112,7 @@ src/mental_poker.{hpp,cpp}       Crypto implementation.
 src/messages.{hpp,cpp}      JSON envelope helpers.
 src/game.{hpp,cpp}          Game facade / state machine.
 src/wasm_bindings.cpp       embind exports for JS.
+infra/relay.mjs             LAN relay: HTTP static + WebSocket pairing.
 web/                        UI (HTML/CSS/JS + PeerJS).
 tests/                      doctest suite + node WASM smoke harness.
 ```

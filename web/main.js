@@ -1,4 +1,11 @@
-// Web entry point: PeerJS for signaling, embind module for game logic.
+// Web entry point.
+//
+// Two transports are supported:
+//   * PeerJS / WebRTC (default) — works cross-NAT (with TURN if needed).
+//   * LAN relay (WebSocket) — when ?relay=ws://... or ?relay=auto, the page
+//     skips PeerJS entirely and connects to a Node.js relay process running
+//     on the local network. Used so two peers behind the same router can
+//     play without TURN. See infra/relay.mjs.
 import createBanqiModule from './banqi.js';
 
 const Module = await createBanqiModule();
@@ -86,6 +93,52 @@ function teardownPeer() {
   if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
 }
 
+// Compute the relay URL when ?relay= is present in the page URL.
+//   ?relay=auto              → same origin, ws-equivalent + /banqi
+//   ?relay=ws://host:port    → that exact URL
+//   ?relay=host:port         → ws://host:port/banqi
+//   ?relay=host:port/path    → ws://host:port/path
+function resolveRelayUrl() {
+  const v = new URLSearchParams(location.search).get('relay');
+  if (!v) return null;
+  if (v === 'auto' || v === '1' || v === '') {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/banqi`;
+  }
+  if (/^wss?:\/\//.test(v)) return v;
+  // bare host:port[/path]
+  return 'ws://' + v + (v.includes('/') ? '' : '/banqi');
+}
+
+// Thin event-emitter wrapper around a browser WebSocket, exposing the same
+// surface as a PeerJS DataConnection (open / send / on('data'|'open'|'close'|'error') / close).
+class WsConn {
+  constructor(url) {
+    this.url = url;
+    this.open = false;
+    this._handlers = { open: [], data: [], close: [], error: [] };
+    this._ws = new WebSocket(url);
+    this._ws.onopen    = ()  => { this.open = true; this._fire('open'); };
+    this._ws.onmessage = (e) => this._fire('data', e.data);
+    this._ws.onerror   = (e) => this._fire('error', e);
+    this._ws.onclose   = ()  => { this.open = false; this._fire('close'); };
+  }
+  on(event, cb) { (this._handlers[event] ||= []).push(cb); }
+  _fire(event, ...args) {
+    for (const cb of this._handlers[event] || []) {
+      try { cb(...args); } catch (e) { console.error('[banqi] handler', event, e); }
+    }
+  }
+  send(s) {
+    if (this._ws.readyState !== WebSocket.OPEN) {
+      log('!! ws.send while not OPEN (state=' + this._ws.readyState + ')');
+      return;
+    }
+    try { this._ws.send(s); } catch (e) { log('!! ws.send: ' + e.message); }
+  }
+  close() { try { this._ws.close(); } catch (_) {} }
+}
+
 function startWatchdog(label) {
   if (watchdog) clearTimeout(watchdog);
   watchdog = setTimeout(() => {
@@ -148,20 +201,34 @@ function attachDataHandler(isHost) {
   conn.on('data', (data) => {
     const s = String(data);
     log('← ' + s.slice(0, 120));
+
+    // Relay control frames (LAN-relay transport only). They never reach the
+    // C++ game protocol — the relay strips itself from the data path after
+    // these are handled.
+    let preParse;
+    try { preParse = JSON.parse(s); } catch (_) { preParse = null; }
+    if (preParse && typeof preParse.type === 'string' &&
+        (preParse.type === 'relay-role'  ||
+         preParse.type === 'relay-paired' ||
+         preParse.type === 'relay-error'  ||
+         preParse.type === 'relay-partner-gone')) {
+      handleRelayFrame(preParse);
+      return;
+    }
+
     if (!game) {
-      // Joiner: first inbound must be HELLO. Use it to construct the game.
-      let parsed;
-      try { parsed = JSON.parse(s); } catch (_) { parsed = null; }
-      if (!parsed || parsed.type !== 'HELLO' ||
-          typeof parsed.game_id !== 'string' ||
-          (parsed.mode !== 'casual' && parsed.mode !== 'crypto')) {
+      // Joiner: first inbound game message must be HELLO. Use it to
+      // construct the game.
+      if (!preParse || preParse.type !== 'HELLO' ||
+          typeof preParse.game_id !== 'string' ||
+          (preParse.mode !== 'casual' && preParse.mode !== 'crypto')) {
         setStatus('Expected HELLO from host first; got something else.');
         log('!! pre-HELLO data, ignored: ' + s.slice(0, 120));
         return;
       }
-      const modeNum = parsed.mode === 'crypto' ? 2 : 1;
+      const modeNum = preParse.mode === 'crypto' ? 2 : 1;
       $('mode-select').value = String(modeNum);
-      onConnOpen(false, parsed.game_id);
+      onConnOpen(false, preParse.game_id);
       // Re-dispatch HELLO into the freshly-constructed game.
       try {
         const out = game.handleMessage(s);
@@ -180,6 +247,43 @@ function attachDataHandler(isHost) {
     }
     refresh();
   });
+}
+
+// State for the LAN-relay transport: the role assigned by the relay, and
+// whether the partner has joined.
+let relayState = null;   // { role: 'host'|'join', paired: bool, gameId }
+
+function handleRelayFrame(msg) {
+  if (msg.type === 'relay-role') {
+    relayState = relayState || { role: msg.role, paired: false, gameId: null };
+    relayState.role = msg.role;
+    setStatus(msg.role === 'host'
+      ? 'Connected to relay as <b>host</b>. Waiting for opponent…'
+      : 'Connected to relay as <b>join</b>. Pairing…');
+    return;
+  }
+  if (msg.type === 'relay-paired') {
+    if (!relayState) return;
+    relayState.paired = true;
+    if (relayState.role === 'host') {
+      // Now safe to construct the game and send HELLO.
+      relayState.gameId = genGameId();
+      onConnOpen(true, relayState.gameId);
+    } else {
+      setStatus('Paired with host. Waiting for HELLO…');
+    }
+    return;
+  }
+  if (msg.type === 'relay-error') {
+    showBanner('<h3>Relay rejected the connection</h3><div>' +
+      (msg.reason || 'unknown') + '</div>');
+    setStatus('relay error');
+    return;
+  }
+  if (msg.type === 'relay-partner-gone') {
+    setStatus('Opponent left the relay.');
+    return;
+  }
 }
 
 function onConnOpen(isHost, gameId) {
@@ -410,9 +514,49 @@ function refresh() {
   renderBoard(state);
 }
 
-// ---------- buttons ----------
-$('btn-create').addEventListener('click', setupCreate);
-$('btn-join').addEventListener('click', setupJoin);
+// ---------- LAN-relay transport ----------
+function setupRelay() {
+  const wsUrl = resolveRelayUrl();
+  if (!wsUrl) { setStatus('No relay URL configured.'); return; }
+  teardownPeer();
+  hideBanner();
+  relayState = null;
+  setStatus('connecting to relay <code>' + wsUrl + '</code>…');
+  startWatchdog('Relay handshake');
+  try {
+    conn = new WsConn(wsUrl);
+  } catch (e) {
+    showBanner('<h3>Could not open WebSocket</h3><div>' + e.message + '</div>');
+    return;
+  }
+  attachDataHandler(/* unused for relay */ false);
+  conn.on('open', () => {
+    log('relay socket open');
+  });
+  conn.on('error', () => {
+    showBanner(
+      '<h3>Relay WebSocket error</h3>' +
+      '<div>Could not reach <code>' + wsUrl + '</code>. Is <code>node infra/relay.mjs</code> running on that host? ' +
+      'Is your browser on the same LAN?</div>');
+    setStatus('relay error');
+  });
+  conn.on('close', () => {
+    log('relay closed');
+    if (!game) setStatus('Relay closed before pairing.');
+  });
+}
+
+// ---------- buttons / boot ----------
+const RELAY_URL = resolveRelayUrl();
+if (RELAY_URL) {
+  // LAN-relay mode: hide the PeerJS lobby controls and auto-connect.
+  document.body.classList.add('relay-mode');
+  // Defer one tick so the WASM module is ready and the DOM is laid out.
+  queueMicrotask(setupRelay);
+} else {
+  $('btn-create').addEventListener('click', setupCreate);
+  $('btn-join').addEventListener('click', setupJoin);
+}
 $('btn-resign').addEventListener('click', () => {
   if (!game) return;
   try { sendOutbound(game.localResign()); } catch (e) { log('!! ' + e); }

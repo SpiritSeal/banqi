@@ -117,10 +117,18 @@ wasm-test: wasm
 e2e:
 	node tests/e2e_browser.mjs casual
 	node tests/e2e_browser.mjs crypto
+	node tests/e2e_relay.mjs casual
+	node tests/e2e_relay.mjs crypto
 
 .PHONY: serve
 serve:
 	cd $(WEB_DIR) && python3 -m http.server 8080
+
+# Run the LAN relay so two browsers on the same network can play without
+# external TURN. Prints the LAN URL — share it with the other peer.
+.PHONY: serve-lan
+serve-lan:
+	node infra/relay.mjs
 
 .PHONY: clean
 clean:

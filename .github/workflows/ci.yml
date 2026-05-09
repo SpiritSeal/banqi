@@ -37,8 +37,14 @@ jobs:
       - name: WASM smoke (in-process)
         run: node tests/wasm_smoke.mjs
 
-      - name: Browser E2E — casual mode
+      - name: Browser E2E (PeerJS) — casual mode
         run: node tests/e2e_browser.mjs casual
 
-      - name: Browser E2E — crypto mode
+      - name: Browser E2E (PeerJS) — crypto mode
         run: node tests/e2e_browser.mjs crypto
+
+      - name: Browser E2E (LAN relay) — casual mode
+        run: node tests/e2e_relay.mjs casual
+
+      - name: Browser E2E (LAN relay) — crypto mode
+        run: node tests/e2e_relay.mjs crypto
