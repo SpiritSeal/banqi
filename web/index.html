@@ -48,6 +48,55 @@
     <div id="lobby-status" class="status"></div>
   </section>
 
+  <!-- Manual SDP-exchange transport: pure browser-to-browser WebRTC, no
+       broker, no relay, no Node.js. Peers exchange ~3 KB blobs by hand
+       (SMS / email / AirDrop / clipboard). -->
+  <section id="manual" class="panel">
+    <h2>Manual P2P (no server)</h2>
+    <div class="hint">
+      No broker, no relay, no install. Both peers exchange one short text
+      blob each. Works fully offline beyond getting the page itself.
+      <em>One peer creates an offer, sends it; the other pastes it, sends
+      back an answer; the first peer pastes that — done.</em> Your browser
+      may ask for microphone permission to expose your LAN IP for direct
+      same-network peer-to-peer; <b>no audio is recorded or transmitted</b>.
+    </div>
+
+    <div class="manual-pair">
+      <!-- Side A: I'm hosting. -->
+      <div class="manual-side">
+        <h3>I'm hosting</h3>
+        <button id="btn-manual-host">1. Create offer</button>
+        <div id="manual-host-pending" class="hidden">
+          <label>Offer (copy to your friend):
+            <textarea id="manual-host-offer" readonly rows="4"
+                      onclick="this.select()"></textarea>
+          </label>
+          <label>Their answer (paste here):
+            <textarea id="manual-host-answer" rows="4"
+                      placeholder="paste answer blob"></textarea>
+          </label>
+          <button id="btn-manual-finish">3. Connect</button>
+        </div>
+      </div>
+      <!-- Side B: I'm joining. -->
+      <div class="manual-side">
+        <h3>I'm joining</h3>
+        <label>Their offer (paste here):
+          <textarea id="manual-join-offer" rows="4"
+                    placeholder="paste offer blob"></textarea>
+        </label>
+        <button id="btn-manual-join">2. Generate answer</button>
+        <div id="manual-join-pending" class="hidden">
+          <label>Answer (copy back to your friend):
+            <textarea id="manual-join-answer" readonly rows="4"
+                      onclick="this.select()"></textarea>
+          </label>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section id="play" class="panel hidden">
     <h2>Game</h2>
     <div class="play-grid">

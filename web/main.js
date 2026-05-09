@@ -84,6 +84,236 @@ function teardownPeer() {
   if (watchdog) { clearTimeout(watchdog); watchdog = null; }
   if (conn) { try { conn.close(); } catch (_) {} conn = null; }
   if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
+  // Manual-RTC connections don't go through PeerJS, so also explicitly close
+  // any RTCPeerConnection we might be holding.
+  if (manualPc) { try { manualPc.close(); } catch (_) {} manualPc = null; }
+  manualState = null;
+}
+
+let manualPc = null;
+let manualState = null;     // { role: 'host'|'join', dc, gameId, mode }
+
+// Adapter: same surface as PeerJS DataConnection (open / send / on / close)
+// over a browser RTCDataChannel. Used for manual SDP-exchange transport.
+class RtcConn {
+  constructor(dc) {
+    this.dc = dc;
+    this.open = dc.readyState === 'open';
+    this._handlers = { open: [], data: [], close: [], error: [] };
+    dc.addEventListener('open',    () => { this.open = true;  this._fire('open'); });
+    dc.addEventListener('message', (e) => this._fire('data', e.data));
+    dc.addEventListener('error',   (e) => this._fire('error', e));
+    dc.addEventListener('close',   () => { this.open = false; this._fire('close'); });
+  }
+  on(event, cb) { (this._handlers[event] ||= []).push(cb); }
+  _fire(event, ...args) {
+    for (const cb of this._handlers[event] || []) {
+      try { cb(...args); } catch (e) { console.error('[banqi] handler', event, e); }
+    }
+  }
+  send(s) {
+    if (this.dc.readyState !== 'open') {
+      log('!! rtc.send while not OPEN (state=' + this.dc.readyState + ')');
+      return;
+    }
+    try { this.dc.send(s); } catch (e) { log('!! rtc.send: ' + e.message); }
+  }
+  close() { try { this.dc.close(); } catch (_) {} }
+}
+
+// Wait until ICE candidate gathering is complete, so the SDP we hand the user
+// already contains every candidate. Avoids a second copy-paste round trip.
+function waitIceComplete(pc, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === 'complete') return resolve();
+    const onChange = () => {
+      if (pc.iceGatheringState === 'complete') {
+        pc.removeEventListener('icegatheringstatechange', onChange);
+        resolve();
+      }
+    };
+    pc.addEventListener('icegatheringstatechange', onChange);
+    // Hard cap so we don't wait forever for a stuck STUN check.
+    setTimeout(() => {
+      pc.removeEventListener('icegatheringstatechange', onChange);
+      resolve();
+    }, timeoutMs);
+  });
+}
+
+// Granting a microphone permission disables Chrome's mDNS-anonymisation of
+// host candidates for this origin, so the SDP we generate next will expose
+// raw 192.168.x.x LAN IPs and same-LAN cross-machine play works without TURN.
+// We immediately stop the track; no audio is recorded or transmitted.
+// If the user denies, we proceed with mDNS-only candidates (which usually
+// works cross-network, sometimes fails on same-NAT without router hairpinning).
+async function tryGetMicForRawIps() {
+  if (!navigator.mediaDevices?.getUserMedia) return false;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach(t => t.stop());
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function makeManualPc() {
+  // Same STUN list as the PeerJS path, plus any user-configured TURN.
+  const params = new URLSearchParams(location.search);
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+  const turnUrl = ($('turn-url')?.value || '').trim() || params.get('turn') || '';
+  if (turnUrl) {
+    iceServers.push({
+      urls: turnUrl,
+      username: ($('turn-user')?.value || '').trim() || params.get('user') || '',
+      credential: ($('turn-pass')?.value || '').trim() || params.get('pass') || '',
+    });
+  }
+  return new RTCPeerConnection({ iceServers });
+}
+
+function encodeSdpBlob(obj) {
+  // base64url + JSON. ~3 KB for a typical SDP with all candidates. Browsers
+  // accept much longer textareas, so length isn't a concern.
+  return btoa(JSON.stringify(obj))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function decodeSdpBlob(s) {
+  const trimmed = s.trim().replace(/-/g, '+').replace(/_/g, '/');
+  // Restore base64 padding.
+  const padded = trimmed + '='.repeat((4 - trimmed.length % 4) % 4);
+  return JSON.parse(atob(padded));
+}
+
+// HOST side: generate an offer; show the offer blob to the user; wait for
+// them to paste the answer blob; then complete the connection.
+async function setupManualHost() {
+  teardownPeer();
+  hideBanner();
+  setStatus('preparing offer…');
+  await tryGetMicForRawIps();
+
+  const pc = makeManualPc();
+  manualPc = pc;
+  const dc = pc.createDataChannel('banqi', { ordered: true });
+  conn = new RtcConn(dc);
+  attachDataHandler(true);
+
+  const gameId = genGameId();
+  manualState = { role: 'host', dc, gameId, mode: modeInt() };
+
+  // ICE state observer for diagnostics (matches PeerJS path).
+  const onIce = () => {
+    log('ice: ' + pc.iceConnectionState + ' / dtls: ' + pc.connectionState);
+    if (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed') {
+      showConnectionFailure('ICE state reached <b>failed</b> — no usable network path.');
+    }
+  };
+  pc.addEventListener('iceconnectionstatechange', onIce);
+  pc.addEventListener('connectionstatechange', onIce);
+
+  await pc.setLocalDescription(await pc.createOffer());
+  await waitIceComplete(pc);
+  const blob = encodeSdpBlob({ v: 1, role: 'host', sdp: pc.localDescription });
+  showManualOffer(blob);
+
+  // dc.onopen will trigger onConnOpen(true, gameId) below in waitForOpenAndStart.
+  waitForDcOpenAndStart(dc, true, gameId);
+}
+
+// JOIN side: paste host's offer blob; generate an answer; show the answer
+// blob; data channel opens automatically once the host sets it as remote.
+async function setupManualJoin(offerBlobText) {
+  teardownPeer();
+  hideBanner();
+  setStatus('parsing offer…');
+  let parsed;
+  try { parsed = decodeSdpBlob(offerBlobText); }
+  catch (e) {
+    showBanner('<h3>Invalid offer blob</h3><div>Could not parse: ' + e.message + '</div>');
+    return;
+  }
+  if (parsed.role !== 'host' || !parsed.sdp) {
+    showBanner('<h3>Invalid offer blob</h3><div>Expected a host offer.</div>');
+    return;
+  }
+  await tryGetMicForRawIps();
+
+  const pc = makeManualPc();
+  manualPc = pc;
+  manualState = { role: 'join' };
+
+  // The host created the data channel; we receive it here.
+  pc.addEventListener('datachannel', (e) => {
+    conn = new RtcConn(e.channel);
+    attachDataHandler(false);
+    waitForDcOpenAndStart(e.channel, false, /*gameId*/ null);
+  });
+
+  const onIce = () => {
+    log('ice: ' + pc.iceConnectionState + ' / dtls: ' + pc.connectionState);
+    if (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed') {
+      showConnectionFailure('ICE state reached <b>failed</b> — no usable network path.');
+    }
+  };
+  pc.addEventListener('iceconnectionstatechange', onIce);
+  pc.addEventListener('connectionstatechange', onIce);
+
+  await pc.setRemoteDescription(parsed.sdp);
+  await pc.setLocalDescription(await pc.createAnswer());
+  await waitIceComplete(pc);
+  const blob = encodeSdpBlob({ v: 1, role: 'join', sdp: pc.localDescription });
+  showManualAnswer(blob);
+}
+
+// Host: paste the answer that the joiner sent back. Completes the handshake.
+async function applyManualAnswer(answerBlobText) {
+  if (!manualPc || manualState?.role !== 'host') {
+    showBanner('<h3>No pending offer</h3><div>Click "Create offer" first.</div>');
+    return;
+  }
+  let parsed;
+  try { parsed = decodeSdpBlob(answerBlobText); }
+  catch (e) {
+    showBanner('<h3>Invalid answer blob</h3><div>Could not parse: ' + e.message + '</div>');
+    return;
+  }
+  if (parsed.role !== 'join' || !parsed.sdp) {
+    showBanner('<h3>Invalid answer blob</h3><div>Expected a join answer.</div>');
+    return;
+  }
+  setStatus('completing handshake…');
+  startWatchdog('Manual-RTC handshake');
+  await manualPc.setRemoteDescription(parsed.sdp);
+  // dc.onopen → onConnOpen → game.start() → HELLO sent.
+}
+
+// Once the data channel actually opens, kick off the game-side bootstrap.
+function waitForDcOpenAndStart(dc, isHost, gameId) {
+  const onOpen = () => {
+    if (isHost) {
+      onConnOpen(true, gameId);
+    } else {
+      // Joiner: game gets constructed in attachDataHandler when HELLO arrives.
+    }
+  };
+  if (dc.readyState === 'open') onOpen();
+  else dc.addEventListener('open', onOpen, { once: true });
+}
+
+function showManualOffer(blob) {
+  $('manual-host-pending').classList.remove('hidden');
+  $('manual-host-offer').value = blob;
+  setStatus('Offer ready — copy the box below to your friend, then paste their answer.');
+}
+function showManualAnswer(blob) {
+  $('manual-join-pending').classList.remove('hidden');
+  $('manual-join-answer').value = blob;
+  setStatus('Answer ready — copy the box below back to your friend.');
 }
 
 function startWatchdog(label) {
@@ -417,4 +647,22 @@ $('btn-resign').addEventListener('click', () => {
   if (!game) return;
   try { sendOutbound(game.localResign()); } catch (e) { log('!! ' + e); }
   refresh();
+});
+
+// Manual-RTC (zero-server, copy-paste only) buttons.
+$('btn-manual-host').addEventListener('click', () => {
+  setupManualHost().catch((e) =>
+    showBanner('<h3>Manual host failed</h3><div>' + (e.message || e) + '</div>'));
+});
+$('btn-manual-join').addEventListener('click', () => {
+  const offer = $('manual-join-offer').value.trim();
+  if (!offer) { setStatus('Paste the host\'s offer first.'); return; }
+  setupManualJoin(offer).catch((e) =>
+    showBanner('<h3>Manual join failed</h3><div>' + (e.message || e) + '</div>'));
+});
+$('btn-manual-finish').addEventListener('click', () => {
+  const answer = $('manual-host-answer').value.trim();
+  if (!answer) { setStatus('Paste your friend\'s answer first.'); return; }
+  applyManualAnswer(answer).catch((e) =>
+    showBanner('<h3>Manual finish failed</h3><div>' + (e.message || e) + '</div>'));
 });

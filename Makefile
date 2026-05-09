@@ -117,6 +117,13 @@ wasm-test: wasm
 e2e:
 	node tests/e2e_browser.mjs casual
 	node tests/e2e_browser.mjs crypto
+	node tests/e2e_manual.mjs casual
+	node tests/e2e_manual.mjs crypto
+
+.PHONY: e2e-manual
+e2e-manual:
+	node tests/e2e_manual.mjs casual
+	node tests/e2e_manual.mjs crypto
 
 .PHONY: serve
 serve:

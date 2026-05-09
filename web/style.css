@@ -173,4 +173,55 @@ table.crib td.zh.black  { color: #d8d8d8; }
 @media (max-width: 700px) {
   .crib-grid { grid-template-columns: 1fr; }
   .play-grid { grid-template-columns: 1fr; }
+  .manual-pair { grid-template-columns: 1fr; }
 }
+
+/* --- manual SDP exchange --- */
+.manual-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+.manual-side {
+  background: #1a1a1c;
+  border: 1px solid #2f2f33;
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+.manual-side h3 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.manual-side label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 8px 0 4px 0;
+}
+.manual-side textarea {
+  width: 100%;
+  background: #0f0f10;
+  color: var(--fg);
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  resize: vertical;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+.manual-side button {
+  margin-top: 8px;
+}
+.manual-side .hidden { display: none; }
+#manual .hint {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+#manual .hint em { color: var(--fg); font-style: normal; }

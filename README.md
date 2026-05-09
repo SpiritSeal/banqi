@@ -53,11 +53,39 @@ Serve the static page locally:
 
 ## Play
 
+Two transports are available; pick whichever fits your situation.
+
+### A. PeerJS (default — works cross-network)
+
 1. Open `index.html` in two browser tabs (or share the URL with a friend).
 2. In one tab, choose a mode and click **Create game**. Copy the peer ID shown.
 3. In the other tab, paste the peer ID and click **Join game**.
 4. Setup completes in under a second; click any face-down cell to flip it. The
    color of the flipped piece becomes yours.
+
+### B. Manual P2P (no server, no broker, no relay)
+
+This is the **zero-dependency-at-runtime** path: pure browser-to-browser
+WebRTC with manual signalling. No PeerJS broker, no Node relay, no TURN
+service — just one ~3 KB text blob each direction.
+
+1. Both peers open the page (e.g. the GitHub Pages URL).
+2. **Host** (one peer) clicks *1. Create offer* under "Manual P2P (no
+   server)". The browser may ask for microphone permission — granting it
+   reveals your raw LAN IP for direct same-network play; **no audio is
+   recorded or transmitted.** Denying still works on most cross-network
+   setups via STUN.
+3. Host copies the offer blob and sends it to the other peer (SMS, email,
+   AirDrop, anything that ferries text).
+4. **Joiner** pastes that blob into the offer textarea, clicks *2. Generate
+   answer*, copies the answer blob back to host.
+5. Host pastes the answer, clicks *3. Connect*. Game starts.
+
+Trade-offs vs PeerJS:
+* No third-party server in the loop, ever.
+* Two manual paste steps instead of "share a peer ID".
+* Same-LAN cross-machine without router NAT-hairpin support requires
+  granting microphone permission (so Chrome exposes raw LAN IPs).
 
 ### Networking notes
 
