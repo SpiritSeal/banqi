@@ -3,17 +3,17 @@
 // Elo computation, and reconnection by re-reading the message log.
 //
 // Run with: node --test server/tests/integration.mjs
-// Requires SERVER_SECRET, otherwise uses a dev-only fallback.
+// Requires DATABASE_URL pointing to a PostgreSQL instance, e.g.:
+//   DATABASE_URL=postgresql://localhost/banqi_test npm test
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { unlinkSync } from 'node:fs';
 import { buildApp } from '../src/index.mjs';
 
 const PORT = 19181;
-const DB   = `./test-banqi-${process.pid}.db`;
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://localhost/banqi_test';
 
-let server, baseUrl;
+let server, db, baseUrl;
 
 async function signInAs(name) {
   // /auth/dev sets a session cookie via redirect; we capture the cookie.
@@ -35,25 +35,26 @@ async function authedFetch(cookie, path, init = {}) {
 
 before(async () => {
   process.env.AUTH_DEV = '1';
-  process.env.PORT = String(PORT);
-  process.env.DATABASE_FILE = DB;
   process.env.SERVER_SECRET = 'test-secret-do-not-use-in-prod';
-  const built = buildApp({
-    databaseFile: DB,
+  const built = await buildApp({
+    databaseUrl: DATABASE_URL,
     serverSecret: process.env.SERVER_SECRET,
     publicUrl: `http://localhost:${PORT}`,
     envOverride: process.env,
   });
+  db = built.db;
   server = built.server;
+  // Wipe all data from a previous run so tests start from a clean slate.
+  await db.query(
+    'TRUNCATE finalize_claims, elo_history, messages, games, users RESTART IDENTITY CASCADE'
+  );
   await new Promise((r) => server.listen(PORT, r));
   baseUrl = `http://localhost:${PORT}`;
 });
 
 after(async () => {
   await new Promise((r) => server.close(r));
-  try { unlinkSync(DB); } catch (_) {}
-  try { unlinkSync(`${DB}-wal`); } catch (_) {}
-  try { unlinkSync(`${DB}-shm`); } catch (_) {}
+  await db.end();
 });
 
 describe('banqi relay backend', () => {

@@ -5,6 +5,8 @@ import { getUser, headToHead } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 import { deriveUserSeedHex } from '../identity.mjs';
 
+const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+
 export function usersRouter({ db, serverSecret }) {
   const r = express.Router();
 
@@ -25,17 +27,17 @@ export function usersRouter({ db, serverSecret }) {
     });
   });
 
-  r.get('/users/:id', (req, res) => {
-    const u = getUser(db, +req.params.id);
+  r.get('/users/:id', asyncRoute(async (req, res) => {
+    const u = await getUser(db, +req.params.id);
     if (!u) return res.status(404).json({ error: 'not found' });
     res.json({
       id: u.id,
       display_name: u.display_name,
       avatar_url: u.avatar_url,
       elo: u.elo,
-      head_to_head: headToHead(db, u.id),
+      head_to_head: await headToHead(db, u.id),
     });
-  });
+  }));
 
   return r;
 }

@@ -21,6 +21,20 @@ jobs:
   server:
     name: Relay server tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: banqi_test
+          POSTGRES_USER: banqi
+          POSTGRES_PASSWORD: banqi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +48,8 @@ jobs:
 
       - name: Run relay integration tests
         working-directory: server
+        env:
+          DATABASE_URL: postgresql://banqi:banqi@localhost:5432/banqi_test
         run: npm test
 
   wasm-smoke:
