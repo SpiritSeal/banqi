@@ -1,0 +1,42 @@
+# Example Fly.io deploy config. Adjust app name and primary_region before
+# `fly launch` / `fly deploy`. Uses a 1 GB persistent volume for the SQLite
+# file. To set secrets:
+#   fly secrets set SERVER_SECRET="$(openssl rand -hex 32)" \
+#                   GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... \
+#                   GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
+#                   PUBLIC_URL=https://your-app.fly.dev
+
+app = "banqi-relay"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+  dockerfile_target = ""
+  # If launching from the repo root, Fly looks for ./Dockerfile by default.
+  # We keep our Dockerfile inside server/. Use:
+  #   fly deploy --dockerfile server/Dockerfile --build-target ""
+  # or move this file to the repo root.
+
+[env]
+  PORT          = "8080"
+  DATABASE_FILE = "/data/banqi.db"
+
+[mounts]
+  source      = "banqi_data"
+  destination = "/data"
+
+[[services]]
+  protocol      = "tcp"
+  internal_port = 8080
+
+  [[services.ports]]
+    handlers = ["http"]
+    port     = 80
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port     = 443
+
+  [services.concurrency]
+    type        = "connections"
+    hard_limit  = 200
+    soft_limit  = 100

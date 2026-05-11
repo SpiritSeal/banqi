@@ -122,6 +122,22 @@ e2e:
 serve:
 	cd $(WEB_DIR) && python3 -m http.server 8080
 
+# Federated relay server (Node.js + SQLite). For local dev, just run
+# `make server-dev` and open http://localhost:8080. Set AUTH_DEV=1 in
+# server/.env for the dev-only username sign-in route.
+.PHONY: server-install server-dev server-test server-docker
+server-install:
+	cd server && npm install
+
+server-dev: server-install
+	cd server && AUTH_DEV=1 npm run dev
+
+server-test: server-install
+	cd server && npm test
+
+server-docker:
+	docker build -t banqi-relay -f server/Dockerfile .
+
 .PHONY: clean
 clean:
 	rm -rf $(BUILD_DIR) $(WEB_DIR)/banqi.js $(WEB_DIR)/banqi.wasm

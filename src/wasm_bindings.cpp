@@ -41,6 +41,37 @@ public:
         return create(false, mode_int, game_id);
     }
 
+    // Seeded variants. `seed_hex` is a 64-char hex string (32 bytes). Used for
+    // reconnection in the federated relay flow so a fresh Game reconstructs the
+    // same Ed25519 keypair across sessions.
+    static std::shared_ptr<GameWrapper> create_host_with_seed(
+        int mode_int, const std::string& game_id, const std::string& seed_hex) {
+        return create_with_seed(true, mode_int, game_id, seed_hex);
+    }
+    static std::shared_ptr<GameWrapper> create_join_with_seed(
+        int mode_int, const std::string& game_id, const std::string& seed_hex) {
+        return create_with_seed(false, mode_int, game_id, seed_hex);
+    }
+
+    static std::shared_ptr<GameWrapper> create_with_seed(
+        bool is_host, int mode_int, const std::string& game_id,
+        const std::string& seed_hex) {
+        Mode m = (mode_int == 2) ? Mode::Crypto : Mode::Casual;
+        auto bytes = from_hex(seed_hex);
+        if (bytes.size() != 32) {
+            throw std::runtime_error("create_with_seed: seed must be 32 bytes hex");
+        }
+        std::array<uint8_t, 32> seed{};
+        std::copy(bytes.begin(), bytes.end(), seed.begin());
+        if (is_host) {
+            return std::shared_ptr<GameWrapper>(new GameWrapper(
+                Game::create_host_with_seed(m, game_id, shared_prng(), seed)));
+        } else {
+            return std::shared_ptr<GameWrapper>(new GameWrapper(
+                Game::create_join_with_seed(m, game_id, shared_prng(), seed)));
+        }
+    }
+
     // All entry points return the outbound messages produced by the call,
     // serialized as JSON strings, joined by '\n' (one message per line).
     std::string start() {
@@ -97,6 +128,8 @@ public:
         j["game_over"]       = game_.game_over();
         j["winner"]          = (int)game_.rules().winner();
         j["transcript_seq"]  = (uint64_t)game_.transcript().size();
+        j["tip_hash"]        = to_hex(game_.transcript().tip_hash().data(),
+                                       game_.transcript().tip_hash().size());
 
         json cells = json::array();
         for (int i = 0; i < BanqiRules::CELLS; ++i) {
@@ -148,8 +181,10 @@ EMSCRIPTEN_BINDINGS(banqi_module) {
     using namespace banqi;
     class_<GameWrapper>("Game")
         .smart_ptr<std::shared_ptr<GameWrapper>>("Game")
-        .class_function("createHost", &GameWrapper::create_host)
-        .class_function("createJoin", &GameWrapper::create_join)
+        .class_function("createHost",         &GameWrapper::create_host)
+        .class_function("createJoin",         &GameWrapper::create_join)
+        .class_function("createHostWithSeed", &GameWrapper::create_host_with_seed)
+        .class_function("createJoinWithSeed", &GameWrapper::create_join_with_seed)
         .function("start",            &GameWrapper::start)
         .function("handleMessage",    &GameWrapper::handle_message)
         .function("localFlip",        &GameWrapper::local_flip)

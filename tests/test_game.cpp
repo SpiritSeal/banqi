@@ -194,6 +194,129 @@ TEST_CASE("Game: crypto full game — sides remain in sync") {
     CHECK(host.transcript().tip_hash() == join.transcript().tip_hash());
 }
 
+TEST_CASE("Game: seeded constructor yields stable pubkey") {
+    std::array<uint8_t, 32> seed{};
+    seed[0] = 42;
+    MockPrng pa(1), pa2(1);
+    auto g1 = Game::create_host_with_seed(Mode::Casual, "g", pa,  seed);
+    auto g2 = Game::create_host_with_seed(Mode::Casual, "g", pa2, seed);
+    CHECK(g1.my_public_key() == g2.my_public_key());
+}
+
+TEST_CASE("Game: reconnect-by-replay — fresh seeded Game reconstructs identical "
+          "tip_hash and board") {
+    // The core invariant for federated correspondence games: a client can
+    // reconstruct identical state given (1) the same identity seed and (2)
+    // the chronological log of messages the relay observed. Replay strategy:
+    //  - own MOVE_ENTRYs are re-executed locally via local_flip / local_move
+    //    so that append_local re-produces the same signed entry (signatures
+    //    are deterministic because Signer::from_seed gives the same key)
+    //  - peer messages are fed through handle_message normally
+    //  - own setup / reveal / hello messages are skipped: the fresh Game
+    //    re-produces them in response to the peer messages
+    std::array<uint8_t, 32> host_seed{}, join_seed{};
+    host_seed[0] = 0x10;  host_seed[31] = 0xAA;
+    join_seed[0] = 0x20;  join_seed[31] = 0xBB;
+
+    MockPrng dummy_a(1), dummy_b(2);
+    auto host1 = Game::create_host_with_seed(Mode::Casual, "g", dummy_a, host_seed);
+    auto join1 = Game::create_join_with_seed(Mode::Casual, "g", dummy_b, join_seed);
+
+    enum Sender { FromHost, FromJoin };
+    std::vector<std::pair<Sender, json>> log;
+
+    auto record = [&](Sender s, const std::vector<json>& msgs) {
+        for (const auto& m : msgs) log.push_back({s, m});
+    };
+    auto pump_capture = [&](std::vector<json> ho, std::vector<json> jo) {
+        record(FromHost, ho);
+        record(FromJoin, jo);
+        int safety = 200;
+        while ((!ho.empty() || !jo.empty()) && safety-- > 0) {
+            std::vector<json> next_h, next_j;
+            for (const auto& m : ho) join1.handle_message(m, next_j);
+            for (const auto& m : jo) host1.handle_message(m, next_h);
+            record(FromHost, next_h);
+            record(FromJoin, next_j);
+            ho = std::move(next_h);
+            jo = std::move(next_j);
+        }
+        REQUIRE(safety > 0);
+    };
+
+    {
+        std::vector<json> ho, jo;
+        host1.start(ho); join1.start(jo);
+        pump_capture(std::move(ho), std::move(jo));
+    }
+    REQUIRE(host1.setup_done());
+
+    // Track the actions host1 takes locally so the replay can reproduce them
+    // in the same order. (The relay's log alone is enough to derive these,
+    // but capturing them here keeps the test self-contained.)
+    std::vector<MoveAction> host_local_actions;
+
+    auto play_one = [&]() {
+        Game& mover = host1.is_my_turn() ? host1 : join1;
+        bool host_moved = host1.is_my_turn();
+        auto moves = mover.rules().legal_moves(mover.my_player_index());
+        REQUIRE_FALSE(moves.empty());
+        Move pick = moves[0];
+        for (const auto& m : moves) if (m.is_flip()) { pick = m; break; }
+        std::vector<json> mo;
+        if (pick.is_flip()) {
+            mover.local_flip(pick.to, mo);
+            if (host_moved) host_local_actions.push_back({MoveAction::Kind::Flip, -1, pick.to});
+        } else {
+            mover.local_move(pick.from, pick.to, mo);
+            if (host_moved) host_local_actions.push_back({MoveAction::Kind::Move, pick.from, pick.to});
+        }
+        if (host_moved) pump_capture(std::move(mo), {});
+        else            pump_capture({}, std::move(mo));
+    };
+    for (int i = 0; i < 6; ++i) play_one();
+
+    const auto host_tip = host1.transcript().tip_hash();
+    REQUIRE(host_tip == join1.transcript().tip_hash());
+    const std::size_t host_seq = host1.transcript().size();
+
+    // Fresh page-load: construct a new Game with the same id_seed, replay.
+    MockPrng dummy_c(99);
+    auto host_replay = Game::create_host_with_seed(Mode::Casual, "g", dummy_c, host_seed);
+    std::vector<json> trash;
+    host_replay.start(trash);   // emit own HELLO (we'll skip the logged copy)
+
+    std::size_t next_own_action = 0;
+    for (const auto& [sender, msg] : log) {
+        if (sender == FromHost) {
+            // host_replay produces these itself in response to peer input;
+            // only MOVE_ENTRYs need to be re-driven via local_*.
+            auto cat = categorize(msg);
+            if (cat == MessageCategory::MoveEntry) {
+                REQUIRE(next_own_action < host_local_actions.size());
+                const auto& a = host_local_actions[next_own_action++];
+                std::vector<json> out;
+                if (a.kind == MoveAction::Kind::Flip) host_replay.local_flip(a.to, out);
+                else if (a.kind == MoveAction::Kind::Move) host_replay.local_move(a.from, a.to, out);
+                else host_replay.local_resign(out);
+            }
+            // Skip HELLO/SETUP/REVEAL_KEY from own side — they regenerate naturally.
+        } else {
+            std::vector<json> out;
+            host_replay.handle_message(msg, out);
+        }
+    }
+
+    CHECK(host_replay.transcript().size() == host_seq);
+    CHECK(host_replay.transcript().tip_hash() == host_tip);
+    for (int i = 0; i < 32; ++i) {
+        CHECK(host_replay.rules().at(i).state == host1.rules().at(i).state);
+        if (host_replay.rules().at(i).state == Cell::State::FaceUp) {
+            CHECK(host_replay.rules().at(i).piece == host1.rules().at(i).piece);
+        }
+    }
+}
+
 TEST_CASE("Game: rejects illegal local move") {
     MockPrng pa(301), pb(302);
     auto host = Game::create_host(Mode::Casual, "g", pa);

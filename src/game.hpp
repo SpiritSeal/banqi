@@ -28,6 +28,17 @@ public:
     static Game create_host(Mode mode, std::string game_id, IPrng& prng);
     static Game create_join(Mode mode, std::string game_id, IPrng& prng);
 
+    // Variants that derive the local Ed25519 identity from a stable 32-byte
+    // seed instead of fresh CSPRNG bytes. Used by the federated relay so that
+    // a reconnecting client reconstructs the same pubkey, allowing
+    // replay-from-transcript across sessions.
+    static Game create_host_with_seed(Mode mode, std::string game_id,
+                                      IPrng& prng,
+                                      const std::array<uint8_t, 32>& id_seed);
+    static Game create_join_with_seed(Mode mode, std::string game_id,
+                                      IPrng& prng,
+                                      const std::array<uint8_t, 32>& id_seed);
+
     // Emit the initial HELLO (and, for the host, kicks off the shuffle
     // protocol's start_host messages).
     void start(std::vector<json>& out);
@@ -59,6 +70,8 @@ public:
 
 private:
     Game(bool is_host, Mode mode, std::string game_id, IPrng& prng);
+    Game(bool is_host, Mode mode, std::string game_id, IPrng& prng,
+         const std::array<uint8_t, 32>& id_seed);
     void install_protocol();
     void emit_hello(std::vector<json>& out);
 
@@ -77,6 +90,10 @@ private:
     bool is_host_;
     Mode mode_;
     std::string game_id_;
+    // owned_prng_ is populated by the seeded constructor only. Declared
+    // before protocol_ so it is destructed AFTER protocol_ (which holds a
+    // reference to it).
+    std::unique_ptr<IPrng> owned_prng_;
     IPrng* prng_;
     Signer me_;
     std::optional<PublicKey> peer_pk_;

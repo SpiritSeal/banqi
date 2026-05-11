@@ -1,186 +1,149 @@
-# Banqi P2P (半棋)
+# Banqi (半棋)
 
-Two-player Banqi (Chinese Dark Chess, Taiwanese rules) playable in the browser,
-end-to-end peer-to-peer. C++17 game core compiled to WebAssembly; PeerJS handles
-WebRTC signaling. No game server. No persistent backend.
+Two-player Banqi (Chinese Dark Chess, Taiwanese rules) in the browser.
+C++17 game core compiled to WebAssembly. Three ways to play:
 
-Two interchangeable shuffle protocols, selectable per game:
-
-* **Casual** — commit-reveal seed exchange + deterministic Fisher–Yates +
-  Ed25519-signed move transcript. Both clients learn the layout once seeds are
-  revealed and rely on each other not to peek; the signed transcript prevents
-  history forgery.
-* **Crypto** — SRA mental poker. Each square stays cryptographically hidden
-  until both players publish their per-square decryption keys. No client ever
-  sees an unflipped piece's identity.
-
-## Live demo
-
-A pre-built copy is deployed automatically to GitHub Pages on every push to
-`main`.  Open the URL shown in the repo's **Pages** settings — no install
-needed.
-
-## CI / CD
-
-| Workflow | Trigger | What it does |
-| --- | --- | --- |
-| `ci.yml` | every push / PR | runs the native doctest suite (83 tests) |
-| `deploy.yml` | push to `main` or `claude/…` branch, or manual | installs emsdk, runs `make wasm`, deploys `web/` to GitHub Pages |
-
-To enable GitHub Pages in a fork:  
-*Settings → Pages → Source → GitHub Actions.*
-
-## Build
-
-Native test suite (no Emscripten needed):
-
-    make test          # runs the doctest suite
-
-WebAssembly build for the browser:
-
-    # Install emsdk once:
-    git clone https://github.com/emscripten-core/emsdk.git
-    cd emsdk && ./emsdk install latest && ./emsdk activate latest
-    source ./emsdk_env.sh
-
-    # Then:
-    make wasm          # produces web/banqi.js + web/banqi.wasm
-    make wasm-test     # node-based end-to-end smoke run, both modes
-
-Serve the static page locally:
-
-    make serve         # http://localhost:8080
-
-## Play
-
-1. Open `index.html` in two browser tabs (or share the URL with a friend).
-2. In one tab, choose a mode and click **Create game**. Copy the peer ID shown.
-3. In the other tab, paste the peer ID and click **Join game**.
-4. Setup completes in under a second; click any face-down cell to flip it. The
-   color of the flipped piece becomes yours.
-
-### Networking notes
-
-Connection setup uses PeerJS's free WebRTC signalling broker; gameplay flows
-end-to-end over a WebRTC DataChannel.  Because no TURN relay is configured by
-default, **two peers behind the same router won't connect unless that router
-supports NAT hairpinning** — a common failure mode in home-network testing.
-Workarounds:
-
-* Put one peer on a different network (e.g. cellular) for testing, or
-* Pass your own TURN server in the URL:
-  `https://…/?turn=turn:host:port&user=U&pass=P`.
-  The credentials get supplied to `RTCPeerConnection`'s `iceServers` config.
-
-If the connection cannot be established, the lobby panel surfaces the ICE
-state and times out after 20 seconds with a diagnostic message.
+1. **Online with a friend** — sign in (GitHub or Google), click "Start a
+   game", copy the link, send it to your friend. They click it; you play.
+   Games persist on the relay, so you can leave and come back later.
+   Every relay keeps an Elo leaderboard.
+2. **Over the board** — two players, one device, no network, no sign-in.
+3. **Classic peer-to-peer** — pure WebRTC, no server, no account, no
+   rating. Hidden behind an "Advanced" disclosure.
 
 ## Architecture
 
 ```
-src/bigint.{hpp,cpp}        Fixed-width 256-bit modular arithmetic.
-src/hash.{hpp,cpp}          SHA-512 + deterministic PRF (Monocypher).
-src/prng.{hpp,cpp}          CSPRNG abstraction (System / Mock).
-src/signer.{hpp,cpp}        Ed25519 keypair sign/verify (Monocypher).
-src/transcript.{hpp,cpp}    Append-only signed move log.
-src/sra.{hpp,cpp}           SRA commutative encryption primitive.
-src/piece.hpp               32-piece encoding (codes ↔ Color/PieceType).
-src/banqi_rules.{hpp,cpp}   Board, move generation, captures, terminal.
-src/shuffle_protocol.hpp    IShuffleProtocol interface.
-src/casual_shuffle.{hpp,cpp}     Casual implementation.
-src/mental_poker.{hpp,cpp}       Crypto implementation.
-src/messages.{hpp,cpp}      JSON envelope helpers.
-src/game.{hpp,cpp}          Game facade / state machine.
-src/wasm_bindings.cpp       embind exports for JS.
-web/                        UI (HTML/CSS/JS + PeerJS).
-tests/                      doctest suite + node WASM smoke harness.
+browser  ── WebSocket ──┐
+                        │
+browser  ── WebSocket ──┴──►  Node.js relay
+                                ├─ Express (REST + OAuth)
+                                ├─ ws       (live message relay)
+                                └─ SQLite   (users, games, messages, Elo)
+
+browser ◄── WebAssembly ─── C++ rules engine, signed transcript,
+                              SRA mental-poker shuffle (optional)
 ```
 
-Both shuffle protocols implement `IShuffleProtocol`, and the `Game` facade
-holds one via `std::unique_ptr`. Switching the mode at construction is the
-only difference between the two flows; everything downstream — the rule
-engine, the signed transcript, the move handlers — is mode-agnostic.
+The relay is a self-hostable Node.js process — anyone can run their own
+"federation member" instance. Friends on the same relay play each other.
+
+Authoritative game logic runs in the browser via the same `Game` class
+the P2P mode uses; the relay is a persistent, authenticated message bus
+and rating engine. It doesn't validate moves.
+
+A single 32-byte identity seed, derived from the relay's `SERVER_SECRET`
+plus the user's OAuth identity, is delivered to the browser at sign-in.
+The C++ Game uses it to (a) build the local Ed25519 keypair and (b) seed
+the shuffle PRNG. This makes the game deterministic in (id_seed,
+game_id), so reconnecting clients reconstruct identical state by replaying
+the relay's message log. Replay correctness is proven by
+`tests/test_game.cpp` "Game: reconnect-by-replay".
+
+## Layout
+
+```
+src/                C++17 game core (rules, transcript, signer, shuffle, …)
+src/wasm_bindings   embind exports for the browser
+web/                static client (HTML/CSS/JS + compiled WASM)
+server/             Node.js federated relay (REST + WS + SQLite)
+server/README.md    deploy instructions (Docker, Fly.io)
+tests/              C++ doctest suite + node WASM smoke harness + Playwright E2E
+tests/wasm_smoke    multi-Game pump pattern (also used by OTB and replay)
+```
+
+## Build
+
+```bash
+make test           # C++ doctest suite (85 cases incl. reconnect-replay)
+make wasm           # compile WASM (requires emsdk; see "WASM build" below)
+make wasm-test      # node-driven full-game smoke run
+make e2e            # real-browser Playwright test (P2P-classic mode)
+make serve          # serve web/ as static files on :8080
+
+make server-install # install relay deps
+make server-dev     # run relay with AUTH_DEV=1 on :8080
+make server-test    # relay integration tests
+make server-docker  # build the relay docker image
+```
+
+### Running locally (online play)
+
+```bash
+make wasm          # one-time
+make server-dev    # serves web/ + relay on :8080
+```
+
+Open <http://localhost:8080> in two browsers, sign in (dev mode) as two
+different names, start a game in one, follow the room link in the other.
+
+### WASM build
+
+```bash
+git clone https://github.com/emscripten-core/emsdk.git
+cd emsdk && ./emsdk install latest && ./emsdk activate latest
+source ./emsdk_env.sh
+cd .. && make wasm
+```
+
+### Deploying your own relay
+
+See [`server/README.md`](server/README.md) for Docker + Fly.io
+instructions. The relay serves both the API and the static client, so
+one process is enough.
 
 ## Banqi rules (Taiwanese)
 
-* 4×8 board, 32 pieces, 16 per side. Per side: 1 General, 2 Advisors,
+- 4×8 board, 32 pieces, 16 per side. Per side: 1 General, 2 Advisors,
   2 Elephants, 2 Chariots, 2 Horses, 2 Cannons, 5 Soldiers.
-* Rank: General(7) > Advisor(6) > Elephant(5) > Chariot(4) > Horse(3) >
-  Cannon(2) > Soldier(1).
-* On your turn, flip a face-down piece OR move/capture with one of your
-  face-up pieces. The first flipper plays the revealed color.
-* Non-cannon piece: 1 step orthogonal to empty, or capture an adjacent
-  face-up enemy of equal-or-lower rank. **Soldier captures General; General
-  cannot capture Soldier.**
-* Cannon: 1 step orthogonal to empty (no adjacent capture), or jump any
-  distance along a row/column over **exactly one** screen piece (any color,
-  face-up or face-down) onto the target. Cannons ignore rank and may capture
-  face-down pieces (which are then revealed).
-* You lose if you have no legal move (no face-down cells and no movable
-  face-up pieces) or no remaining pieces.
+- Rank: General(7) > Advisor(6) > Elephant(5) > Chariot(4) > Horse(3) >
+  Cannon(2) > Soldier(1). **Soldier captures General**; General cannot
+  capture Soldier.
+- On your turn, flip a face-down piece OR move one of your face-up
+  pieces one orthogonal step. Capture an adjacent face-up enemy of
+  equal-or-lower rank (with the Soldier/General exception above).
+- **Cannon**: never captures adjacently. Jumps along a row or column
+  over exactly one screen piece (any color, face-up or face-down) onto
+  the target. Ignores rank; may capture face-down pieces (revealed on
+  capture).
+- The very first flip determines that player's color. You lose if you
+  have no legal move.
 
-Out of v1 scope: draw rules (50-move, repetition), time controls, takeback,
-chat, persistent identity / matchmaking.
+## Shuffle modes
+
+- **Casual** — commit-reveal seed exchange + deterministic Fisher–Yates +
+  Ed25519-signed transcript. Both clients learn the layout once seeds
+  are revealed; the signed transcript prevents history forgery.
+- **Crypto** — SRA mental poker. Each square stays cryptographically
+  hidden until both players publish their per-square decryption key. No
+  client ever sees an unflipped piece's identity.
+
+In federated play the relay observes the same messages either mode
+produces; the crypto mode's hidden-piece property still holds between
+the two clients.
 
 ## Threat model
 
-| Concern                                       | Casual | Crypto |
-| ---                                           | ---    | ---    |
-| Peer cannot see unflipped piece identities    | ✗      | ✓      |
-| Move history is non-repudiable                | ✓      | ✓      |
-| Game state is fair (random + auditable)       | ✓      | ✓      |
-| Cheat-resistant against malicious peers       | partial| partial — no zk shuffle proof |
+| Concern                                       | Federated | P2P-classic / OTB |
+| ---                                           | ---       | ---               |
+| Peer cannot see unflipped piece identities    | Crypto: ✓ | Crypto: ✓; Casual: ✗ |
+| Move history is non-repudiable                | ✓         | ✓                 |
+| Relay cannot fabricate moves on your behalf   | ✓ (sig)   | n/a               |
+| Relay sees plaintext game flow                | ✓ (yes)   | n/a               |
+| Cheat-resistant against malicious clients     | partial   | partial           |
 
-The crypto mode uses a 256-bit safe prime `p = 2q+1` and SRA commutative
-encryption. Confidentiality of the unflipped layout reduces to the discrete
-log problem mod p. Integrity checks reject any malformed ciphertext or
-plaintext that decrypts outside the 1..32 range.
+The federated relay knows every signed move because it forwards them;
+the crypto shuffle still keeps unflipped piece identities secret between
+clients.
 
-A full tournament-grade implementation would add Wikström-style zero-knowledge
-proofs of correct shuffle so that neither peer can rig the layout to favour
-themselves. That is out of scope here.
+## Testing
 
-## Test coverage
-
-Three layers, each catching a different class of bug:
-
-* `make test` — native doctest suite (83 cases, ~25 000 assertions). Pure
-  C++ unit + integration tests; runs in <1 s.
-* `make wasm-test` — node loads the WASM module and runs the full protocol
-  end-to-end, in-process, both modes. Catches WASM-binding regressions.
-* `make e2e` — **real-browser** Playwright test. Spawns a static server, a
-  local PeerServer (so it works offline), and two Chromium pages, then drives
-  Create + Join through actual PeerJS / WebRTC, runs ~6 moves, asserts board
-  convergence after each. Requires `npm install && npx playwright install
-  chromium`.
-
-`make test` covers:
-
-* BigInt: round-trips, comparisons, modexp via Fermat's little theorem on
-  secp256k1's field prime, modular inverse round-trip, multiplicative
-  commutativity (the mental-poker base property).
-* SHA-512: NIST test vectors.
-* Ed25519: RFC 8032 test vector 1 (empty message), tampered-message and
-  wrong-pubkey rejection, deterministic from seed.
-* PRNG: deterministic-from-seed, uniform-below correctness, coprime sampling.
-* Transcript: chain hashing, signature verification, rejected forgeries.
-* SRA: encrypt-decrypt round-trip, commutativity, master-to-per-position
-  rekey identity.
-* Banqi rules: every piece type's move set, every capture rule (incl. the
-  Soldier/General exception), cannon mechanics on face-up and face-down
-  screens, terminal detection.
-* Casual shuffle: end-to-end commit-reveal, determinism, tampered-seed
-  rejection.
-* Mental poker: 32-cell shuffle correctness, single-cell reveal does not
-  disclose other cells, tampered-ciphertext rejection.
-* Game facade: handshake, full game in both modes with per-step
-  cross-side board synchronization and identical signed-transcript tip
-  hash.
-
-`make wasm-test` runs both modes end-to-end through the WASM module under
-node (~50 moves each).
+- `make test` — pure C++ unit + integration tests
+- `make wasm-test` — full WASM game through node
+- `make server-test` — relay integration tests (8 cases, end-to-end)
+- `make e2e` — real-browser Playwright over the legacy P2P flow
 
 ## License
 
-Source code: MIT. Vendored third-party headers retain their own licenses
+Source: MIT. Vendored third-party headers retain their own licenses
 (see `third_party/`).
