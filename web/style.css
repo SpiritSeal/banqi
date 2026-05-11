@@ -84,7 +84,7 @@ button[disabled] { opacity: 0.4; cursor: not-allowed; }
 /* ---- lobby ---- */
 .lobby-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-top: 12px;
 }
@@ -95,7 +95,10 @@ button[disabled] { opacity: 0.4; cursor: not-allowed; }
   padding: 14px 16px;
 }
 .lobby-card h2 { margin-top: 0; margin-bottom: 6px; font-size: 17px; color: var(--accent); }
-@media (max-width: 720px) {
+@media (max-width: 900px) {
+  .lobby-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 620px) {
   .lobby-grid { grid-template-columns: 1fr; }
 }
 .me-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0 12px; border-bottom: 1px solid #2f2f33; margin-bottom: 12px; }
@@ -154,6 +157,25 @@ button[disabled] { opacity: 0.4; cursor: not-allowed; }
   border-radius: 6px;
   color: var(--accent);
   text-align: center;
+}
+
+/* ---- vs AI ---- */
+.ai-header { display: flex; flex-direction: column; gap: 6px; }
+.ai-meta { font-size: 13px; color: var(--muted); text-align: center; }
+.ai-thinking {
+  margin-top: 8px;
+  padding: 6px 12px;
+  background: #2a2416;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 13px;
+  text-align: center;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
 }
 
 /* ---- dashboard list ---- */
