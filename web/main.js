@@ -10,6 +10,7 @@
 
 import createBanqiModule from './banqi.js';
 import { RelayConnection, LoopbackConnection } from './relay.js';
+import { chooseMove, Difficulty } from './ai.js';
 
 const Module = await createBanqiModule();
 
@@ -20,6 +21,7 @@ const views = {
   lobby:       $('view-lobby'),
   game:        $('view-game'),
   otb:         $('view-otb'),
+  ai:          $('view-ai'),
   dashboard:   $('view-dashboard'),
   leaderboard: $('view-leaderboard'),
   profile:     $('view-profile'),
@@ -56,6 +58,7 @@ async function route() {
 
   switch (hash) {
     case '#/otb':         return openOTB();
+    case '#/ai':          return openAIGame();
     case '#/dashboard':   return renderDashboard();
     case '#/leaderboard': return renderLeaderboard();
     case '#/classic':     return renderClassicLobby();
@@ -99,6 +102,7 @@ function renderLobby() {
   $('btn-start-online').disabled = !me;
   $('btn-start-online').onclick = startOnlineGame;
   $('btn-otb').onclick = () => { location.hash = '#/otb'; };
+  $('btn-ai').onclick = () => { location.hash = '#/ai'; };
   $('btn-classic').onclick = () => { location.hash = '#/classic'; };
 }
 
@@ -342,6 +346,175 @@ function onOTBCellClick(idx, state) {
   if (idx === active.selected) { active.selected = null; refreshOTB(); return; }
   active.selected = null;
   refreshOTB();
+}
+
+// ---- vs AI ----
+//
+// The human is the host (player 0, moves first).
+// The AI is the join player (player 1).
+// Both sides use the same OTB loopback-transport structure; the AI simply
+// submits moves automatically instead of waiting for clicks.
+
+const AI_THINK_DELAY_MS = 350; // brief pause so moves feel natural
+
+function openAIGame() {
+  // Read difficulty from the lobby selector (retained across navigations).
+  const difficulty = $('lobby-ai-difficulty')?.value || Difficulty.MEDIUM;
+  _startAIGame(difficulty);
+}
+
+function _startAIGame(difficulty) {
+  showView('ai');
+
+  const gameId = `ai-${Date.now()}`;
+  const humanGame = Module.Game.createHost(1, gameId);  // human = host = player 0
+  const aiGame    = Module.Game.createJoin(1, gameId);  // AI    = join = player 1
+  const [humanTr, aiTr] = LoopbackConnection.pair();
+
+  // Wire the human transport: messages from the AI land here.
+  humanTr.on('data', (line) => {
+    try {
+      const out = humanGame.handleMessage(line);
+      if (out) humanTr.send(out);
+    } catch (e) { console.warn('human handleMessage:', e); }
+    refreshAI();
+  });
+
+  // Wire the AI transport: messages from the human land here.
+  aiTr.on('data', (line) => {
+    try {
+      const out = aiGame.handleMessage(line);
+      if (out) aiTr.send(out);
+    } catch (e) { console.warn('ai handleMessage:', e); }
+    refreshAI();
+    scheduleAIMove();
+  });
+
+  // Bootstrap handshake
+  humanTr.send(humanGame.start());
+  aiTr.send(aiGame.start());
+
+  active = {
+    isAI: true,
+    humanGame, aiGame, humanTr, aiTr,
+    difficulty,
+    selected: null,
+    aiThinking: false,
+    transport: 'ai',
+  };
+
+  // Button wiring
+  $('ai-resign').onclick = () => {
+    if (!active?.isAI) return;
+    const state = JSON.parse(active.humanGame.stateJson());
+    if (!state.setup_done || state.game_over) return;
+    if (state.side_to_move !== state.my_player_index) return; // only resign on your turn
+    try {
+      const out = active.humanGame.localResign();
+      active.humanTr.send(out);
+    } catch (e) { console.warn(e); }
+    refreshAI();
+  };
+  $('ai-new-game').onclick = () => {
+    const diff = active?.difficulty || Difficulty.MEDIUM;
+    _startAIGame(diff);
+  };
+
+  refreshAI();
+}
+
+function refreshAI() {
+  if (!active?.isAI) return;
+  const state = JSON.parse(active.humanGame.stateJson());
+  renderBoard($('ai-board'), state, (idx) => onAICellClick(idx, state));
+
+  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }[active.difficulty] || '';
+  let banner;
+  if (state.game_over) {
+    const w = state.winner;
+    if (w === state.my_color) banner = `You win! 🎉`;
+    else if (w !== 0)         banner = `AI wins. Better luck next time.`;
+    else                      banner = `Game over`;
+  } else if (!state.first_flip_done) {
+    banner = `Your turn — flip a piece to begin`;
+  } else if (state.side_to_move === state.my_player_index) {
+    banner = `Your turn (${colorWord(state.my_color)})`;
+  } else {
+    banner = active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(state.my_color === 1 ? 2 : 1)})`;
+  }
+  $('ai-banner').textContent = banner;
+  $('ai-meta').textContent = `Difficulty: ${diffLabel}`;
+  $('ai-resign').disabled = !state.setup_done || state.game_over || state.side_to_move !== state.my_player_index;
+  $('ai-new-game').disabled = false;
+  $('ai-thinking').classList.toggle('hidden', !active.aiThinking);
+}
+
+function onAICellClick(idx, state) {
+  if (!active?.isAI) return;
+  if (!state.setup_done || state.game_over) return;
+  if (state.side_to_move !== state.my_player_index) return; // not human's turn
+  if (active.aiThinking) return;
+
+  const c = state.cells[idx];
+  const legal = state.legal_moves_for_me;
+
+  if (active.selected == null) {
+    if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
+      try { active.humanTr.send(active.humanGame.localFlip(idx)); } catch (e) { console.warn(e); }
+      refreshAI();
+      return;
+    }
+    if (c.state === 'faceup' && c.color === state.my_color && legal.some(m => m.from === idx)) {
+      active.selected = idx;
+      refreshAI();
+    }
+    return;
+  }
+  if (legal.some(m => m.from === active.selected && m.to === idx)) {
+    const from = active.selected;
+    active.selected = null;
+    try { active.humanTr.send(active.humanGame.localMove(from, idx)); } catch (e) { console.warn(e); }
+    refreshAI();
+    return;
+  }
+  if (idx === active.selected) { active.selected = null; refreshAI(); return; }
+  active.selected = null;
+  refreshAI();
+}
+
+function scheduleAIMove() {
+  if (!active?.isAI) return;
+  const state = JSON.parse(active.aiGame.stateJson());
+  if (!state.setup_done || state.game_over) return;
+  if (state.side_to_move !== state.my_player_index) return; // not AI's turn
+
+  active.aiThinking = true;
+  refreshAI();
+
+  const thisSession = active; // capture to detect stale timeouts
+  setTimeout(() => {
+    if (active !== thisSession) return; // user started a new game
+
+    const freshState = JSON.parse(active.aiGame.stateJson());
+    if (freshState.game_over || freshState.side_to_move !== freshState.my_player_index) {
+      active.aiThinking = false;
+      refreshAI();
+      return;
+    }
+
+    try {
+      const move = chooseMove(freshState, freshState.my_player_index, active.difficulty);
+      if (move) {
+        let out;
+        if (move.from < 0) out = active.aiGame.localFlip(move.to);
+        else               out = active.aiGame.localMove(move.from, move.to);
+        if (out) active.aiTr.send(out);
+      }
+    } catch (e) { console.warn('AI move error:', e); }
+
+    active.aiThinking = false;
+    refreshAI();
+  }, AI_THINK_DELAY_MS);
 }
 
 // ---- shared rendering ----
