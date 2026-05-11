@@ -60,6 +60,11 @@ jobs:
 
   deploy:
     name: Deploy
+    # GitHub Pages only publishes from one branch (main). The build job above
+    # still runs on every triggered branch so we get WASM-compile coverage,
+    # but actual Pages publication is gated on main to avoid the deploy-pages
+    # action failing on non-default branches.
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
