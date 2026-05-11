@@ -5,3 +5,10 @@ tests/run_tests
 emsdk/
 .DS_Store
 node_modules/
+
+# Relay runtime artifacts.
+server/.env
+server/banqi.db
+server/banqi.db-wal
+server/banqi.db-shm
+server/test-banqi-*.db*

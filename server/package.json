@@ -1,0 +1,26 @@
+{
+  "name": "banqi-relay",
+  "version": "0.1.0",
+  "description": "Federated relay server for banqi-p2p: OAuth, correspondence games, Elo leaderboard",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev":   "node --watch src/index.mjs",
+    "test":  "node --test tests/integration.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3":         "^11.3.0",
+    "cookie":                 "^1.0.1",
+    "express":                "^4.21.0",
+    "express-session":        "^1.18.0",
+    "passport":               "^0.7.0",
+    "passport-github2":       "^0.1.12",
+    "passport-google-oauth20":"^2.0.0",
+    "ws":                     "^8.18.0",
+    "dotenv":                 "^16.4.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

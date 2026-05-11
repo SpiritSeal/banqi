@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - claude/banqi-game-implementation-NXe80
+      - claude/federated-multiplayer-game-MvynQ
   workflow_dispatch:
 
 permissions:
