@@ -128,4 +128,3 @@ jobs:
           service: banqi-relay
           region: ${{ vars.GCP_REGION }}
           image: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/banqi/banqi-relay:${{ github.sha }}
-          flags: --add-cloudsql-instances=${{ vars.GCP_CLOUD_SQL_INSTANCE }}
