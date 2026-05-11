@@ -12,12 +12,49 @@ Game Game::create_join(Mode mode, std::string game_id, IPrng& prng) {
     return Game(false, mode, std::move(game_id), prng);
 }
 
+Game Game::create_host_with_seed(Mode mode, std::string game_id, IPrng& prng,
+                                 const std::array<uint8_t, 32>& id_seed) {
+    return Game(true, mode, std::move(game_id), prng, id_seed);
+}
+
+Game Game::create_join_with_seed(Mode mode, std::string game_id, IPrng& prng,
+                                 const std::array<uint8_t, 32>& id_seed) {
+    return Game(false, mode, std::move(game_id), prng, id_seed);
+}
+
 Game::Game(bool is_host, Mode mode, std::string game_id, IPrng& prng)
     : is_host_(is_host),
       mode_(mode),
       game_id_(std::move(game_id)),
+      owned_prng_(nullptr),
       prng_(&prng),
       me_(Signer::generate(prng)) {
+    rules_.set_all_facedown();
+    install_protocol();
+}
+
+Game::Game(bool is_host, Mode mode, std::string game_id, IPrng& /*prng*/,
+           const std::array<uint8_t, 32>& id_seed)
+    : is_host_(is_host),
+      mode_(mode),
+      game_id_(std::move(game_id)),
+      owned_prng_(nullptr),
+      prng_(nullptr),
+      me_() {
+    // The seeded constructor ignores the caller's PRNG. Instead it derives:
+    //   * the local Ed25519 identity key, from SHA512("banqi-id-v1" || game_id || id_seed)
+    //   * a deterministic shuffle PRNG, from SHA512("banqi-shuffle-v1" || game_id || id_seed)
+    // Both are pure functions of (id_seed, game_id), which is what makes
+    // replay-from-transcript work: a reconnecting client constructs a Game
+    // with the same id_seed and produces identical local messages.
+    std::string id_seed_str(reinterpret_cast<const char*>(id_seed.data()), id_seed.size());
+    auto id_h      = sha512_concat({ "banqi-id-v1",      game_id_, id_seed_str });
+    auto shuffle_h = sha512_concat({ "banqi-shuffle-v1", game_id_, id_seed_str });
+    std::array<uint8_t, 32> id_key{};
+    std::copy(id_h.begin(), id_h.begin() + 32, id_key.begin());
+    me_ = Signer::from_seed(id_key);
+    owned_prng_ = std::make_unique<MockPrng>(shuffle_h);
+    prng_ = owned_prng_.get();
     rules_.set_all_facedown();
     install_protocol();
 }

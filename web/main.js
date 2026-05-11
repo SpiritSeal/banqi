@@ -1,311 +1,353 @@
-// Web entry point: PeerJS for signaling, embind module for game logic.
+// Banqi web client.
+//
+// Drives the C++ WASM Game over three transports:
+//   * federated   — WebSocket to the hosted relay (default for online play)
+//   * otb         — local loopback for one-device hot-seat (no network, no auth)
+//   * p2p-classic — PeerJS WebRTC, preserved for advanced/legacy use
+//
+// Hash routing: #/ (lobby), #/g/<roomCode> (game), #/otb, #/dashboard,
+//               #/leaderboard, #/profile/<id>, #/classic (legacy P2P lobby).
+
 import createBanqiModule from './banqi.js';
+import { RelayConnection, LoopbackConnection } from './relay.js';
 
 const Module = await createBanqiModule();
 
 const $ = (id) => document.getElementById(id);
-const log = (msg) => {
-  const el = $('log');
-  el.textContent += msg + '\n';
-  el.scrollTop = el.scrollHeight;
-  // Also forward to the dev console so headless tests / browser devtools can
-  // see the message stream without expanding the <details>.
-  try { console.log('[banqi]', msg); } catch (_) {}
+
+// ---- view containers ----
+const views = {
+  lobby:       $('view-lobby'),
+  game:        $('view-game'),
+  otb:         $('view-otb'),
+  dashboard:   $('view-dashboard'),
+  leaderboard: $('view-leaderboard'),
+  profile:     $('view-profile'),
+  classic:     $('view-classic'),
 };
-const setStatus = (html) => { $('lobby-status').innerHTML = html; };
-
-// Big top-of-page error banner. Use for serious problems the user must act on.
-function showBanner(html) {
-  const b = $('conn-banner');
-  b.innerHTML = html;
-  b.classList.remove('hidden');
-}
-function hideBanner() {
-  $('conn-banner').classList.add('hidden');
+function showView(name) {
+  for (const v of Object.values(views)) v?.classList.add('hidden');
+  views[name]?.classList.remove('hidden');
 }
 
-let peer = null;          // PeerJS Peer
-let conn = null;          // DataConnection
-let game = null;          // GameWrapper from C++
-let selected = null;      // currently-selected source cell index (move pending)
-let watchdog = null;      // setTimeout handle for connection-establish timeout
+// ---- session ----
+let me = null;            // current user from /api/me, or null
+let providers = { github: false, google: false, dev: false };
 
-function genGameId() {
-  const a = new Uint8Array(8);
-  crypto.getRandomValues(a);
-  return Array.from(a).map(b => b.toString(16).padStart(2, '0')).join('');
+async function refreshSession() {
+  try {
+    const conf = await fetch('/api/config').then(r => r.json());
+    providers = conf.providers || {};
+  } catch (_) { providers = {}; }
+  try {
+    const r = await fetch('/api/me');
+    me = r.ok ? await r.json() : null;
+  } catch (_) { me = null; }
 }
 
-function modeInt() {
-  return parseInt($('mode-select').value, 10);
-}
+// ---- routing ----
+async function route() {
+  const hash = location.hash || '#/';
+  const m = hash.match(/^#\/g\/([0-9A-Za-z]+)$/);
+  if (m) return openFederatedGame(m[1].toUpperCase());
 
-// TURN configuration: prefer the in-page form (#turn-url etc.), fall back to
-// URL params (?turn=...&user=...&pass=...).  Either source lets the user point
-// the WebRTC stack at a TURN relay so two peers behind the same NAT can
-// connect.
-//
-// Other URL params:
-//   ?peerHost=...&peerPort=...&peerPath=...&peerSecure=0|1
-//      Custom PeerJS signalling broker (used by the E2E test).
-function readTurnConfig() {
-  const params = new URLSearchParams(location.search);
-  const url  = ($('turn-url')?.value  || '').trim() || params.get('turn')  || '';
-  const user = ($('turn-user')?.value || '').trim() || params.get('user')  || '';
-  const pass = ($('turn-pass')?.value || '').trim() || params.get('pass')  || '';
-  if (!url) return null;
-  return { urls: url, username: user, credential: pass };
-}
+  const mp = hash.match(/^#\/profile\/(\d+)$/);
+  if (mp) return renderProfile(+mp[1]);
 
-let lastTurnUsed = null;   // exposed in error messages so the user can see what was tried
-
-function makePeerOptions() {
-  const params = new URLSearchParams(location.search);
-  const opts = {};
-  const turn = readTurnConfig();
-  lastTurnUsed = turn;
-  const iceServers = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-  ];
-  if (turn) iceServers.push(turn);
-  opts.config = { iceServers };
-  const peerHost = params.get('peerHost');
-  if (peerHost) {
-    opts.host = peerHost;
-    if (params.has('peerPort')) opts.port = parseInt(params.get('peerPort'), 10);
-    if (params.has('peerPath')) opts.path = params.get('peerPath');
-    if (params.has('peerSecure')) opts.secure = params.get('peerSecure') === '1';
+  switch (hash) {
+    case '#/otb':         return openOTB();
+    case '#/dashboard':   return renderDashboard();
+    case '#/leaderboard': return renderLeaderboard();
+    case '#/classic':     return renderClassicLobby();
+    default:              return renderLobby();
   }
-  return opts;
 }
+window.addEventListener('hashchange', route);
 
-function teardownPeer() {
-  if (watchdog) { clearTimeout(watchdog); watchdog = null; }
-  if (conn) { try { conn.close(); } catch (_) {} conn = null; }
-  if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
-}
-
-function startWatchdog(label) {
-  if (watchdog) clearTimeout(watchdog);
-  watchdog = setTimeout(() => {
-    showConnectionFailure(label + ' did not complete within 20 s.');
-  }, 20000);
-}
-
-// Render a clear, action-oriented failure banner. Always reachable, regardless
-// of which lobby step the failure came from.
-function showConnectionFailure(reason) {
-  const used = lastTurnUsed
-    ? `TURN attempted: <code>${lastTurnUsed.urls}</code> (auth ${lastTurnUsed.username ? 'set' : 'absent'})`
-    : 'No TURN server configured — only STUN was tried.';
-  showBanner(`
-    <h3>WebRTC could not establish a peer-to-peer link</h3>
-    <div>${reason}</div>
-    <div style="margin-top:6px">
-      The most common cause is <b>both peers behind the same router</b> with
-      no NAT hairpinning. Either move one peer to a different network
-      (cellular works), or supply a TURN relay.
-    </div>
-    <div style="margin-top:6px">${used}</div>
-    <div style="margin-top:6px">Open <em>Advanced: TURN server</em> below
-      and paste credentials, then click Create / Join again. Free credentials
-      are available at
-      <a href="https://www.metered.ca/tools/openrelay/" target="_blank" rel="noopener">metered.ca</a>.
-    </div>`);
-  setStatus('connection failed — see banner above');
-}
-
-// ---------- network ----------
-function sendOutbound(strs) {
-  if (!strs) return;
-  for (const line of strs.split('\n')) {
-    if (!line) continue;
-    if (conn && conn.open) {
-      conn.send(line);
-      log('→ ' + line.slice(0, 120));
-    } else {
-      log('!! dropped (not connected): ' + line.slice(0, 120));
-      $('status-label').textContent = 'connection lost';
+// ---- lobby ----
+function renderLobby() {
+  showView('lobby');
+  const meBox = $('lobby-me');
+  if (me) {
+    meBox.innerHTML = `
+      <div class="me-row">
+        <div><b>Hi, ${escapeHtml(me.display_name)}</b> · Elo ${me.elo}
+          · <a href="#/dashboard">my games</a>
+          · <a href="#/leaderboard">leaderboard</a>
+          · <a href="#/profile/${me.id}">profile</a>
+        </div>
+        <button id="btn-signout" class="link-btn">Sign out</button>
+      </div>`;
+    $('btn-signout').onclick = signOut;
+  } else {
+    const buttons = [];
+    if (providers.github) buttons.push(`<a class="primary" href="/auth/github">Sign in with GitHub</a>`);
+    if (providers.google) buttons.push(`<a class="primary" href="/auth/google">Sign in with Google</a>`);
+    if (providers.dev) {
+      buttons.push(`<button id="btn-dev-signin" class="primary">Sign in (dev)</button>`);
     }
+    if (buttons.length === 0) {
+      buttons.push(`<div class="muted">Sign-in is not configured. Ask the relay admin to set OAuth credentials, or play "on this device" below.</div>`);
+    }
+    meBox.innerHTML = `<div class="sign-in">${buttons.join(' ')}</div>`;
+    const dev = $('btn-dev-signin');
+    if (dev) dev.onclick = async () => {
+      const name = prompt('Pick a display name:', 'Player') || 'Player';
+      location.href = `/auth/dev?name=${encodeURIComponent(name)}`;
+    };
   }
+  $('btn-start-online').disabled = !me;
+  $('btn-start-online').onclick = startOnlineGame;
+  $('btn-otb').onclick = () => { location.hash = '#/otb'; };
+  $('btn-classic').onclick = () => { location.hash = '#/classic'; };
 }
 
-// Single conn.on('data') handler. Registered exactly once per conn, before any
-// 'open' handlers, so a message arriving early is never lost.
-//
-// On the host side: the game is constructed locally before any inbound data
-// can arrive (the host owns gameId + mode), so this handler always sees `game`
-// already defined.
-//
-// On the joiner side: the very first inbound message is the host's HELLO,
-// which carries `game_id` and `mode`. The joiner uses those to construct its
-// Game synchronously, then re-dispatches the same HELLO into game.handleMessage
-// so the protocol's HELLO-handler runs normally. (We used to send a separate
-// "_lobby" announcement before HELLO, but PeerJS occasionally drops the first
-// send right after `open` — so we made HELLO self-bootstrapping instead.)
-function attachDataHandler(isHost) {
-  conn.on('data', (data) => {
-    const s = String(data);
-    log('← ' + s.slice(0, 120));
-    if (!game) {
-      // Joiner: first inbound must be HELLO. Use it to construct the game.
-      let parsed;
-      try { parsed = JSON.parse(s); } catch (_) { parsed = null; }
-      if (!parsed || parsed.type !== 'HELLO' ||
-          typeof parsed.game_id !== 'string' ||
-          (parsed.mode !== 'casual' && parsed.mode !== 'crypto')) {
-        setStatus('Expected HELLO from host first; got something else.');
-        log('!! pre-HELLO data, ignored: ' + s.slice(0, 120));
-        return;
-      }
-      const modeNum = parsed.mode === 'crypto' ? 2 : 1;
-      $('mode-select').value = String(modeNum);
-      onConnOpen(false, parsed.game_id);
-      // Re-dispatch HELLO into the freshly-constructed game.
-      try {
-        const out = game.handleMessage(s);
-        sendOutbound(out);
-      } catch (e) {
-        log('!! HELLO handle: ' + (e.message || e));
-      }
-      refresh();
+async function signOut() {
+  await fetch('/auth/logout', { method: 'POST' });
+  me = null;
+  route();
+}
+
+async function startOnlineGame() {
+  if (!me) return;
+  const mode = $('lobby-mode').value || 'casual';
+  const res = await fetch('/api/games', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) { alert('Could not create game.'); return; }
+  const g = await res.json();
+  location.hash = `#/g/${g.roomCode}`;
+}
+
+// ---- federated game ----
+let active = null;  // {game, conn, replay, gameId, roomCode, role, ...}
+
+async function openFederatedGame(roomCode) {
+  showView('game');
+  $('game-header').innerHTML = `<div class="muted">Connecting to room <code>${roomCode}</code>…</div>`;
+
+  if (!me) {
+    $('game-header').innerHTML = `
+      <div>You need to be signed in to play online.
+      <a href="#/">Back to lobby</a> to sign in.</div>`;
+    return;
+  }
+
+  // Look up (or join) the game.
+  let info;
+  try {
+    info = await fetch(`/api/games/by-room/${encodeURIComponent(roomCode)}`).then(r => r.json());
+    if (info.error) throw new Error(info.error);
+  } catch (e) {
+    $('game-header').innerHTML = `<div class="err">Couldn't find room <code>${roomCode}</code>.</div>`;
+    return;
+  }
+
+  if (info.my_role == null) {
+    // We're a third party — try to join.
+    const jr = await fetch(`/api/games/${info.id}/join`, { method: 'POST' });
+    if (!jr.ok) {
+      $('game-header').innerHTML = `<div class="err">This game is full.</div>`;
       return;
     }
-    try {
-      const out = game.handleMessage(s);
-      sendOutbound(out);
-    } catch (e) {
-      log('!! ' + (e.message || e));
-    }
-    refresh();
-  });
-}
-
-function onConnOpen(isHost, gameId) {
-  if (watchdog) { clearTimeout(watchdog); watchdog = null; }
-  $('lobby').classList.add('hidden');
-  $('play').classList.remove('hidden');
-  $('mode-label').textContent = $('mode-select').selectedOptions[0].text;
-
-  game = isHost
-    ? Module.Game.createHost(modeInt(), gameId)
-    : Module.Game.createJoin(modeInt(), gameId);
-  log('game created (' + (isHost ? 'host' : 'join') + ')');
-
-  // Send our HELLO immediately.
-  const out = game.start();
-  sendOutbound(out);
-  refresh();
-}
-
-function setupCreate() {
-  teardownPeer();
-  hideBanner();
-  const gameId = genGameId();
-  setStatus('initializing peer…');
-  peer = new Peer(makePeerOptions());
-  peer.on('open', (id) => {
-    setStatus(
-      'Your peer ID: <code>' + id + '</code>' +
-      '<br>Share this with your friend so they can join. Mode: ' +
-      $('mode-select').selectedOptions[0].text +
-      '<br>Game id: <code>' + gameId + '</code>' +
-      '<br><small>Waiting for opponent…</small>'
-    );
-    startWatchdog('Waiting for an opponent to join');
-  });
-  peer.on('connection', (c) => {
-    conn = c;
-    setStatus('opponent connecting…');
-    startWatchdog('Establishing the data channel');
-    attachConnDiagnostics(conn);
-    attachDataHandler(true);
-    conn.on('open', () => {
-      // game.start() emits HELLO which carries gameId + mode, so the joiner
-      // can construct its Game from HELLO directly. No separate lobby send.
-      onConnOpen(true, gameId);
-    });
-    conn.on('error', (e) => {
-      setStatus('Data-channel error: ' + (e.message || e.type || e));
-      log('conn error: ' + JSON.stringify(e.message || e.type || e));
-    });
-    conn.on('close', () => {
-      log('conn closed');
-    });
-  });
-  peer.on('error', (e) => {
-    setStatus('Peer error: ' + (e.message || e.type || e));
-    log('peer error: ' + JSON.stringify(e.message || e.type || e));
-  });
-  peer.on('disconnected', () => log('peer disconnected from broker'));
-}
-
-function setupJoin() {
-  const remoteId = $('join-id').value.trim();
-  if (!remoteId) { setStatus('Enter a peer ID first.'); return; }
-  teardownPeer();
-  hideBanner();
-  setStatus('connecting to <code>' + remoteId.slice(0, 8) + '…</code>');
-  peer = new Peer(makePeerOptions());
-  startWatchdog('Connecting to ' + remoteId.slice(0, 8));
-  peer.on('open', () => {
-    conn = peer.connect(remoteId, { reliable: true });
-    attachConnDiagnostics(conn);
-    // Register the data handler BEFORE 'open' so a lobby message that arrives
-    // early (PeerJS data event firing the same tick as open) is never dropped.
-    attachDataHandler(false);
-    conn.on('open', () => {
-      setStatus('connected, awaiting lobby announcement…');
-    });
-    conn.on('error', (e) => {
-      setStatus('Data-channel error: ' + (e.message || e.type || e));
-      log('conn error: ' + JSON.stringify(e.message || e.type || e));
-    });
-    conn.on('close', () => {
-      log('conn closed');
-      if (!game) setStatus('Connection closed before the game started.');
-    });
-  });
-  peer.on('error', (e) => {
-    setStatus('Peer error: ' + (e.message || e.type || e));
-    log('peer error: ' + JSON.stringify(e.message || e.type || e));
-  });
-  peer.on('disconnected', () => log('peer disconnected from broker'));
-}
-
-// Attach an ICE-state observer so the user can see WebRTC progress.
-function attachConnDiagnostics(c) {
-  // PeerJS exposes the underlying RTCPeerConnection on `peerConnection`.
-  const tryAttach = () => {
-    const pc = c && c.peerConnection;
-    if (!pc) return false;
-    const onChange = () => {
-      log('ice: ' + pc.iceConnectionState + ' / dtls: ' +
-          (pc.connectionState || 'n/a'));
-      if (pc.iceConnectionState === 'failed' ||
-          pc.connectionState === 'failed') {
-        showConnectionFailure('ICE state reached <b>failed</b> — no path between the two peers.');
-      }
-    };
-    pc.addEventListener('iceconnectionstatechange', onChange);
-    pc.addEventListener('connectionstatechange', onChange);
-    return true;
-  };
-  if (!tryAttach()) {
-    // peerConnection isn't always set immediately; poll briefly.
-    let n = 0;
-    const t = setInterval(() => { if (tryAttach() || ++n > 40) clearInterval(t); }, 100);
+    info = await fetch(`/api/games/${info.id}`).then(r => r.json());
   }
+  const isHost = info.my_role === 'host';
+
+  // Pull the message log so we can replay if mid-game.
+  const log = await fetch(`/api/games/${info.id}/messages?since=0`).then(r => r.json());
+
+  // Construct the Game with our deterministic identity seed.
+  const modeInt = info.mode === 'crypto' ? 2 : 1;
+  const gameIdForCpp = String(info.id);  // any stable token works; both sides must use the same
+  const game = isHost
+    ? Module.Game.createHostWithSeed(modeInt, gameIdForCpp, me.identity_seed_hex)
+    : Module.Game.createJoinWithSeed(modeInt, gameIdForCpp, me.identity_seed_hex);
+
+  active = {
+    info, game, isHost, conn: null,
+    replay: log.length > 0,
+    selected: null,
+    pendingFinalize: false,
+    finalizeReported: false,
+    transport: 'federated',
+  };
+
+  // Replay phase: feed log entries through the Game without sending any
+  // outbound (the server already has them). Own MOVE_ENTRYs need to be
+  // re-driven through local_* so they get re-signed; others go via
+  // handle_message. See test_game.cpp "reconnect-by-replay" for the same
+  // shape.
+  game.start();   // emit own HELLO (discarded — log already has the equivalent)
+  for (const m of log) {
+    const parsed = parseJsonSafe(m.body);
+    if (!parsed) continue;
+    if (m.sender_user_id === me.id) {
+      if (parsed.type === 'MOVE_ENTRY') {
+        const action = parseJsonSafe(parsed.payload);
+        if (!action) continue;
+        try {
+          if (action.kind === 'flip')   game.localFlip(action.to);
+          else if (action.kind === 'move') game.localMove(action.from, action.to);
+          else if (action.kind === 'resign') game.localResign();
+        } catch (e) { console.warn('replay local action failed:', e); }
+      }
+      // Skip own HELLO/SETUP/REVEAL_KEY — they regenerate naturally.
+    } else {
+      try { game.handleMessage(m.body); } catch (e) { console.warn('replay handle failed:', e); }
+    }
+  }
+  active.replay = false;
+
+  // Open the live WebSocket.
+  const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  active.conn = new RelayConnection(`${wsScheme}://${location.host}/ws/${info.id}`);
+  attachConnAsTransport(active);
+
+  // If the live message log just brought us into a finished game state,
+  // attempt finalize.
+  refreshGame();
 }
 
-// ---------- UI ----------
-function renderBoard(state) {
-  const board = $('board');
-  board.innerHTML = '';
+function attachConnAsTransport(act) {
+  const { game, conn } = act;
+  conn.on('open', () => {
+    // The game has already emitted HELLO during replay/start; resending it
+    // is harmless because the peer ignores duplicate HELLOs (game.cpp:59).
+  });
+  conn.on('data', (line) => {
+    if (act.replay) return;  // shouldn't happen, but be safe
+    try {
+      const out = game.handleMessage(line);
+      if (act.conn && out) act.conn.send(out);
+    } catch (e) { console.warn('handleMessage:', e); }
+    refreshGame();
+  });
+  conn.on('close', () => {
+    $('game-status-line').textContent = 'disconnected';
+  });
+  conn.on('meta', (m) => {
+    // Server tells us our role; we already know it from REST, but log for diagnostics.
+    console.log('relay meta:', m);
+  });
+}
 
-  // Build a quick set of legal target cells (for highlights).
+// ---- over-the-board ----
+function openOTB() {
+  showView('otb');
+  // Two Games, two loopback transports wired peer-to-peer.
+  //
+  // Wiring: a.send(line) → fires b.on('data', line) and vice versa. So each
+  // game *sends* on its OWN transport, and *receives* from its OWN
+  // transport's 'data' event (which fires when the peer sends).
+  const gameId = `otb-${Date.now()}`;
+  const hostGame = Module.Game.createHost(1, gameId);   // 1 = casual
+  const joinGame = Module.Game.createJoin(1, gameId);
+  const [hostTr, joinTr] = LoopbackConnection.pair();
+
+  hostTr.on('data', (line) => {
+    try {
+      const out = hostGame.handleMessage(line);
+      if (out) hostTr.send(out);
+    } catch (e) { console.warn('host otb:', e); }
+    refreshOTB();
+  });
+  joinTr.on('data', (line) => {
+    try {
+      const out = joinGame.handleMessage(line);
+      if (out) joinTr.send(out);
+    } catch (e) { console.warn('join otb:', e); }
+    refreshOTB();
+  });
+
+  // Bootstrap: each game emits its HELLO on its own transport.
+  hostTr.send(hostGame.start());
+  joinTr.send(joinGame.start());
+
+  active = {
+    isOTB: true,
+    hostGame, joinGame, hostTr, joinTr,
+    selected: null,
+    transport: 'otb',
+  };
+  refreshOTB();
+}
+
+function refreshOTB() {
+  if (!active?.isOTB) return;
+  // Determine which game is "active" — the one whose side_to_move == its own
+  // player index. Both games have the same shared rules-engine state by
+  // construction, so we can ask either.
+  // Probe the host game just to get the global turn index.
+  const turnIdx = JSON.parse(active.hostGame.stateJson()).side_to_move;
+  const activeGame = turnIdx === 0 ? active.hostGame : active.joinGame;
+  const state = JSON.parse(activeGame.stateJson());
+  // state.my_player_index already equals turnIdx because activeGame is the
+  // side whose turn it is. legal_moves_for_me and my_color are already
+  // computed against the active side. No massaging needed.
+  renderBoard($('otb-board'), state, (idx) => onOTBCellClick(idx, state));
+  // Banner
+  let banner;
+  if (state.game_over) {
+    const w = state.winner;
+    banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}`;
+  } else if (!state.first_flip_done) {
+    banner = `Player 1 — flip a piece (your color is decided by your first flip)`;
+  } else {
+    const sideName = turnIdx === 0 ? 'Player 1' : 'Player 2';
+    banner = `${sideName}'s turn (${colorWord(state.my_color)})`;
+  }
+  $('otb-banner').textContent = banner;
+  $('otb-resign').disabled = !state.setup_done || state.game_over;
+  $('otb-resign').onclick = () => {
+    try {
+      const sender = turnIdx === 0 ? active.hostTr : active.joinTr;
+      const out = (turnIdx === 0 ? active.hostGame : active.joinGame).localResign();
+      sender.send(out);
+    } catch (e) { console.warn(e); }
+    refreshOTB();
+  };
+}
+function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
+
+function onOTBCellClick(idx, state) {
+  if (!state.setup_done || state.game_over) return;
+  const turnIdx = state.side_to_move;
+  const sender = turnIdx === 0 ? active.hostTr : active.joinTr;
+  const game   = turnIdx === 0 ? active.hostGame : active.joinGame;
+  const c = state.cells[idx];
   const legal = state.legal_moves_for_me;
+  if (active.selected == null) {
+    if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
+      try { sender.send(game.localFlip(idx)); } catch (e) { console.warn(e); }
+      refreshOTB();
+      return;
+    }
+    if (c.state === 'faceup' && c.color === state.my_color &&
+        legal.some(m => m.from === idx)) {
+      active.selected = idx;
+      refreshOTB();
+    }
+    return;
+  }
+  if (legal.some(m => m.from === active.selected && m.to === idx)) {
+    const from = active.selected;
+    active.selected = null;
+    try { sender.send(game.localMove(from, idx)); } catch (e) { console.warn(e); }
+    refreshOTB();
+    return;
+  }
+  if (idx === active.selected) { active.selected = null; refreshOTB(); return; }
+  active.selected = null;
+  refreshOTB();
+}
+
+// ---- shared rendering ----
+function renderBoard(boardEl, state, onClick) {
+  boardEl.innerHTML = '';
+  const legal = state.legal_moves_for_me || [];
   const flipTargets = new Set();
   const moveTargetsBySrc = new Map();
   for (const m of legal) {
@@ -315,7 +357,6 @@ function renderBoard(state) {
       moveTargetsBySrc.get(m.from).add(m.to);
     }
   }
-
   for (let i = 0; i < 32; ++i) {
     const c = state.cells[i];
     const div = document.createElement('div');
@@ -324,97 +365,344 @@ function renderBoard(state) {
       div.classList.add(c.color === 1 ? 'red' : 'black');
       div.textContent = c.glyph;
     }
-    if (selected === i) div.classList.add('selected');
+    if (active?.selected === i) div.classList.add('selected');
     if (state.side_to_move === state.my_player_index && !state.game_over) {
-      if (selected != null && moveTargetsBySrc.get(selected)?.has(i)) {
+      if (active?.selected != null && moveTargetsBySrc.get(active.selected)?.has(i)) {
         div.classList.add('legal-target');
-      } else if (selected == null && (flipTargets.has(i) || moveTargetsBySrc.has(i))) {
+      } else if (active?.selected == null && (flipTargets.has(i) || moveTargetsBySrc.has(i))) {
         div.classList.add('legal');
       }
     }
-    div.addEventListener('click', () => onCellClick(i, state));
-    board.appendChild(div);
+    div.addEventListener('click', () => onClick(i));
+    boardEl.appendChild(div);
   }
-
-  // Status header
-  $('me-label').textContent =
-    'P' + state.my_player_index + (state.my_color === 1 ? ' (Red)' : state.my_color === 2 ? ' (Black)' : '');
-  $('turn-label').textContent =
-    state.first_flip_done
-      ? (state.side_to_move === state.my_player_index ? 'your turn' : 'waiting on opponent')
-      : 'waiting on first flip';
-  $('seq-label').textContent = state.transcript_seq;
-
-  let s = '';
-  if (!state.handshake_done) s = 'connecting…';
-  else if (!state.setup_done) s = 'shuffling (' + state.mode + ')…';
-  else if (state.game_over) {
-    const w = state.winner;
-    s = 'game over · winner: ' + (w === 1 ? 'Red' : w === 2 ? 'Black' : 'none');
-  } else {
-    s = 'playing';
-  }
-  $('status-label').textContent = s;
-
-  $('btn-resign').disabled = !state.setup_done || state.game_over;
 }
 
-function onCellClick(idx, state) {
+// ---- federated game rendering ----
+function refreshGame() {
+  if (!active || active.isOTB) return;
+  const state = JSON.parse(active.game.stateJson());
+  renderBoard($('game-board'), state, (idx) => onFedCellClick(idx, state));
+  const opp = active.isHost ? active.info.join_name : active.info.host_name;
+  $('game-header').innerHTML = `
+    <div class="meta">
+      <div><b>Room:</b> <code>${active.info.room_code}</code>
+           <button id="btn-copy-link" class="link-btn">Copy invite link</button></div>
+      <div><b>Opponent:</b> ${escapeHtml(opp || '(waiting…)')}</div>
+      <div><b>You are:</b> ${active.isHost ? 'Host (Player 1)' : 'Joiner (Player 2)'}
+        ${state.my_color === 1 ? '· Red' : state.my_color === 2 ? '· Black' : ''}</div>
+      <div><b>Turn:</b> <span id="game-turn">${turnLabel(state)}</span></div>
+      <div><b>Status:</b> <span id="game-status-line">${statusLabel(state, active.info)}</span></div>
+      <div><b>Moves:</b> ${state.transcript_seq}</div>
+      <button id="btn-resign" ${state.setup_done && !state.game_over ? '' : 'disabled'}>Resign</button>
+      <a class="link-btn" href="#/dashboard">My games</a>
+    </div>`;
+  $('btn-copy-link').onclick = copyInviteLink;
+  $('btn-resign').onclick = () => {
+    try {
+      const out = active.game.localResign();
+      if (active.conn) active.conn.send(out);
+    } catch (e) { console.warn(e); }
+    refreshGame();
+  };
+
+  // If the game just ended, report finalize once.
+  if (state.game_over && !active.finalizeReported) {
+    active.finalizeReported = true;
+    const myColor = state.my_color;
+    const iWon = state.winner !== 0 && state.winner === myColor;
+    fetch(`/api/games/${active.info.id}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        winner_color: state.winner,
+        tip_hash: state.tip_hash || '',
+        i_won: iWon,
+      }),
+    }).catch(() => {});
+  }
+}
+
+function turnLabel(state) {
+  if (!state.first_flip_done) return 'waiting for first flip';
+  if (state.game_over) return 'finished';
+  return state.side_to_move === state.my_player_index ? 'your turn' : 'opponent\'s turn';
+}
+function statusLabel(state, info) {
+  if (state.game_over) {
+    const w = state.winner;
+    return `winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}`;
+  }
+  if (info.status === 'waiting') return 'waiting for opponent to join';
+  if (!state.setup_done) return 'shuffling…';
+  return 'playing';
+}
+
+function onFedCellClick(idx, state) {
   if (!state.setup_done || state.game_over) return;
   if (state.side_to_move !== state.my_player_index) return;
-
-  // Determine action.
   const c = state.cells[idx];
-  const legal = state.legal_moves_for_me;
-
-  if (selected == null) {
-    // First click. If face-down, flip. If own face-up piece, select.
+  const legal = state.legal_moves_for_me || [];
+  if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
-      try { sendOutbound(game.localFlip(idx)); } catch (e) { log('!! ' + e); }
-      refresh();
+      try {
+        const out = active.game.localFlip(idx);
+        if (active.conn) active.conn.send(out);
+      } catch (e) { console.warn(e); }
+      refreshGame();
       return;
     }
-    if (c.state === 'faceup' && c.color === state.my_color) {
-      // Has any legal move from here?
-      if (legal.some(m => m.from === idx)) {
-        selected = idx;
-        refresh();
-      }
+    if (c.state === 'faceup' && c.color === state.my_color &&
+        legal.some(m => m.from === idx)) {
+      active.selected = idx;
+      refreshGame();
     }
     return;
   }
-
-  // Second click: if it's a legal target, perform the move.
-  if (legal.some(m => m.from === selected && m.to === idx)) {
-    const from = selected;
-    selected = null;
-    try { sendOutbound(game.localMove(from, idx)); } catch (e) { log('!! ' + e); }
-    refresh();
+  if (legal.some(m => m.from === active.selected && m.to === idx)) {
+    const from = active.selected;
+    active.selected = null;
+    try {
+      const out = active.game.localMove(from, idx);
+      if (active.conn) active.conn.send(out);
+    } catch (e) { console.warn(e); }
+    refreshGame();
     return;
   }
-  // Otherwise re-select or clear.
-  if (idx === selected) { selected = null; refresh(); return; }
-  if (c.state === 'faceup' && c.color === state.my_color &&
-      legal.some(m => m.from === idx)) {
-    selected = idx; refresh(); return;
+  if (idx === active.selected) { active.selected = null; refreshGame(); return; }
+  active.selected = null;
+  refreshGame();
+}
+
+async function copyInviteLink() {
+  if (!active?.info) return;
+  const url = `${location.origin}/#/g/${active.info.room_code}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    flashCopied();
+  } catch (_) {
+    prompt('Share this link:', url);
   }
-  selected = null;
-  refresh();
+}
+function flashCopied() {
+  const btn = $('btn-copy-link');
+  if (!btn) return;
+  const orig = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = orig; }, 1500);
 }
 
-function refresh() {
-  if (!game) return;
-  let state;
-  try { state = JSON.parse(game.stateJson()); }
-  catch (e) { log('!! state parse: ' + e); return; }
-  renderBoard(state);
+// ---- dashboard ----
+async function renderDashboard() {
+  showView('dashboard');
+  const list = $('dashboard-list');
+  if (!me) { list.innerHTML = `<div>Sign in first. <a href="#/">Lobby</a></div>`; return; }
+  const games = await fetch('/api/games').then(r => r.json()).catch(() => []);
+  if (!games.length) {
+    list.innerHTML = `<div class="muted">No games yet.
+      <a href="#/">Start one</a>.</div>`;
+    return;
+  }
+  list.innerHTML = games.map(g => {
+    const opp = g.host_user_id === me.id ? (g.join_name || '(waiting)')
+                                          : (g.host_name || '(empty)');
+    const ts = new Date(g.last_move_at || g.created_at).toLocaleString();
+    const tag = g.status === 'complete'  ? 'complete'
+              : g.status === 'disputed'  ? 'disputed'
+              : g.status === 'waiting'   ? 'awaiting opponent'
+              : 'in progress';
+    return `<a class="game-row" href="#/g/${g.room_code}">
+              <div class="g-opp">vs ${escapeHtml(opp)}</div>
+              <div class="g-status">${tag}</div>
+              <div class="g-meta muted">${ts} · room ${g.room_code}</div>
+            </a>`;
+  }).join('');
 }
 
-// ---------- buttons ----------
-$('btn-create').addEventListener('click', setupCreate);
-$('btn-join').addEventListener('click', setupJoin);
-$('btn-resign').addEventListener('click', () => {
-  if (!game) return;
-  try { sendOutbound(game.localResign()); } catch (e) { log('!! ' + e); }
-  refresh();
-});
+// ---- leaderboard ----
+async function renderLeaderboard() {
+  showView('leaderboard');
+  const data = await fetch('/api/leaderboard').then(r => r.json()).catch(() => []);
+  if (!data.length) {
+    $('leaderboard-table').innerHTML = `<div class="muted">No rated games yet.</div>`;
+    return;
+  }
+  $('leaderboard-table').innerHTML = `
+    <table><thead><tr><th>#</th><th>Player</th><th>Elo</th><th>W</th><th>L</th></tr></thead>
+    <tbody>${data.map((u, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td><a href="#/profile/${u.id}">${escapeHtml(u.display_name)}</a></td>
+        <td>${u.elo}</td><td>${u.wins}</td><td>${u.losses}</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+// ---- profile ----
+async function renderProfile(userId) {
+  showView('profile');
+  const p = await fetch(`/api/users/${userId}`).then(r => r.json()).catch(() => null);
+  if (!p) { $('profile-body').innerHTML = `<div>Not found.</div>`; return; }
+  const h2h = p.head_to_head || [];
+  $('profile-body').innerHTML = `
+    <h2>${escapeHtml(p.display_name)}</h2>
+    <div><b>Elo:</b> ${p.elo}</div>
+    <h3>Head-to-head</h3>
+    ${h2h.length === 0 ? `<div class="muted">No games played yet.</div>` :
+      `<table><thead><tr><th>Opponent</th><th>W</th><th>L</th><th>D</th></tr></thead>
+       <tbody>${h2h.map(r => `
+         <tr><td><a href="#/profile/${r.opponent_id}">${escapeHtml(r.opponent_name || '')}</a></td>
+             <td>${r.wins}</td><td>${r.losses}</td><td>${r.draws}</td></tr>`).join('')}
+       </tbody></table>`}`;
+}
+
+// ---- classic P2P lobby (legacy PeerJS flow, preserved) ----
+async function renderClassicLobby() {
+  showView('classic');
+  // Lazy-load PeerJS to avoid the network/script cost when not in use.
+  if (!window.Peer) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'peerjs.min.js';
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    }).catch(() => {});
+  }
+  if (!window.Peer) {
+    $('classic-body').innerHTML = `<div class="err">Couldn't load PeerJS.</div>`;
+    return;
+  }
+  initClassicUI();
+}
+
+// (Lightweight version of the previous main.js classic-mode flow, behind a
+// disclosure. Single Peer + DataConnection, with peer-ID copy/paste.)
+let classicPeer = null, classicConn = null, classicGame = null;
+function initClassicUI() {
+  $('classic-body').innerHTML = `
+    <h2>Advanced: peer-to-peer (no account, no rating)</h2>
+    <p class="muted">Pure WebRTC. Share your peer ID by hand. Useful if you'd rather not use the relay.</p>
+    <div class="row">
+      <label>Mode:
+        <select id="cl-mode"><option value="1">Casual</option><option value="2">Crypto</option></select>
+      </label>
+    </div>
+    <div class="row">
+      <button id="cl-create">Create</button>
+      <span class="sep">or</span>
+      <input id="cl-joinid" type="text" placeholder="Paste peer ID">
+      <button id="cl-join">Join</button>
+    </div>
+    <div id="cl-status" class="status"></div>
+    <div id="cl-board-wrap" class="hidden">
+      <div id="cl-board" class="board"></div>
+      <button id="cl-resign">Resign</button>
+    </div>`;
+  $('cl-create').onclick = classicCreate;
+  $('cl-join').onclick   = classicJoin;
+  $('cl-resign').onclick = () => {
+    if (!classicGame) return;
+    try { classicConn?.send(classicGame.localResign()); } catch (e) {}
+    classicRefresh();
+  };
+}
+
+function classicCreate() {
+  const mode = parseInt($('cl-mode').value, 10);
+  const gameId = crypto.randomUUID();
+  if (classicPeer) try { classicPeer.destroy(); } catch (_) {}
+  classicPeer = new Peer();
+  classicPeer.on('open', (id) => {
+    $('cl-status').innerHTML = `Your peer ID: <code>${id}</code> — share with friend.`;
+  });
+  classicPeer.on('connection', (c) => {
+    classicConn = c;
+    classicConn.on('open', () => {
+      classicGame = Module.Game.createHost(mode, gameId);
+      classicConn.send(classicGame.start());
+      $('cl-board-wrap').classList.remove('hidden');
+      classicRefresh();
+    });
+    classicConn.on('data', (d) => {
+      try { classicConn.send(classicGame.handleMessage(String(d))); } catch (e) {}
+      classicRefresh();
+    });
+  });
+}
+function classicJoin() {
+  const remote = $('cl-joinid').value.trim();
+  if (!remote) return;
+  const mode = parseInt($('cl-mode').value, 10);
+  if (classicPeer) try { classicPeer.destroy(); } catch (_) {}
+  classicPeer = new Peer();
+  classicPeer.on('open', () => {
+    classicConn = classicPeer.connect(remote, { reliable: true });
+    classicConn.on('open', () => $('cl-status').textContent = 'connected, waiting for HELLO…');
+    classicConn.on('data', (d) => {
+      const text = String(d);
+      if (!classicGame) {
+        // First inbound is host's HELLO carrying game_id and mode.
+        const parsed = parseJsonSafe(text);
+        if (!parsed || parsed.type !== 'HELLO') return;
+        const modeNum = parsed.mode === 'crypto' ? 2 : 1;
+        classicGame = Module.Game.createJoin(modeNum, parsed.game_id);
+        classicConn.send(classicGame.start());
+        classicConn.send(classicGame.handleMessage(text));
+        $('cl-board-wrap').classList.remove('hidden');
+        classicRefresh();
+        return;
+      }
+      try { classicConn.send(classicGame.handleMessage(text)); } catch (e) {}
+      classicRefresh();
+    });
+  });
+}
+let classicSelected = null;
+function classicRefresh() {
+  if (!classicGame) return;
+  const state = JSON.parse(classicGame.stateJson());
+  renderBoard($('cl-board'), state, (idx) => classicCellClick(idx, state));
+}
+function classicCellClick(idx, state) {
+  if (!state.setup_done || state.game_over) return;
+  if (state.side_to_move !== state.my_player_index) return;
+  const c = state.cells[idx];
+  const legal = state.legal_moves_for_me;
+  // Use the shared `active.selected` for selection state.
+  active = active || { selected: null };
+  if (active.selected == null) {
+    if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
+      try { classicConn.send(classicGame.localFlip(idx)); } catch (e) {}
+      classicRefresh();
+      return;
+    }
+    if (c.state === 'faceup' && c.color === state.my_color &&
+        legal.some(m => m.from === idx)) {
+      active.selected = idx;
+      classicRefresh();
+    }
+    return;
+  }
+  if (legal.some(m => m.from === active.selected && m.to === idx)) {
+    const from = active.selected;
+    active.selected = null;
+    try { classicConn.send(classicGame.localMove(from, idx)); } catch (e) {}
+    classicRefresh();
+    return;
+  }
+  active.selected = null;
+  classicRefresh();
+}
+
+// ---- utils ----
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function parseJsonSafe(s) {
+  try { return JSON.parse(s); } catch (_) { return null; }
+}
+
+// ---- boot ----
+await refreshSession();
+route();

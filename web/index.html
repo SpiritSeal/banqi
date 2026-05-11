@@ -3,70 +3,92 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Banqi P2P (半棋)</title>
+<title>Banqi (半棋) — online + over the board</title>
 <link rel="stylesheet" href="style.css">
-<script src="peerjs.min.js"></script>
 </head>
 <body>
 <div class="page">
   <header>
-    <h1>Banqi P2P · 半棋</h1>
-    <div class="subtitle">Peer-to-peer Chinese Dark Chess. Taiwanese rules.</div>
+    <a href="#/" class="brand"><h1>Banqi · 半棋</h1></a>
+    <div class="subtitle">Chinese Dark Chess · play online or share a screen</div>
   </header>
 
-  <div id="conn-banner" class="banner hidden"></div>
+  <!-- LOBBY -->
+  <section id="view-lobby" class="panel">
+    <div id="lobby-me"></div>
 
-  <section id="lobby" class="panel">
-    <h2>Start</h2>
-    <div class="controls">
-      <label>Mode:
-        <select id="mode-select">
-          <option value="1">Casual (commit-reveal)</option>
-          <option value="2">Crypto (mental poker)</option>
-        </select>
-      </label>
+    <div class="lobby-grid">
+      <div class="lobby-card">
+        <h2>Play with a friend online</h2>
+        <p class="muted">Click Start, copy the link the next page shows you, and send it to your friend. They click it, and you play. You can come back to the game any time — even days later.</p>
+        <div class="row">
+          <label>Mode:
+            <select id="lobby-mode">
+              <option value="casual">Standard (fast)</option>
+              <option value="crypto">Encrypted (slower, hides hidden pieces)</option>
+            </select>
+          </label>
+          <button id="btn-start-online" class="primary big">Start a game →</button>
+        </div>
+      </div>
+
+      <div class="lobby-card">
+        <h2>Play on this device</h2>
+        <p class="muted">No internet, no sign-in. Two players take turns on the same screen.</p>
+        <button id="btn-otb" class="primary big">Hot-seat →</button>
+      </div>
     </div>
-    <div class="row">
-      <button id="btn-create">Create game</button>
-      <span class="sep">or</span>
-      <input type="text" id="join-id" placeholder="Paste peer ID here">
-      <button id="btn-join">Join game</button>
-    </div>
+
     <details class="advanced">
-      <summary>Advanced: TURN server (only needed if both peers are behind the same router)</summary>
-      <div class="row">
-        <input type="text" id="turn-url" placeholder="turn:host:port">
-        <input type="text" id="turn-user" placeholder="username">
-        <input type="text" id="turn-pass" placeholder="credential">
-      </div>
-      <div class="hint">Free option: register at
-        <a href="https://www.metered.ca/tools/openrelay/" target="_blank" rel="noopener">metered.ca</a>
-        for free TURN credentials, paste the URL/user/pass here.
-        Settings persist in this tab only.
-        Or share a URL with <code>?turn=…&amp;user=…&amp;pass=…</code> baked in.</div>
+      <summary>Advanced: pure peer-to-peer (no account, no rating)</summary>
+      <div><button id="btn-classic" class="link-btn">Open the classic WebRTC/PeerJS flow</button></div>
     </details>
-    <div id="lobby-status" class="status"></div>
   </section>
 
-  <section id="play" class="panel hidden">
-    <h2>Game</h2>
-    <div class="play-grid">
-      <div class="meta">
-        <div><b>You are:</b> <span id="me-label">—</span></div>
-        <div><b>Mode:</b> <span id="mode-label">—</span></div>
-        <div><b>Turn:</b> <span id="turn-label">—</span></div>
-        <div><b>Status:</b> <span id="status-label">setting up…</span></div>
-        <div><b>Moves:</b> <span id="seq-label">0</span></div>
-        <button id="btn-resign" disabled>Resign</button>
-      </div>
-      <div id="board" class="board"></div>
+  <!-- GAME -->
+  <section id="view-game" class="panel hidden">
+    <div id="game-header"></div>
+    <div id="game-board" class="board"></div>
+    <p class="muted small">Tip: bookmark this page or save the room link. Coming back continues the game where you left off.</p>
+  </section>
+
+  <!-- OTB -->
+  <section id="view-otb" class="panel hidden">
+    <div id="otb-banner" class="otb-banner">setting up…</div>
+    <div id="otb-board" class="board"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="otb-resign">Resign</button>
+      <a class="link-btn" href="#/">Back to lobby</a>
     </div>
-    <details class="log">
-      <summary>Log</summary>
-      <pre id="log"></pre>
-    </details>
   </section>
 
+  <!-- DASHBOARD -->
+  <section id="view-dashboard" class="panel hidden">
+    <h2>My games</h2>
+    <div><a class="link-btn" href="#/">← Lobby</a></div>
+    <div id="dashboard-list" class="dashboard-list"></div>
+  </section>
+
+  <!-- LEADERBOARD -->
+  <section id="view-leaderboard" class="panel hidden">
+    <h2>Leaderboard</h2>
+    <div><a class="link-btn" href="#/">← Lobby</a></div>
+    <div id="leaderboard-table"></div>
+  </section>
+
+  <!-- PROFILE -->
+  <section id="view-profile" class="panel hidden">
+    <div><a class="link-btn" href="#/">← Lobby</a></div>
+    <div id="profile-body"></div>
+  </section>
+
+  <!-- CLASSIC P2P -->
+  <section id="view-classic" class="panel hidden">
+    <div><a class="link-btn" href="#/">← Lobby</a></div>
+    <div id="classic-body"></div>
+  </section>
+
+  <!-- Always-visible pieces & rules crib sheet -->
   <section id="crib" class="panel">
     <h2>Pieces &amp; rules</h2>
     <div class="crib-grid">
@@ -75,25 +97,24 @@
         <table class="crib">
           <thead><tr><th>Rank</th><th>Red</th><th>Black</th><th>Name</th><th>×</th></tr></thead>
           <tbody>
-            <tr><td>7</td><td class="zh red">帥</td><td class="zh black">將</td><td>General (jiàng)</td><td>1</td></tr>
-            <tr><td>6</td><td class="zh red">仕</td><td class="zh black">士</td><td>Advisor (shì)</td><td>2</td></tr>
-            <tr><td>5</td><td class="zh red">相</td><td class="zh black">象</td><td>Elephant (xiàng)</td><td>2</td></tr>
-            <tr><td>4</td><td class="zh red">俥</td><td class="zh black">車</td><td>Chariot (jū)</td><td>2</td></tr>
-            <tr><td>3</td><td class="zh red">傌</td><td class="zh black">馬</td><td>Horse (mǎ)</td><td>2</td></tr>
-            <tr><td>2</td><td class="zh red">炮</td><td class="zh black">砲</td><td>Cannon (pào)</td><td>2</td></tr>
-            <tr><td>1</td><td class="zh red">兵</td><td class="zh black">卒</td><td>Soldier (bīng/zú)</td><td>5</td></tr>
+            <tr><td>7</td><td class="zh red">帥</td><td class="zh black">將</td><td>General</td><td>1</td></tr>
+            <tr><td>6</td><td class="zh red">仕</td><td class="zh black">士</td><td>Advisor</td><td>2</td></tr>
+            <tr><td>5</td><td class="zh red">相</td><td class="zh black">象</td><td>Elephant</td><td>2</td></tr>
+            <tr><td>4</td><td class="zh red">俥</td><td class="zh black">車</td><td>Chariot</td><td>2</td></tr>
+            <tr><td>3</td><td class="zh red">傌</td><td class="zh black">馬</td><td>Horse</td><td>2</td></tr>
+            <tr><td>2</td><td class="zh red">炮</td><td class="zh black">砲</td><td>Cannon</td><td>2</td></tr>
+            <tr><td>1</td><td class="zh red">兵</td><td class="zh black">卒</td><td>Soldier</td><td>5</td></tr>
           </tbody>
         </table>
       </div>
       <div>
-        <h3>Capture rules</h3>
+        <h3>How to play</h3>
         <ul class="crib-rules">
-          <li><b>Default:</b> a piece captures any adjacent enemy of <b>equal or lower rank</b>.</li>
-          <li><b>Soldier 兵/卒</b> captures <b>General 帥/將</b> (rank 1 beats rank 7).</li>
-          <li><b>General</b> cannot capture Soldier.</li>
-          <li><b>Cannon 炮/砲</b> never captures adjacently. It jumps along a row or column over <b>exactly one</b> screen piece (any color, face-up or face-down) and lands on the target. Cannon ignores rank and may capture face-down pieces — they're revealed on capture.</li>
-          <li>You may flip any face-down piece on your turn instead of moving. The very first flip determines your color: the first flipper plays the revealed color.</li>
-          <li><b>Win:</b> opponent has no legal move (no flips, no movable pieces) or no remaining pieces.</li>
+          <li>On your turn, click a face-down piece to flip it, OR move one of your own face-up pieces.</li>
+          <li>Each piece captures any adjacent enemy of <b>equal or lower rank</b>.</li>
+          <li><b>Soldier</b> can capture <b>General</b> (1 beats 7). General cannot capture Soldier.</li>
+          <li><b>Cannon</b> jumps along a row or column over exactly one piece to capture anything, ignoring rank.</li>
+          <li>The first flipper plays the revealed color. You lose if you have no legal move.</li>
         </ul>
       </div>
     </div>
