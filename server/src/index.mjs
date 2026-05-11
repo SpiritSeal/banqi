@@ -19,7 +19,7 @@ const env = process.env;
 const PORT          = parseInt(env.PORT || '8080', 10);
 const PUBLIC_URL    = env.PUBLIC_URL    || `http://localhost:${PORT}`;
 const SERVER_SECRET = env.SERVER_SECRET || 'dev-insecure-secret-change-me';
-const DATABASE_FILE = env.DATABASE_FILE || './banqi.db';
+const DATABASE_URL  = env.DATABASE_URL  || 'postgresql://localhost/banqi';
 const WEB_DIR       = resolve(__dirname, '..', '..', 'web');
 
 if (SERVER_SECRET === 'dev-insecure-secret-change-me' && env.NODE_ENV === 'production') {
@@ -27,9 +27,9 @@ if (SERVER_SECRET === 'dev-insecure-secret-change-me' && env.NODE_ENV === 'produ
   process.exit(1);
 }
 
-export function buildApp({ databaseFile = DATABASE_FILE, serverSecret = SERVER_SECRET,
-                            publicUrl = PUBLIC_URL, envOverride = env } = {}) {
-  const db = openDb(databaseFile);
+export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERVER_SECRET,
+                                  publicUrl = PUBLIC_URL, envOverride = env } = {}) {
+  const db = await openDb(databaseUrl);
   const app = express();
   app.use(express.json({ limit: '64kb' }));
 
@@ -64,7 +64,7 @@ export function buildApp({ databaseFile = DATABASE_FILE, serverSecret = SERVER_S
 // Allow this file to be both imported (tests) and run directly.
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
-  const { server } = buildApp();
+  const { server } = await buildApp();
   server.listen(PORT, () => {
     console.log(`banqi relay listening on ${PUBLIC_URL} (port ${PORT})`);
   });

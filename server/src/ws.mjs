@@ -42,9 +42,9 @@ export function attachWebSocket(server, { db, sessionParser, passport }) {
     // req.user. The same middleware chain the HTTP server uses.
     sessionParser(req, {}, () => {
       passport.initialize()(req, {}, () => {
-        passport.session()(req, {}, () => {
+        passport.session()(req, {}, async () => {
           if (!req.user) { socket.destroy(); return; }
-          const game = findGameById(db, gameId);
+          const game = await findGameById(db, gameId);
           if (!game) { socket.destroy(); return; }
           if (game.host_user_id !== req.user.id && game.join_user_id !== req.user.id) {
             socket.destroy(); return;
@@ -67,14 +67,14 @@ export function attachWebSocket(server, { db, sessionParser, passport }) {
     ws.send(JSON.stringify({ type: '_meta', kind: 'hello',
                              role: game.host_user_id === userId ? 'host' : 'join' }));
 
-    ws.on('message', (data) => {
+    ws.on('message', async (data) => {
       const text = typeof data === 'string' ? data : data.toString('utf8');
       // Each WS message may contain one or more newline-delimited JSON lines
       // (mirroring the C++ output format).
       for (const line of text.split('\n')) {
         if (!line.trim()) continue;
         try {
-          appendMessage(db, {
+          await appendMessage(db, {
             gameId: game.id, senderUserId: userId, body: line,
           });
         } catch (e) {

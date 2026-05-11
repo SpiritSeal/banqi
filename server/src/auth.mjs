@@ -17,7 +17,7 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
       httpOnly: true,
       sameSite: 'lax',
       // secure cookies require HTTPS. In production the relay should sit
-      // behind a TLS terminator (Fly proxy, Render, Caddy, ...).
+      // behind a TLS terminator (Cloud Run, Caddy, ...).
       secure: publicUrl.startsWith('https://'),
       maxAge: 30 * 24 * 60 * 60 * 1000,    // 30 days
     },
@@ -27,14 +27,16 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   app.use(passport.session());
 
   passport.serializeUser((user, done) => done(null, user.id));
-  passport.deserializeUser((id, done) => {
-    const u = getUser(db, id);
-    done(null, u || null);
+  passport.deserializeUser(async (id, done) => {
+    try {
+      const u = await getUser(db, id);
+      done(null, u || null);
+    } catch (e) { done(e); }
   });
 
-  const adapt = (provider) => (accessToken, refreshToken, profile, done) => {
+  const adapt = (provider) => async (accessToken, refreshToken, profile, done) => {
     try {
-      const user = upsertOAuthUser(db, {
+      const user = await upsertOAuthUser(db, {
         provider,
         providerId:  String(profile.id),
         displayName: profile.displayName || profile.username || `user-${profile.id}`,
@@ -76,18 +78,20 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   // provider='dev'. Gated behind AUTH_DEV=1 so production deployments can't
   // accidentally enable it.
   if (env.AUTH_DEV === '1') {
-    app.get('/auth/dev', (req, res, next) => {
+    app.get('/auth/dev', async (req, res, next) => {
       const name = String(req.query.name || 'Dev').slice(0, 32);
-      const user = upsertOAuthUser(db, {
-        provider:    'dev',
-        providerId:  name,
-        displayName: name,
-        avatarUrl:   null,
-      });
-      req.login(user, (err) => {
-        if (err) return next(err);
-        res.redirect('/');
-      });
+      try {
+        const user = await upsertOAuthUser(db, {
+          provider:    'dev',
+          providerId:  name,
+          displayName: name,
+          avatarUrl:   null,
+        });
+        req.login(user, (err) => {
+          if (err) return next(err);
+          res.redirect('/');
+        });
+      } catch (e) { next(e); }
     });
   }
 
