@@ -178,7 +178,7 @@ class Board {
     }
   }
 
-  // Material + mobility heuristic for `forColor`.
+  // Material + progress + threat heuristic for `forColor`.
   evaluate(forColor) {
     if (this.over) {
       if (this.winner === forColor) return 1_000_000;
@@ -186,14 +186,35 @@ class Board {
       return 0;
     }
     let score = 0;
+    let myPieces = 0, oppPieces = 0, facedownCount = 0;
     for (let i = 0; i < CELLS; i++) {
       const c = this.cells[i];
-      if (!c || c.fd) continue;
+      if (!c) continue;
+      if (c.fd) { facedownCount++; continue; }
       const v = PIECE_VALUE[c.type] || 0;
-      score += c.color === forColor ? v : -v;
+      if (c.color === forColor) { score += v; myPieces++; }
+      else                      { score -= v; oppPieces++; }
     }
-    // Small mobility bonus for the side-to-move
-    score += this.legalMoves(this.sidePlayer).length * 3;
+    // Piece-count dominance and progress both use a strong weight so that
+    // material-even trades look attractive (they reduce piece count and advance
+    // the game toward a won endgame).
+    score += (myPieces - oppPieces) * 50;
+    const emptyCount = 32 - facedownCount - myPieces - oppPieces;
+    score += emptyCount * 20;
+    // Threat bonus: reward pieces that are adjacent to capturable enemies.
+    // Guides the search toward active, attacking positions and prevents
+    // indefinite passive shuffling when no captures are currently on the board.
+    for (let i = 0; i < CELLS; i++) {
+      const src = this.cells[i];
+      if (!src || src.fd || src.color !== forColor) continue;
+      const r = rowOf(i), co = colOf(i);
+      for (let d = 0; d < 4; d++) {
+        const nr = r + DR[d], nc = co + DC[d];
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        const dst = this.cells[rcIdx(nr, nc)];
+        if (dst && !dst.fd && canCapture(src, dst)) score += 45;
+      }
+    }
     return score;
   }
 }
@@ -344,6 +365,7 @@ function chooseMoveEasy(state, legal) {
 }
 
 // ---- Medium: 1-ply greedy ----
+// Priority: good capture > flip > passive move (with danger adjustment).
 function chooseMoveMedium(state, legal, playerIndex) {
   const myColor = state.my_color;
   let bestMove = legal[0], bestScore = -Infinity;
@@ -352,35 +374,44 @@ function chooseMoveMedium(state, legal, playerIndex) {
     let score = 0;
 
     if (move.from < 0) {
-      // Flip: unknown outcome; small random jitter so we occasionally flip
-      score = Math.random() * 30 - 15;
+      // Flip: revealing a piece always makes progress. Fixed base score beats
+      // passive moves but loses to genuine captures.
+      score = 40 + Math.random() * 10;
     } else {
       const src = state.cells[move.from];
       const dst = state.cells[move.to];
-
-      // Gain from capturing
-      if (dst.state === 'faceup' && dst.color !== myColor) {
-        score += PIECE_VALUE[dst.type] || 0;
-      } else if (dst.state === 'facedown') {
-        score += 50; // expected value of unknown capture
-      }
-
-      // Danger: check if our piece would be capturable at `move.to`
       const srcVal = PIECE_VALUE[src.type] || 0;
-      const r = rowOf(move.to), co = colOf(move.to);
-      for (let d = 0; d < 4; d++) {
-        const nr = r + DR[d], nc = co + DC[d];
-        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
-        const adj = state.cells[rcIdx(nr, nc)];
-        if (adj.state === 'faceup' && adj.color !== myColor) {
-          // Would the enemy be able to capture us after we move there?
-          if (canCapture(adj, src)) score -= srcVal * 0.8;
-          // But if we're capturing it, we already counted that gain
+
+      if (dst.state === 'faceup' && dst.color !== myColor) {
+        // Capture known enemy: net trade value. Base 200 ensures captures
+        // always beat passive moves even on losing trades.
+        const dstVal = PIECE_VALUE[dst.type] || 0;
+        score = 200 + dstVal - srcVal * 0.5;
+      } else if (dst.state === 'facedown') {
+        // Capture unknown piece: expected value minus risk of losing attacker
+        score = 150 + Math.random() * 50;
+      } else {
+        // Passive move to empty cell
+        score = 10 + Math.random() * 10;
+        const r = rowOf(move.to), co = colOf(move.to);
+        for (let d = 0; d < 4; d++) {
+          const nr = r + DR[d], nc = co + DC[d];
+          if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+          const adj = state.cells[rcIdx(nr, nc)];
+          if (!adj || adj.state === 'empty') continue;
+          if (adj.state === 'faceup' && adj.color !== myColor) {
+            if (canCapture({ color: src.color, type: src.type },
+                           { color: adj.color, type: adj.type })) {
+              // Moves into capture range of an enemy we can beat: big bonus
+              score += (PIECE_VALUE[adj.type] || 0) * 0.6 + 40;
+            } else if (canCapture({ color: adj.color, type: adj.type },
+                                   { color: src.color, type: src.type })) {
+              // Moving into danger from an enemy that can beat us: penalise
+              score -= srcVal * 0.7;
+            }
+          }
         }
       }
-
-      // Small bonus for advancing towards center
-      score += 5;
     }
 
     if (score > bestScore) { bestScore = score; bestMove = move; }
