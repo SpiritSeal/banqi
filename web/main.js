@@ -11,6 +11,7 @@
 import createBanqiModule from './banqi.js';
 import { RelayConnection, LoopbackConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
+import { Replay, renderTranscript, normalizeAction } from './replay.js';
 
 const Module = await createBanqiModule();
 
@@ -172,14 +173,15 @@ async function openFederatedGame(roomCode) {
 
   active = {
     info, game, isHost, conn: null,
-    replay: log.length > 0,
+    bootstrapping: log.length > 0,
     selected: null,
     pendingFinalize: false,
     finalizeReported: false,
     transport: 'federated',
+    replay: new Replay(),
   };
 
-  // Replay phase: feed log entries through the Game without sending any
+  // Bootstrap phase: feed log entries through the Game without sending any
   // outbound (the server already has them). Own MOVE_ENTRYs need to be
   // re-driven through local_* so they get re-signed; others go via
   // handle_message. See test_game.cpp "reconnect-by-replay" for the same
@@ -190,20 +192,18 @@ async function openFederatedGame(roomCode) {
     if (!parsed) continue;
     if (m.sender_user_id === me.id) {
       if (parsed.type === 'MOVE_ENTRY') {
-        const action = parseJsonSafe(parsed.payload);
+        const action = normalizeAction(parsed.payload);
         if (!action) continue;
-        try {
-          if (action.kind === 'flip')   game.localFlip(action.to);
-          else if (action.kind === 'move') game.localMove(action.from, action.to);
-          else if (action.kind === 'resign') game.localResign();
-        } catch (e) { console.warn('replay local action failed:', e); }
+        try { applyLocalAction(active, action); }
+        catch (e) { console.warn('bootstrap local action failed:', e); }
       }
       // Skip own HELLO/SETUP/REVEAL_KEY — they regenerate naturally.
     } else {
-      try { game.handleMessage(m.body); } catch (e) { console.warn('replay handle failed:', e); }
+      try { applyPeerMessage(active, m.body); }
+      catch (e) { console.warn('bootstrap handle failed:', e); }
     }
   }
-  active.replay = false;
+  active.bootstrapping = false;
 
   // Open the live WebSocket.
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -216,26 +216,141 @@ async function openFederatedGame(roomCode) {
 }
 
 function attachConnAsTransport(act) {
-  const { game, conn } = act;
+  const { conn } = act;
   conn.on('open', () => {
-    // The game has already emitted HELLO during replay/start; resending it
-    // is harmless because the peer ignores duplicate HELLOs (game.cpp:59).
+    // The game has already emitted HELLO during bootstrap/start; resending
+    // it is harmless because the peer ignores duplicate HELLOs (game.cpp:59).
   });
   conn.on('data', (line) => {
-    if (act.replay) return;  // shouldn't happen, but be safe
+    if (act.bootstrapping) return;  // shouldn't happen, but be safe
     try {
-      const out = game.handleMessage(line);
+      const out = applyPeerMessage(act, line);
       if (act.conn && out) act.conn.send(out);
     } catch (e) { console.warn('handleMessage:', e); }
     refreshGame();
   });
   conn.on('close', () => {
-    $('game-status-line').textContent = 'disconnected';
+    const el = $('game-status-line');
+    if (el) el.textContent = 'disconnected';
   });
   conn.on('meta', (m) => {
     // Server tells us our role; we already know it from REST, but log for diagnostics.
     console.log('relay meta:', m);
   });
+}
+
+// ---- replay/transcript helpers (used by every play mode) ----
+//
+// Each helper pushes a "pending" action onto the Replay before invoking the
+// C++ Game so that observe() can attribute the new transcript entry. If the
+// underlying call throws, the pending entry is dropped to keep the queue
+// aligned with actual transcript growth.
+
+function applyLocalAction(act, action) {
+  const game = act.game;
+  act.replay.pushPending(action, game.myPlayerIndex());
+  let out;
+  try {
+    if (action.kind === 'flip') out = game.localFlip(action.to);
+    else if (action.kind === 'move') out = game.localMove(action.from, action.to);
+    else if (action.kind === 'resign') out = game.localResign();
+    else throw new Error(`unknown local action kind: ${action.kind}`);
+  } catch (e) {
+    act.replay.dropPending();
+    throw e;
+  }
+  act.replay.observe(JSON.parse(game.stateJson()));
+  return out;
+}
+
+function applyPeerMessage(act, line) {
+  const game = act.game;
+  const parsed = parseJsonSafe(line);
+  let pushed = false;
+  if (parsed?.type === 'MOVE_ENTRY') {
+    const action = normalizeAction(parsed.payload);
+    if (action) {
+      act.replay.pushPending(action, 1 - game.myPlayerIndex());
+      pushed = true;
+    }
+  }
+  let out;
+  try { out = game.handleMessage(line); }
+  catch (e) {
+    if (pushed) act.replay.dropPending();
+    throw e;
+  }
+  act.replay.observe(JSON.parse(game.stateJson()));
+  return out;
+}
+
+// OTB / vs-AI helper: the replay tracker observes one of the two paired
+// games (since they keep identical rules state). Pending action is pushed
+// once per logical move, against the mover's side.
+function applyOTBAction(act, action, moverIdx) {
+  const game = moverIdx === 0 ? act.hostGame : act.joinGame;
+  const sender = moverIdx === 0 ? act.hostTr : act.joinTr;
+  act.replay.pushPending(action, moverIdx);
+  let out;
+  try {
+    if (action.kind === 'flip') out = game.localFlip(action.to);
+    else if (action.kind === 'move') out = game.localMove(action.from, action.to);
+    else if (action.kind === 'resign') out = game.localResign();
+    else throw new Error(`unknown otb action kind: ${action.kind}`);
+  } catch (e) {
+    act.replay.dropPending();
+    throw e;
+  }
+  if (out) sender.send(out);
+  act.replay.observe(JSON.parse(game.stateJson()));
+  return out;
+}
+
+function applyAIAction(act, side, action) {
+  const game = side === 'human' ? act.humanGame : act.aiGame;
+  const sender = side === 'human' ? act.humanTr : act.aiTr;
+  // moverIdx: human = host = 0, AI = join = 1
+  const moverIdx = side === 'human' ? 0 : 1;
+  act.replay.pushPending(action, moverIdx);
+  let out;
+  try {
+    if (action.kind === 'flip') out = game.localFlip(action.to);
+    else if (action.kind === 'move') out = game.localMove(action.from, action.to);
+    else if (action.kind === 'resign') out = game.localResign();
+    else throw new Error(`unknown ai action kind: ${action.kind}`);
+  } catch (e) {
+    act.replay.dropPending();
+    throw e;
+  }
+  if (out) sender.send(out);
+  act.replay.observe(JSON.parse(game.stateJson()));
+  return out;
+}
+
+// Render a state through the replay lens. Returns a "view state" with cells
+// possibly frozen to a past snapshot, legal_moves stripped to disable
+// interactivity, and a replayViewing flag for the renderer.
+function viewState(act, liveState) {
+  if (!act.replay || act.replay.isLive()) {
+    return { ...liveState, replayViewing: false };
+  }
+  const finality = act.replay.finalityFor(liveState);
+  // Highlight the move that produced this position. viewIndex === -1 → no move.
+  let replayMoveCells = null;
+  if (act.replay.viewIndex >= 0) {
+    const snap = act.replay.snapshots[act.replay.viewIndex];
+    if (snap?.action?.kind === 'move') replayMoveCells = { from: snap.action.from, to: snap.action.to };
+    else if (snap?.action?.kind === 'flip') replayMoveCells = { from: -1, to: snap.action.to };
+  }
+  return {
+    ...liveState,
+    cells: act.replay.cellsFor(liveState.cells),
+    legal_moves_for_me: [],
+    game_over: finality.game_over,
+    winner: finality.winner,
+    replayViewing: true,
+    replayMoveCells,
+  };
 }
 
 // ---- over-the-board ----
@@ -246,6 +361,10 @@ function openOTB() {
   // Wiring: a.send(line) → fires b.on('data', line) and vice versa. So each
   // game *sends* on its OWN transport, and *receives* from its OWN
   // transport's 'data' event (which fires when the peer sends).
+  //
+  // The Replay tracker observes hostGame (the two games' rules state stays
+  // in sync, so either is fine). pushPending only fires at the click site,
+  // so the join-side handleMessage doesn't double-count entries.
   const gameId = `otb-${Date.now()}`;
   const hostGame = Module.Game.createHost(1, gameId);   // 1 = casual
   const joinGame = Module.Game.createJoin(1, gameId);
@@ -256,6 +375,7 @@ function openOTB() {
       const out = hostGame.handleMessage(line);
       if (out) hostTr.send(out);
     } catch (e) { console.warn('host otb:', e); }
+    if (active?.replay) active.replay.observe(JSON.parse(hostGame.stateJson()));
     refreshOTB();
   });
   joinTr.on('data', (line) => {
@@ -275,6 +395,7 @@ function openOTB() {
     hostGame, joinGame, hostTr, joinTr,
     selected: null,
     transport: 'otb',
+    replay: new Replay(),
   };
   refreshOTB();
 }
@@ -285,47 +406,58 @@ function refreshOTB() {
   // player index. Both games have the same shared rules-engine state by
   // construction, so we can ask either.
   // Probe the host game just to get the global turn index.
+  active.replay.observe(JSON.parse(active.hostGame.stateJson()));
+
   const turnIdx = JSON.parse(active.hostGame.stateJson()).side_to_move;
   const activeGame = turnIdx === 0 ? active.hostGame : active.joinGame;
-  const state = JSON.parse(activeGame.stateJson());
+  const liveState = JSON.parse(activeGame.stateJson());
   // state.my_player_index already equals turnIdx because activeGame is the
   // side whose turn it is. legal_moves_for_me and my_color are already
   // computed against the active side. No massaging needed.
-  renderBoard($('otb-board'), state, (idx) => onOTBCellClick(idx, state));
+  const view = viewState(active, liveState);
+  renderBoard($('otb-board'), view, (idx) => {
+    if (view.replayViewing) return;  // replay view is read-only
+    onOTBCellClick(idx, view);
+  });
   // Banner
   let banner;
-  if (state.game_over) {
-    const w = state.winner;
+  if (view.replayViewing) {
+    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}`;
+  } else if (view.game_over) {
+    const w = view.winner;
     banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}`;
-  } else if (!state.first_flip_done) {
+  } else if (!view.first_flip_done) {
     banner = `Player 1 — flip a piece (your color is decided by your first flip)`;
   } else {
     const sideName = turnIdx === 0 ? 'Player 1' : 'Player 2';
-    banner = `${sideName}'s turn (${colorWord(state.my_color)})`;
+    banner = `${sideName}'s turn (${colorWord(view.my_color)})`;
   }
   $('otb-banner').textContent = banner;
-  $('otb-resign').disabled = !state.setup_done || state.game_over;
+  $('otb-resign').disabled = !liveState.setup_done || liveState.game_over || view.replayViewing;
   $('otb-resign').onclick = () => {
-    try {
-      const sender = turnIdx === 0 ? active.hostTr : active.joinTr;
-      const out = (turnIdx === 0 ? active.hostGame : active.joinGame).localResign();
-      sender.send(out);
-    } catch (e) { console.warn(e); }
+    if (view.replayViewing) return;
+    const liveTurn = JSON.parse(active.hostGame.stateJson()).side_to_move;
+    try { applyOTBAction(active, { kind: 'resign' }, liveTurn); }
+    catch (e) { console.warn(e); }
     refreshOTB();
   };
+
+  renderTranscript($('otb-transcript'), active.replay, {
+    onJump: (step) => { active.replay.goToStep(step); refreshOTB(); },
+  });
 }
 function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
 
 function onOTBCellClick(idx, state) {
   if (!state.setup_done || state.game_over) return;
+  if (state.replayViewing) return;
   const turnIdx = state.side_to_move;
-  const sender = turnIdx === 0 ? active.hostTr : active.joinTr;
-  const game   = turnIdx === 0 ? active.hostGame : active.joinGame;
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me;
   if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
-      try { sender.send(game.localFlip(idx)); } catch (e) { console.warn(e); }
+      try { applyOTBAction(active, { kind: 'flip', to: idx }, turnIdx); }
+      catch (e) { console.warn(e); }
       refreshOTB();
       return;
     }
@@ -339,7 +471,8 @@ function onOTBCellClick(idx, state) {
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
     active.selected = null;
-    try { sender.send(game.localMove(from, idx)); } catch (e) { console.warn(e); }
+    try { applyOTBAction(active, { kind: 'move', from, to: idx }, turnIdx); }
+    catch (e) { console.warn(e); }
     refreshOTB();
     return;
   }
@@ -377,6 +510,7 @@ function _startAIGame(difficulty) {
       const out = humanGame.handleMessage(line);
       if (out) humanTr.send(out);
     } catch (e) { console.warn('human handleMessage:', e); }
+    if (active?.replay) active.replay.observe(JSON.parse(humanGame.stateJson()));
     refreshAI();
   });
 
@@ -401,6 +535,7 @@ function _startAIGame(difficulty) {
     selected: null,
     aiThinking: false,
     transport: 'ai',
+    replay: new Replay(),
   };
 
   // Button wiring
@@ -409,10 +544,9 @@ function _startAIGame(difficulty) {
     const state = JSON.parse(active.humanGame.stateJson());
     if (!state.setup_done || state.game_over) return;
     if (state.side_to_move !== state.my_player_index) return; // only resign on your turn
-    try {
-      const out = active.humanGame.localResign();
-      active.humanTr.send(out);
-    } catch (e) { console.warn(e); }
+    if (!active.replay.isLive()) return; // resign disabled in replay view
+    try { applyAIAction(active, 'human', { kind: 'resign' }); }
+    catch (e) { console.warn(e); }
     refreshAI();
   };
   $('ai-new-game').onclick = () => {
@@ -425,33 +559,47 @@ function _startAIGame(difficulty) {
 
 function refreshAI() {
   if (!active?.isAI) return;
-  const state = JSON.parse(active.humanGame.stateJson());
-  renderBoard($('ai-board'), state, (idx) => onAICellClick(idx, state));
+  const liveState = JSON.parse(active.humanGame.stateJson());
+  active.replay.observe(liveState);
+  const view = viewState(active, liveState);
+  renderBoard($('ai-board'), view, (idx) => {
+    if (view.replayViewing) return;
+    onAICellClick(idx, view);
+  });
 
   const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }[active.difficulty] || '';
   let banner;
-  if (state.game_over) {
-    const w = state.winner;
-    if (w === state.my_color) banner = `You win! 🎉`;
+  if (view.replayViewing) {
+    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}`;
+  } else if (view.game_over) {
+    const w = view.winner;
+    if (w === view.my_color) banner = `You win! 🎉`;
     else if (w !== 0)         banner = `AI wins. Better luck next time.`;
     else                      banner = `Game over`;
-  } else if (!state.first_flip_done) {
+  } else if (!view.first_flip_done) {
     banner = `Your turn — flip a piece to begin`;
-  } else if (state.side_to_move === state.my_player_index) {
-    banner = `Your turn (${colorWord(state.my_color)})`;
+  } else if (view.side_to_move === view.my_player_index) {
+    banner = `Your turn (${colorWord(view.my_color)})`;
   } else {
-    banner = active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(state.my_color === 1 ? 2 : 1)})`;
+    banner = active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(view.my_color === 1 ? 2 : 1)})`;
   }
   $('ai-banner').textContent = banner;
   $('ai-meta').textContent = `Difficulty: ${diffLabel}`;
-  $('ai-resign').disabled = !state.setup_done || state.game_over || state.side_to_move !== state.my_player_index;
+  $('ai-resign').disabled = !liveState.setup_done || liveState.game_over
+    || liveState.side_to_move !== liveState.my_player_index
+    || view.replayViewing;
   $('ai-new-game').disabled = false;
   $('ai-thinking').classList.toggle('hidden', !active.aiThinking);
+
+  renderTranscript($('ai-transcript'), active.replay, {
+    onJump: (step) => { active.replay.goToStep(step); refreshAI(); },
+  });
 }
 
 function onAICellClick(idx, state) {
   if (!active?.isAI) return;
   if (!state.setup_done || state.game_over) return;
+  if (state.replayViewing) return;
   if (state.side_to_move !== state.my_player_index) return; // not human's turn
   if (active.aiThinking) return;
 
@@ -460,7 +608,8 @@ function onAICellClick(idx, state) {
 
   if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
-      try { active.humanTr.send(active.humanGame.localFlip(idx)); } catch (e) { console.warn(e); }
+      try { applyAIAction(active, 'human', { kind: 'flip', to: idx }); }
+      catch (e) { console.warn(e); }
       refreshAI();
       return;
     }
@@ -473,7 +622,8 @@ function onAICellClick(idx, state) {
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
     active.selected = null;
-    try { active.humanTr.send(active.humanGame.localMove(from, idx)); } catch (e) { console.warn(e); }
+    try { applyAIAction(active, 'human', { kind: 'move', from, to: idx }); }
+    catch (e) { console.warn(e); }
     refreshAI();
     return;
   }
@@ -505,10 +655,10 @@ function scheduleAIMove() {
     try {
       const move = chooseMove(freshState, freshState.my_player_index, active.difficulty);
       if (move) {
-        let out;
-        if (move.from < 0) out = active.aiGame.localFlip(move.to);
-        else               out = active.aiGame.localMove(move.from, move.to);
-        if (out) active.aiTr.send(out);
+        const action = move.from < 0
+          ? { kind: 'flip', to: move.to }
+          : { kind: 'move', from: move.from, to: move.to };
+        applyAIAction(active, 'ai', action);
       }
     } catch (e) { console.warn('AI move error:', e); }
 
@@ -520,6 +670,7 @@ function scheduleAIMove() {
 // ---- shared rendering ----
 function renderBoard(boardEl, state, onClick) {
   boardEl.innerHTML = '';
+  boardEl.classList.toggle('replay-viewing', !!state.replayViewing);
   const legal = state.legal_moves_for_me || [];
   const flipTargets = new Set();
   const moveTargetsBySrc = new Map();
@@ -530,6 +681,8 @@ function renderBoard(boardEl, state, onClick) {
       moveTargetsBySrc.get(m.from).add(m.to);
     }
   }
+  // Highlight the cells involved in the move being viewed (replay mode).
+  const highlight = state.replayMoveCells || null;
   for (let i = 0; i < 32; ++i) {
     const c = state.cells[i];
     const div = document.createElement('div');
@@ -538,13 +691,16 @@ function renderBoard(boardEl, state, onClick) {
       div.classList.add(c.color === 1 ? 'red' : 'black');
       div.textContent = c.glyph;
     }
-    if (active?.selected === i) div.classList.add('selected');
-    if (state.side_to_move === state.my_player_index && !state.game_over) {
+    if (!state.replayViewing && active?.selected === i) div.classList.add('selected');
+    if (state.side_to_move === state.my_player_index && !state.game_over && !state.replayViewing) {
       if (active?.selected != null && moveTargetsBySrc.get(active.selected)?.has(i)) {
         div.classList.add('legal-target');
       } else if (active?.selected == null && (flipTargets.has(i) || moveTargetsBySrc.has(i))) {
         div.classList.add('legal');
       }
+    }
+    if (highlight && (i === highlight.from || i === highlight.to)) {
+      div.classList.add('replay-highlight');
     }
     div.addEventListener('click', () => onClick(i));
     boardEl.appendChild(div);
@@ -554,42 +710,57 @@ function renderBoard(boardEl, state, onClick) {
 // ---- federated game rendering ----
 function refreshGame() {
   if (!active || active.isOTB) return;
-  const state = JSON.parse(active.game.stateJson());
-  renderBoard($('game-board'), state, (idx) => onFedCellClick(idx, state));
+  const liveState = JSON.parse(active.game.stateJson());
+  active.replay?.observe(liveState);
+  const view = viewState(active, liveState);
+  renderBoard($('game-board'), view, (idx) => {
+    if (view.replayViewing) return;
+    onFedCellClick(idx, view);
+  });
   const opp = active.isHost ? active.info.join_name : active.info.host_name;
+  const replayBadge = view.replayViewing
+    ? `<div class="replay-badge">Reviewing move ${active.replay.currentStep()}/${active.replay.totalMoves()}</div>`
+    : '';
   $('game-header').innerHTML = `
     <div class="meta">
+      ${replayBadge}
       <div><b>Room:</b> <code>${active.info.room_code}</code>
            <button id="btn-copy-link" class="link-btn">Copy invite link</button></div>
       <div><b>Opponent:</b> ${escapeHtml(opp || '(waiting…)')}</div>
       <div><b>You are:</b> ${active.isHost ? 'Host (Player 1)' : 'Joiner (Player 2)'}
-        ${state.my_color === 1 ? '· Red' : state.my_color === 2 ? '· Black' : ''}</div>
-      <div><b>Turn:</b> <span id="game-turn">${turnLabel(state)}</span></div>
-      <div><b>Status:</b> <span id="game-status-line">${statusLabel(state, active.info)}</span></div>
-      <div><b>Moves:</b> ${state.transcript_seq}</div>
-      <button id="btn-resign" ${state.setup_done && !state.game_over ? '' : 'disabled'}>Resign</button>
+        ${liveState.my_color === 1 ? '· Red' : liveState.my_color === 2 ? '· Black' : ''}</div>
+      <div><b>Turn:</b> <span id="game-turn">${turnLabel(liveState)}</span></div>
+      <div><b>Status:</b> <span id="game-status-line">${statusLabel(liveState, active.info)}</span></div>
+      <div><b>Moves:</b> ${liveState.transcript_seq}</div>
+      <button id="btn-resign" ${liveState.setup_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
       <a class="link-btn" href="#/dashboard">My games</a>
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
   $('btn-resign').onclick = () => {
+    if (!active.replay.isLive()) return;
     try {
-      const out = active.game.localResign();
-      if (active.conn) active.conn.send(out);
+      const out = applyLocalAction(active, { kind: 'resign' });
+      if (active.conn && out) active.conn.send(out);
     } catch (e) { console.warn(e); }
     refreshGame();
   };
 
-  // If the game just ended, report finalize once.
-  if (state.game_over && !active.finalizeReported) {
+  renderTranscript($('game-transcript'), active.replay, {
+    onJump: (step) => { active.replay.goToStep(step); refreshGame(); },
+  });
+
+  // If the game just ended, report finalize once. Use liveState so the
+  // finalize fires on the actual end of game, not while viewing a replay.
+  if (liveState.game_over && !active.finalizeReported) {
     active.finalizeReported = true;
-    const myColor = state.my_color;
-    const iWon = state.winner !== 0 && state.winner === myColor;
+    const myColor = liveState.my_color;
+    const iWon = liveState.winner !== 0 && liveState.winner === myColor;
     fetch(`/api/games/${active.info.id}/finalize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        winner_color: state.winner,
-        tip_hash: state.tip_hash || '',
+        winner_color: liveState.winner,
+        tip_hash: liveState.tip_hash || '',
         i_won: iWon,
       }),
     }).catch(() => {});
@@ -613,14 +784,15 @@ function statusLabel(state, info) {
 
 function onFedCellClick(idx, state) {
   if (!state.setup_done || state.game_over) return;
+  if (state.replayViewing) return;
   if (state.side_to_move !== state.my_player_index) return;
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me || [];
   if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
       try {
-        const out = active.game.localFlip(idx);
-        if (active.conn) active.conn.send(out);
+        const out = applyLocalAction(active, { kind: 'flip', to: idx });
+        if (active.conn && out) active.conn.send(out);
       } catch (e) { console.warn(e); }
       refreshGame();
       return;
@@ -636,8 +808,8 @@ function onFedCellClick(idx, state) {
     const from = active.selected;
     active.selected = null;
     try {
-      const out = active.game.localMove(from, idx);
-      if (active.conn) active.conn.send(out);
+      const out = applyLocalAction(active, { kind: 'move', from, to: idx });
+      if (active.conn && out) active.conn.send(out);
     } catch (e) { console.warn(e); }
     refreshGame();
     return;
@@ -751,6 +923,7 @@ async function renderClassicLobby() {
 // (Lightweight version of the previous main.js classic-mode flow, behind a
 // disclosure. Single Peer + DataConnection, with peer-ID copy/paste.)
 let classicPeer = null, classicConn = null, classicGame = null;
+let classicReplay = null;
 function initClassicUI() {
   $('classic-body').innerHTML = `
     <h2>Advanced: peer-to-peer (no account, no rating)</h2>
@@ -770,14 +943,28 @@ function initClassicUI() {
     <div id="cl-board-wrap" class="hidden">
       <div id="cl-board" class="board"></div>
       <button id="cl-resign">Resign</button>
+      <div id="cl-transcript" class="transcript-panel"></div>
     </div>`;
   $('cl-create').onclick = classicCreate;
   $('cl-join').onclick   = classicJoin;
   $('cl-resign').onclick = () => {
     if (!classicGame) return;
-    try { classicConn?.send(classicGame.localResign()); } catch (e) {}
+    if (classicReplay && !classicReplay.isLive()) return;
+    try {
+      classicReplay?.pushPending({ kind: 'resign' }, classicGame.myPlayerIndex());
+      const out = classicGame.localResign();
+      classicReplay?.observe(JSON.parse(classicGame.stateJson()));
+      classicConn?.send(out);
+    } catch (e) { classicReplay?.dropPending(); }
     classicRefresh();
   };
+}
+
+function classicSetup(mode, gameId, isHost) {
+  classicGame = isHost
+    ? Module.Game.createHost(mode, gameId)
+    : Module.Game.createJoin(mode, gameId);
+  classicReplay = new Replay();
 }
 
 function classicCreate() {
@@ -791,13 +978,13 @@ function classicCreate() {
   classicPeer.on('connection', (c) => {
     classicConn = c;
     classicConn.on('open', () => {
-      classicGame = Module.Game.createHost(mode, gameId);
+      classicSetup(mode, gameId, true);
       classicConn.send(classicGame.start());
       $('cl-board-wrap').classList.remove('hidden');
       classicRefresh();
     });
     classicConn.on('data', (d) => {
-      try { classicConn.send(classicGame.handleMessage(String(d))); } catch (e) {}
+      classicHandleInbound(String(d));
       classicRefresh();
     });
   });
@@ -818,34 +1005,78 @@ function classicJoin() {
         const parsed = parseJsonSafe(text);
         if (!parsed || parsed.type !== 'HELLO') return;
         const modeNum = parsed.mode === 'crypto' ? 2 : 1;
-        classicGame = Module.Game.createJoin(modeNum, parsed.game_id);
+        classicSetup(modeNum, parsed.game_id, false);
         classicConn.send(classicGame.start());
-        classicConn.send(classicGame.handleMessage(text));
+        classicHandleInbound(text);
         $('cl-board-wrap').classList.remove('hidden');
         classicRefresh();
         return;
       }
-      try { classicConn.send(classicGame.handleMessage(text)); } catch (e) {}
+      classicHandleInbound(text);
       classicRefresh();
     });
   });
 }
-let classicSelected = null;
+
+function classicHandleInbound(line) {
+  const parsed = parseJsonSafe(line);
+  let pushed = false;
+  if (parsed?.type === 'MOVE_ENTRY' && classicReplay) {
+    const action = normalizeAction(parsed.payload);
+    if (action) {
+      classicReplay.pushPending(action, 1 - classicGame.myPlayerIndex());
+      pushed = true;
+    }
+  }
+  try {
+    const out = classicGame.handleMessage(line);
+    if (out) classicConn?.send(out);
+    classicReplay?.observe(JSON.parse(classicGame.stateJson()));
+  } catch (e) {
+    if (pushed) classicReplay?.dropPending();
+  }
+}
+
 function classicRefresh() {
   if (!classicGame) return;
-  const state = JSON.parse(classicGame.stateJson());
-  renderBoard($('cl-board'), state, (idx) => classicCellClick(idx, state));
+  const liveState = JSON.parse(classicGame.stateJson());
+  classicReplay?.observe(liveState);
+  const stub = { game: classicGame, replay: classicReplay, selected: active?.selected };
+  const view = viewState(stub, liveState);
+  renderBoard($('cl-board'), view, (idx) => {
+    if (view.replayViewing) return;
+    classicCellClick(idx, view);
+  });
+  $('cl-resign').disabled = !liveState.setup_done || liveState.game_over || (classicReplay && !classicReplay.isLive());
+  if (classicReplay) {
+    renderTranscript($('cl-transcript'), classicReplay, {
+      onJump: (step) => { classicReplay.goToStep(step); classicRefresh(); },
+    });
+  }
 }
 function classicCellClick(idx, state) {
   if (!state.setup_done || state.game_over) return;
+  if (state.replayViewing) return;
   if (state.side_to_move !== state.my_player_index) return;
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me;
   // Use the shared `active.selected` for selection state.
   active = active || { selected: null };
+  const performLocal = (action) => {
+    classicReplay?.pushPending(action, classicGame.myPlayerIndex());
+    try {
+      let out;
+      if (action.kind === 'flip') out = classicGame.localFlip(action.to);
+      else if (action.kind === 'move') out = classicGame.localMove(action.from, action.to);
+      if (out) classicConn?.send(out);
+      classicReplay?.observe(JSON.parse(classicGame.stateJson()));
+    } catch (e) {
+      classicReplay?.dropPending();
+    }
+  };
   if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
-      try { classicConn.send(classicGame.localFlip(idx)); } catch (e) {}
+      performLocal({ kind: 'flip', to: idx });
       classicRefresh();
       return;
     }
@@ -859,7 +1090,7 @@ function classicCellClick(idx, state) {
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
     active.selected = null;
-    try { classicConn.send(classicGame.localMove(from, idx)); } catch (e) {}
+    performLocal({ kind: 'move', from, to: idx });
     classicRefresh();
     return;
   }
