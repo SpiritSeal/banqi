@@ -16,7 +16,20 @@ types.setTypeParser(20, (val) => parseInt(val, 10));
 export async function openDb(connectionString) {
   const pool = new Pool({ connectionString });
   const schema = readFileSync(join(__dirname, '..', 'schema.sql'), 'utf8');
-  await pool.query(schema);
+  // The schema is idempotent (CREATE TABLE / INDEX IF NOT EXISTS), but
+  // concurrent first-time bootstraps still race on pg_type / pg_class — the
+  // SERIAL columns implicitly create sequence types, and existence checks
+  // are not atomic with the catalog insert. Serialize via a Postgres
+  // advisory lock keyed off a stable hash so multiple workers / test files
+  // / processes coordinate correctly.
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1)', [0x42414e51]); // 'BANQ'
+    try { await client.query(schema); }
+    finally { await client.query('SELECT pg_advisory_unlock($1)', [0x42414e51]); }
+  } finally {
+    client.release();
+  }
   return pool;
 }
 
@@ -38,6 +51,23 @@ export async function upsertOAuthUser(db, { provider, providerId, displayName, a
 export async function getUser(db, id) {
   const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [id]);
   return rows[0] || null;
+}
+
+// Anonymize, don't hard-delete. The users table is referenced by games,
+// messages, elo_history, and finalize_claims (all non-cascading) — wiping a
+// row would orphan opponents' rating history and break head-to-head queries.
+// Instead we strip PII (display name + avatar) and rotate the OAuth tuple so
+// the same provider account, on signing in again, gets a fresh user row.
+export async function deleteUser(db, id) {
+  const tag = `deleted-${id}-${Date.now()}`;
+  const { rowCount } = await db.query(`
+    UPDATE users
+       SET display_name = '[deleted user]',
+           avatar_url   = NULL,
+           provider_id  = $1
+     WHERE id = $2
+  `, [tag, id]);
+  return rowCount > 0;
 }
 
 // ---------- Games ----------

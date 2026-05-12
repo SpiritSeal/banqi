@@ -13,6 +13,42 @@ import { RelayConnection, LoopbackConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
 import { Replay, renderTranscript, normalizeAction } from './replay.js';
 
+// ---- service worker / PWA ----
+// Kicked off before the WASM await so registration runs in parallel with the
+// (slower) module load. Browsers without SW support (or page served over a
+// non-secure origin other than localhost) silently skip this block.
+if ('serviceWorker' in navigator) {
+  let _swReloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (_swReloading) return;
+    _swReloading = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('./sw.js').then((reg) => {
+    const showUpdateBanner = (worker) => {
+      if (document.getElementById('sw-update-banner')) return;
+      const b = document.createElement('div');
+      b.id = 'sw-update-banner';
+      b.className = 'sw-update-banner';
+      b.innerHTML =
+        '<span>A new version of Banqi is available.</span>' +
+        '<button id="sw-update-apply" class="primary">Update</button>' +
+        '<button id="sw-update-dismiss" class="link-btn">Later</button>';
+      document.body.appendChild(b);
+      document.getElementById('sw-update-apply').onclick = () => worker.postMessage({ type: 'SKIP_WAITING' });
+      document.getElementById('sw-update-dismiss').onclick = () => b.remove();
+    };
+    if (reg.waiting) showUpdateBanner(reg.waiting);
+    reg.addEventListener('updatefound', () => {
+      const nw = reg.installing;
+      if (!nw) return;
+      nw.addEventListener('statechange', () => {
+        if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdateBanner(nw);
+      });
+    });
+  }).catch((e) => console.warn('SW registration failed:', e));
+}
+
 const Module = await createBanqiModule();
 
 const $ = (id) => document.getElementById(id);
@@ -58,6 +94,71 @@ function announce(text) {
 // ---- session ----
 let me = null;            // current user from /api/me, or null
 let providers = { github: false, google: false, dev: false };
+
+// ---- online/offline ----
+// Reflects navigator.onLine; updated by 'online'/'offline' window events. The
+// banner is injected once on first transition (or on init if we boot offline)
+// and toggled via CSS. We only re-render the lobby on a state change — active
+// federated games handle their own reconnection via the existing WS retry
+// path, and forcing route() while a game is open would leak the connection.
+let online = navigator.onLine;
+function ensureOfflineBanner() {
+  let b = document.getElementById('offline-banner');
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'offline-banner';
+    b.className = 'offline-banner';
+    b.textContent = "You're offline — online play resumes when you reconnect.";
+    document.body.insertBefore(b, document.body.firstChild);
+  }
+  b.hidden = online;
+}
+function setOnline(v) {
+  if (online === v) return;
+  online = v;
+  document.body.classList.toggle('is-offline', !online);
+  ensureOfflineBanner();
+  // Re-render only the lobby; other views own their own offline behavior.
+  if (!location.hash || location.hash === '#/' || location.hash === '#') renderLobby();
+}
+window.addEventListener('online',  () => setOnline(true));
+window.addEventListener('offline', () => setOnline(false));
+if (!online) document.body.classList.add('is-offline');
+
+// ---- iOS Add-to-Home-Screen hint ----
+// Apple does not fire `beforeinstallprompt`, so we surface a one-time
+// dismissible footer banner pointing iOS Safari users to the Share menu.
+// Hidden in standalone mode (already installed) and on non-iOS-Safari UAs.
+function isIOSSafari() {
+  const ua = navigator.userAgent;
+  const iOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const safari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|YaBrowser|UCBrowser/.test(ua);
+  return iOS && safari;
+}
+function inStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches
+      || window.navigator.standalone === true;
+}
+function maybeShowAddToHomeHint() {
+  if (!isIOSSafari() || inStandalone()) return;
+  try { if (localStorage.getItem('banqi.a2h-dismissed') === '1') return; } catch (_) {}
+  if (document.getElementById('a2h-banner')) return;
+  const b = document.createElement('div');
+  b.id = 'a2h-banner';
+  b.className = 'a2h-banner';
+  b.setAttribute('role', 'note');
+  b.innerHTML =
+    '<div class="a2h-text"><b>Install Banqi:</b> tap ' +
+      '<svg class="a2h-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">' +
+        '<path d="M12 2l4 4h-3v8h-2V6H8l4-4zM5 12h2v7h10v-7h2v9H5z"/>' +
+      '</svg> Share, then <b>Add to Home Screen</b>.</div>' +
+    '<button id="a2h-dismiss" class="link-btn" aria-label="Dismiss install hint">Dismiss</button>';
+  document.body.appendChild(b);
+  document.getElementById('a2h-dismiss').onclick = () => {
+    try { localStorage.setItem('banqi.a2h-dismissed', '1'); } catch (_) {}
+    b.remove();
+  };
+}
 
 async function refreshSession() {
   try {
@@ -143,7 +244,10 @@ function renderLobby() {
   } else {
     renderSignInButtons(meBox, null);
   }
-  $('btn-start-online').disabled = !me;
+  ensureOfflineBanner();
+  maybeShowAddToHomeHint();
+  $('btn-start-online').disabled = !me || !online;
+  $('btn-start-online').title = !online ? "You're offline — connect to start an online game" : '';
   $('btn-start-online').onclick = startOnlineGame;
   $('btn-otb').onclick = () => { location.hash = '#/otb'; };
   $('btn-ai').onclick = () => { location.hash = '#/ai'; };
@@ -195,6 +299,15 @@ async function openFederatedGame(roomCode) {
         <p class="muted small"><a href="#/">← Back to lobby</a></p>
       </div>`;
     renderSignInButtons($('invite-signin-buttons'), `#/g/${roomCode}`);
+    return;
+  }
+
+  if (!online) {
+    $('game-header').innerHTML = `
+      <div class="err">You're offline. Online play resumes when you reconnect.
+      <button id="game-retry" class="link-btn">Retry</button> ·
+      <a href="#/">Back to lobby</a></div>`;
+    $('game-retry').onclick = () => openFederatedGame(roomCode);
     return;
   }
 
@@ -1156,6 +1269,7 @@ async function renderDashboard() {
   showView('dashboard');
   const list = $('dashboard-list');
   if (!me) { list.innerHTML = `<div>Sign in first. <a href="#/">Lobby</a></div>`; return; }
+  if (!online) { list.innerHTML = `<div class="muted">You're offline — can't load games. <a href="#/">Lobby</a></div>`; return; }
   let games;
   try {
     const r = await fetch('/api/games');
@@ -1197,6 +1311,10 @@ async function renderDashboard() {
 // ---- leaderboard ----
 async function renderLeaderboard() {
   showView('leaderboard');
+  if (!online) {
+    $('leaderboard-table').innerHTML = `<div class="muted">You're offline — can't load the leaderboard. <a href="#/">Lobby</a></div>`;
+    return;
+  }
   let data;
   try {
     const r = await fetch('/api/leaderboard');
@@ -1229,6 +1347,10 @@ async function renderLeaderboard() {
 // ---- profile ----
 async function renderProfile(userId) {
   showView('profile');
+  if (!online) {
+    $('profile-body').innerHTML = `<div class="muted">You're offline — can't load this profile. <a href="#/">Lobby</a></div>`;
+    return;
+  }
   let p;
   try {
     const r = await fetch(`/api/users/${userId}`);
@@ -1239,6 +1361,7 @@ async function renderProfile(userId) {
     return;
   }
   const h2h = p.head_to_head || [];
+  const isSelf = me && p.id === me.id;
   $('profile-body').innerHTML = `
     <h2>${escapeHtml(p.display_name)}</h2>
     <div><b>Elo:</b> ${p.elo}</div>
@@ -1248,7 +1371,23 @@ async function renderProfile(userId) {
        <tbody>${h2h.map(r => `
          <tr><td><a href="#/profile/${r.opponent_id}">${escapeHtml(r.opponent_name || '')}</a></td>
              <td>${r.wins}</td><td>${r.losses}</td><td>${r.draws}</td></tr>`).join('')}
-       </tbody></table>`}`;
+       </tbody></table>`}
+    ${isSelf ? `
+      <hr style="margin-top:24px;border:none;border-top:1px solid #333">
+      <h3>Danger zone</h3>
+      <p class="muted">Deleting your account anonymizes your past games and removes your sign-in. This cannot be undone.</p>
+      <button id="btn-delete-account" class="link-btn" style="color:#d24343">Delete my account…</button>` : ''}`;
+  if (isSelf) {
+    $('btn-delete-account').onclick = async () => {
+      const typed = prompt(`To confirm deletion, type your display name:\n\n${p.display_name}`);
+      if (typed == null) return;
+      if (typed !== p.display_name) { alert("That doesn't match — cancelled."); return; }
+      const r = await fetch('/api/me', { method: 'DELETE' });
+      if (!r.ok) { alert('Delete failed.'); return; }
+      me = null;
+      location.hash = '#/';
+    };
+  }
 }
 
 // ---- classic P2P lobby (legacy PeerJS flow, preserved) ----

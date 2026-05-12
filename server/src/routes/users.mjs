@@ -1,7 +1,7 @@
 // Per-user endpoints: profile + head-to-head record.
 
 import express from 'express';
-import { getUser, headToHead } from '../db.mjs';
+import { getUser, headToHead, deleteUser } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 import { deriveUserSeedHex } from '../identity.mjs';
 
@@ -26,6 +26,18 @@ export function usersRouter({ db, serverSecret }) {
       identity_seed_hex: deriveUserSeedHex(serverSecret, u.provider, u.provider_id),
     });
   });
+
+  // Account deletion: anonymizes the user row (see deleteUser in db.mjs for
+  // the rationale) and ends the session. Game history persists under
+  // "[deleted user]" so opponents' Elo + head-to-head stay coherent.
+  r.delete('/me', requireAuth, asyncRoute(async (req, res) => {
+    const userId = req.user.id;
+    await deleteUser(db, userId);
+    await new Promise((resolve, reject) => {
+      req.logout((err) => err ? reject(err) : resolve());
+    });
+    res.json({ ok: true });
+  }));
 
   r.get('/users/:id', asyncRoute(async (req, res) => {
     const u = await getUser(db, +req.params.id);

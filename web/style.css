@@ -45,6 +45,13 @@ body {
   background: var(--bg);
   color: var(--fg);
   font: 15px/1.4 system-ui, sans-serif;
+  /* Respect device notches / home-indicator when installed as a PWA with
+     viewport-fit=cover. env() is 0 on devices without insets, so this is a
+     no-op outside of standalone iOS / notched displays. */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 .page { max-width: 960px; margin: 24px auto; padding: 0 16px; }
 a { color: var(--accent); text-decoration: underline; }
@@ -146,6 +153,8 @@ button[disabled] { opacity: 0.4; cursor: not-allowed; }
   border-radius: 6px;
   aspect-ratio: 8 / 4;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   margin-top: 10px;
 }
 .cell {
@@ -161,6 +170,7 @@ button[disabled] { opacity: 0.4; cursor: not-allowed; }
   cursor: pointer;
   transition: background 0.15s, transform 0.05s;
   color: #2a1502;
+  touch-action: manipulation;
 }
 .cell:hover.legal { transform: scale(1.03); }
 .cell.empty { background: var(--cell); cursor: default; }
@@ -612,6 +622,73 @@ table.crib td.zh.black  { color: #d8d8d8; }
 @media (max-width: 700px) {
   .crib-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- PWA: offline status banner ---- */
+.offline-banner {
+  background: #2a2416;
+  color: #ffd089;
+  border-bottom: 1px solid #5a4a1f;
+  padding: 8px 14px;
+  text-align: center;
+  font-size: 13px;
+  padding-top: calc(8px + env(safe-area-inset-top));
+  padding-left: max(14px, env(safe-area-inset-left));
+  padding-right: max(14px, env(safe-area-inset-right));
+}
+.offline-banner[hidden] { display: none; }
+body.is-offline #btn-start-online { opacity: 0.55; }
+
+/* ---- PWA: iOS "Add to Home Screen" hint banner ---- */
+.a2h-banner {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 900;
+  background: #2c2c30;
+  color: var(--fg);
+  border-top: 1px solid #5a4a1f;
+  padding: 10px 14px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  padding-left: max(14px, env(safe-area-inset-left));
+  padding-right: max(14px, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.4);
+}
+.a2h-banner .a2h-icon {
+  color: var(--accent);
+  vertical-align: -2px;
+  margin: 0 2px;
+}
+.a2h-banner .a2h-text { flex: 1; min-width: 0; }
+.a2h-banner button { white-space: nowrap; }
+
+/* ---- PWA: service worker update banner ---- */
+.sw-update-banner {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 1000;
+  background: #2c2c30;
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  max-width: 560px;
+  margin: 0 auto;
+}
+.sw-update-banner button { white-space: nowrap; }
 
 /* ---- crib collapsible ---- */
 .crib-collapsible > details > summary {
