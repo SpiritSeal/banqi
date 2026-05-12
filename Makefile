@@ -109,6 +109,7 @@ $(WASM_BUILD_DIR)/%.o: $(THIRD_PARTY)/%.c
 .PHONY: wasm-test
 wasm-test: wasm
 	node tests/wasm_smoke.mjs
+	node tests/replay_smoke.mjs
 
 # Real-browser end-to-end test. Spawns a static server, a local PeerServer,
 # and two Chromium pages, then drives a full game through PeerJS / WebRTC.
