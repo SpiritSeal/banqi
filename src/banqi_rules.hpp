@@ -2,8 +2,7 @@
 //
 // Stateless w.r.t. the shuffle protocol: it only knows whether a cell is
 // empty / face-down / face-up, and the identity of face-up pieces. The
-// shuffle layer feeds reveal results into the engine via apply_flip and
-// apply_capture_reveal.
+// shuffle layer feeds reveal results into the engine via apply_flip.
 
 #pragma once
 
@@ -31,9 +30,8 @@ struct Move {
 
 struct MoveResult {
     bool captured = false;
-    bool captured_was_facedown = false;     // cannon capturing a face-down piece
     int  captured_cell = -1;
-    Piece captured_piece{};                  // valid iff captured && !captured_was_facedown
+    Piece captured_piece{};                  // valid iff captured
 };
 
 class BanqiRules {
@@ -87,16 +85,7 @@ public:
     void apply_flip(int cell, Piece revealed);
 
     // Apply a regular move. Caller guarantees legality. Returns capture info.
-    // For face-down cannon-captures: the result will indicate captured_was_facedown;
-    // the rule engine moves the attacker into the cell but stores the captured
-    // piece identity as unknown until apply_capture_reveal completes.
     MoveResult apply_move(int from, int to);
-
-    // After a face-down capture: the protocol publishes the keys and the
-    // captured piece identity is now known. This call records it (for the
-    // transcript / display) without affecting the board (the captured piece
-    // has already been removed).
-    void apply_capture_reveal(int captured_cell, Piece revealed);
 
     // Compact ASCII rendering for debugging.
     std::string render() const;

@@ -125,12 +125,9 @@ void Game::on_setup_message(const json& msg, std::vector<json>& out) {
 void Game::on_reveal_message(const json& msg, std::vector<json>& out) {
     auto p = protocol_->on_reveal_message(msg, out);
     if (p.has_value()) {
-        // Check whether this resolution finishes a pending flip or capture.
         int cell = msg.at("cell").get<int>();
         if (pending_flips_.erase(cell) > 0) {
             rules_.apply_flip(cell, *p);
-        } else if (pending_captures_.erase(cell) > 0) {
-            rules_.apply_capture_reveal(cell, *p);
         }
     }
 }
@@ -167,17 +164,7 @@ void Game::on_move_entry(const json& msg, std::vector<json>& out) {
         if (!rules_.is_legal(m, peer_idx)) {
             throw std::runtime_error("peer move is illegal");
         }
-        auto r = rules_.apply_move(action.from, action.to);
-        if (r.captured && r.captured_was_facedown) {
-            std::vector<json> reveal_out;
-            auto p = protocol_->request_reveal(action.to, reveal_out);
-            for (auto& m2 : reveal_out) out.push_back(std::move(m2));
-            if (p.has_value()) {
-                rules_.apply_capture_reveal(action.to, *p);
-            } else {
-                pending_captures_.insert(action.to);
-            }
-        }
+        rules_.apply_move(action.from, action.to);
     } else if (action.kind == MoveAction::Kind::Resign) {
         // Mark the resigner as having lost.
         // Use BanqiRules' game_over_/winner_ via a synthetic mechanism: clear
@@ -222,36 +209,13 @@ void Game::local_move(int from, int to, std::vector<json>& out) {
     auto entry = transcript_.append_local(me_, encode_move_action(a));
     out.push_back(transcript_entry_to_json(entry));
 
-    auto r = rules_.apply_move(from, to);
-    if (r.captured && r.captured_was_facedown) {
-        std::vector<json> reveal_out;
-        auto p = protocol_->request_reveal(to, reveal_out);
-        for (auto& m2 : reveal_out) out.push_back(std::move(m2));
-        if (p.has_value()) {
-            rules_.apply_capture_reveal(to, *p);
-        } else {
-            pending_captures_.insert(to);
-        }
-    }
+    rules_.apply_move(from, to);
 }
 
 void Game::local_resign(std::vector<json>& out) {
     MoveAction a{MoveAction::Kind::Resign, -1, -1};
     auto entry = transcript_.append_local(me_, encode_move_action(a));
     out.push_back(transcript_entry_to_json(entry));
-}
-
-void Game::apply_resolved_flip_if_pending(int /*cell*/, const Piece& /*p*/) {
-    // Provided for clarity / future hooks; current logic is inlined in
-    // on_reveal_message and after request_reveal returns Piece synchronously.
-}
-
-void Game::apply_resolved_capture_if_pending(int /*cell*/, const Piece& /*p*/) {
-    // Same as above.
-}
-
-void Game::try_apply_local_flip_after_reveal(int /*cell*/, const Piece& /*p*/) {
-    // Same as above.
 }
 
 }  // namespace banqi
