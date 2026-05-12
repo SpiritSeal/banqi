@@ -130,6 +130,9 @@ button[disabled] { opacity: 0.4; cursor: not-allowed; }
 }
 .me-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0 12px; border-bottom: 1px solid #2f2f33; margin-bottom: 12px; }
 .sign-in { padding: 6px 0 12px; border-bottom: 1px solid #2f2f33; margin-bottom: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+.invite-signin h2 { margin: 0 0 6px; }
+.invite-signin > p { margin: 0 0 12px; }
+.invite-signin .sign-in { border-bottom: 0; padding: 0; margin: 0 0 8px; }
 .advanced { margin-top: 14px; color: var(--muted); }
 .advanced summary { cursor: pointer; font-size: 13px; }
 

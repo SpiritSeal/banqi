@@ -90,6 +90,41 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 
+// ---- sign-in ----
+// Renders the GitHub/Google/dev sign-in buttons into `container`. After a
+// successful sign-in the relay redirects the browser back to `nextHash`
+// (e.g. '#/g/ABCDEF') so deep-linked invites resume where the user left off.
+function renderSignInButtons(container, nextHash) {
+  const next = nextHash && nextHash.startsWith('#') ? `/${nextHash}` : '/';
+  const q = next === '/' ? '' : `?next=${encodeURIComponent(next)}`;
+  const buttons = [];
+  if (providers.github) buttons.push(`<a class="primary" href="/auth/github${q}">Sign in with GitHub</a>`);
+  if (providers.google) buttons.push(`<a class="primary" href="/auth/google${q}">Sign in with Google</a>`);
+  if (providers.dev) {
+    buttons.push(`
+      <form class="dev-signin" data-dev-signin>
+        <label for="dev-signin-name" class="sr-only">Display name</label>
+        <input id="dev-signin-name" type="text" placeholder="Display name"
+               maxlength="40" autocomplete="off" required>
+        <button type="submit" class="primary">Sign in (dev)</button>
+      </form>`);
+  }
+  if (buttons.length === 0) {
+    buttons.push(`<div class="muted">Sign-in is not configured. Ask the relay admin to set OAuth credentials.</div>`);
+  }
+  container.innerHTML = `<div class="sign-in">${buttons.join(' ')}</div>`;
+  const devForm = container.querySelector('[data-dev-signin]');
+  if (devForm) {
+    devForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const name = (devForm.querySelector('#dev-signin-name').value || 'Player').trim() || 'Player';
+      const params = new URLSearchParams({ name });
+      if (q) params.set('next', next);
+      location.href = `/auth/dev?${params.toString()}`;
+    });
+  }
+}
+
 // ---- lobby ----
 function renderLobby() {
   showView('lobby');
@@ -106,30 +141,7 @@ function renderLobby() {
       </div>`;
     $('btn-signout').onclick = signOut;
   } else {
-    const buttons = [];
-    if (providers.github) buttons.push(`<a class="primary" href="/auth/github">Sign in with GitHub</a>`);
-    if (providers.google) buttons.push(`<a class="primary" href="/auth/google">Sign in with Google</a>`);
-    if (providers.dev) {
-      buttons.push(`
-        <form id="dev-signin-form" class="dev-signin">
-          <label for="dev-signin-name" class="sr-only">Display name</label>
-          <input id="dev-signin-name" type="text" placeholder="Display name"
-                 maxlength="40" autocomplete="off" required>
-          <button type="submit" class="primary">Sign in (dev)</button>
-        </form>`);
-    }
-    if (buttons.length === 0) {
-      buttons.push(`<div class="muted">Sign-in is not configured. Ask the relay admin to set OAuth credentials, or play "on this device" below.</div>`);
-    }
-    meBox.innerHTML = `<div class="sign-in">${buttons.join(' ')}</div>`;
-    const devForm = $('dev-signin-form');
-    if (devForm) {
-      devForm.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const name = ($('dev-signin-name').value || 'Player').trim() || 'Player';
-        location.href = `/auth/dev?name=${encodeURIComponent(name)}`;
-      });
-    }
+    renderSignInButtons(meBox, null);
   }
   $('btn-start-online').disabled = !me;
   $('btn-start-online').onclick = startOnlineGame;
@@ -165,9 +177,15 @@ async function openFederatedGame(roomCode) {
   $('game-header').innerHTML = `<div class="muted">Connecting to room <code>${roomCode}</code>…</div>`;
 
   if (!me) {
-    $('game-header').innerHTML = `
-      <div>You need to be signed in to play online.
-      <a href="#/">Back to lobby</a> to sign in.</div>`;
+    const header = $('game-header');
+    header.innerHTML = `
+      <div class="invite-signin">
+        <h2>You've been invited to a game</h2>
+        <p>Sign in to join room <code>${escapeHtml(roomCode)}</code>. We'll bring you right back here.</p>
+        <div id="invite-signin-buttons"></div>
+        <p class="muted small"><a href="#/">← Back to lobby</a></p>
+      </div>`;
+    renderSignInButtons($('invite-signin-buttons'), `#/g/${roomCode}`);
     return;
   }
 
