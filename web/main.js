@@ -12,6 +12,7 @@ import createBanqiModule from './banqi.js';
 import { RelayConnection, LoopbackConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
 import { Replay, renderTranscript, normalizeAction } from './replay.js';
+import { bootstrapFederated } from './fed_bootstrap.js';
 
 // ---- service worker / PWA ----
 // Kicked off before the WASM await so registration runs in parallel with the
@@ -352,28 +353,22 @@ async function openFederatedGame(roomCode) {
     replay: new Replay(),
   };
 
-  // Bootstrap phase: feed log entries through the Game without sending any
-  // outbound (the server already has them). Own MOVE_ENTRYs need to be
-  // re-driven through local_* so they get re-signed; others go via
-  // handle_message. See test_game.cpp "reconnect-by-replay" for the same
-  // shape.
-  game.start();   // emit own HELLO (discarded — log already has the equivalent)
-  for (const m of log) {
-    const parsed = parseJsonSafe(m.body);
-    if (!parsed) continue;
-    if (m.sender_user_id === me.id) {
-      if (parsed.type === 'MOVE_ENTRY') {
-        const action = normalizeAction(parsed.payload);
-        if (!action) continue;
-        try { applyLocalAction(active, action); }
-        catch (e) { console.warn('bootstrap local action failed:', e); }
-      }
-      // Skip own HELLO/SETUP/REVEAL_KEY — they regenerate naturally.
-    } else {
-      try { applyPeerMessage(active, m.body); }
-      catch (e) { console.warn('bootstrap handle failed:', e); }
-    }
-  }
+  // Bootstrap phase: feed log entries through the Game. The helper drives
+  // the same applyLocalAction / applyPeerMessage path the live transport
+  // uses, captures every outbound message the Game emits, and returns
+  // whichever ones aren't already persisted in the server's log. On a
+  // fresh game (empty log) this is the initial HELLO; on a mid-protocol
+  // reconnect it's whatever response we never managed to send before.
+  // See test_game.cpp "reconnect-by-replay" for the same shape.
+  active.pendingSends = bootstrapFederated({
+    game,
+    log,
+    myUserId: me.id,
+    applyLocal: (action) => applyLocalAction(active, action),
+    applyPeer:  (body)   => applyPeerMessage(active, body),
+    parseJson:  parseJsonSafe,
+    normalizeAction,
+  });
   active.bootstrapping = false;
 
   // Open the live WebSocket.
@@ -390,8 +385,15 @@ function attachConnAsTransport(act) {
   const { conn } = act;
   act.connState = 'live';
   conn.on('open', () => {
-    // The game has already emitted HELLO during bootstrap/start; resending
-    // it is harmless because the peer ignores duplicate HELLOs (game.cpp:59).
+    // Flush anything bootstrapFederated identified as missing from the
+    // server's log — for a brand-new game this is our initial HELLO, which
+    // is what kicks off the shuffle protocol. We only send on the FIRST
+    // open: once the server persists these messages, a later reconnect's
+    // bootstrap will see them in the log and dedupe them away.
+    if (act.pendingSends?.length) {
+      act.conn.send(act.pendingSends.join('\n'));
+      act.pendingSends = [];
+    }
     if (act.connState !== 'live') {
       announce('Connection restored');
       toast('Reconnected.', { kind: 'success', timeoutMs: 2500 });
@@ -1184,9 +1186,14 @@ function statusLabel(state, info) {
     const w = state.winner;
     return `winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}`;
   }
+  // setup_done is the authoritative "we're playing" signal — it only
+  // flips once both sides have exchanged HELLO + SETUP_*. info.status
+  // is a REST snapshot taken on entry; it can read 'waiting' on a host
+  // that already saw its peer connect via WS, so we treat the WASM
+  // state as ground truth.
+  if (state.setup_done) return 'playing';
   if (info.status === 'waiting') return 'waiting for opponent to join';
-  if (!state.setup_done) return 'shuffling…';
-  return 'playing';
+  return 'shuffling…';
 }
 
 function onFedCellClick(idx, state) {

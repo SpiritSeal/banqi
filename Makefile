@@ -110,6 +110,7 @@ $(WASM_BUILD_DIR)/%.o: $(THIRD_PARTY)/%.c
 wasm-test: wasm
 	node tests/wasm_smoke.mjs
 	node tests/replay_smoke.mjs
+	node --test tests/fed_bootstrap_test.mjs
 
 # Real-browser end-to-end test. Spawns a static server, a local PeerServer,
 # and two Chromium pages, then drives a full game through PeerJS / WebRTC.
@@ -118,6 +119,14 @@ wasm-test: wasm
 e2e:
 	node tests/e2e_browser.mjs casual
 	node tests/e2e_browser.mjs crypto
+
+# Federated-relay end-to-end test. Starts the real relay (REST + WS + Postgres)
+# and two Chromium pages, signs them in via the AUTH_DEV backdoor, and walks
+# through challenge → accept → shuffle → first flip. Guards against the
+# "stuck on shuffling" regression. Requires Playwright + a reachable Postgres.
+.PHONY: e2e-fed
+e2e-fed: wasm
+	node tests/e2e_federated.mjs
 
 # PWA validation. The manifest check is fast and dependency-free. The smoke
 # test boots a static server + Chromium and exercises the service worker, so
