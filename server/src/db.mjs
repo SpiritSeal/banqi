@@ -16,7 +16,20 @@ types.setTypeParser(20, (val) => parseInt(val, 10));
 export async function openDb(connectionString) {
   const pool = new Pool({ connectionString });
   const schema = readFileSync(join(__dirname, '..', 'schema.sql'), 'utf8');
-  await pool.query(schema);
+  // The schema is idempotent (CREATE TABLE / INDEX IF NOT EXISTS), but
+  // concurrent first-time bootstraps still race on pg_type / pg_class — the
+  // SERIAL columns implicitly create sequence types, and existence checks
+  // are not atomic with the catalog insert. Serialize via a Postgres
+  // advisory lock keyed off a stable hash so multiple workers / test files
+  // / processes coordinate correctly.
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1)', [0x42414e51]); // 'BANQ'
+    try { await client.query(schema); }
+    finally { await client.query('SELECT pg_advisory_unlock($1)', [0x42414e51]); }
+  } finally {
+    client.release();
+  }
   return pool;
 }
 
