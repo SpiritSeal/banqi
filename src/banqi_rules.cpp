@@ -121,11 +121,13 @@ bool BanqiRules::is_legal_cannon_jump(int from, int to, Color side_color) const 
     }
     if (screens != 1) return false;     // must jump over exactly one piece
 
-    // Target must be occupied and not own face-up.
+    // Target must be a face-up enemy piece. Per Taiwanese rules, a face-down
+    // piece may serve as the screen but is never itself a legal target — to
+    // take an unrevealed piece you must flip it first.
     const Cell& dst = cells_[to];
-    if (dst.state == Cell::State::Empty) return false;
-    if (dst.state == Cell::State::FaceUp && dst.piece.color == side_color) return false;
-    return true;     // FaceDown is allowed (cannon reveals on capture)
+    if (dst.state != Cell::State::FaceUp) return false;
+    if (dst.piece.color == side_color) return false;
+    return true;
 }
 
 bool BanqiRules::is_legal(const Move& m, int player_index) const {
@@ -192,8 +194,11 @@ std::vector<Move> BanqiRules::legal_moves(int player_index) const {
                         } else {
                             ++screens;
                             if (screens == 2) {
-                                // This is the cell immediately past the (single) screen.
-                                if (!(tc.state == Cell::State::FaceUp && tc.piece.color == my_color)) {
+                                // Taiwanese rule: cannons may only capture
+                                // face-up enemy pieces. A face-down piece can
+                                // act as a screen but cannot itself be taken.
+                                if (tc.state == Cell::State::FaceUp &&
+                                    tc.piece.color != my_color) {
                                     out.push_back(Move{from, to});
                                 }
                                 break;
@@ -247,11 +252,10 @@ MoveResult BanqiRules::apply_move(int from, int to) {
     MoveResult r;
     Cell& src = cells_[from];
     Cell& dst = cells_[to];
-    if (dst.state != Cell::State::Empty) {
+    if (dst.state == Cell::State::FaceUp) {
         r.captured = true;
         r.captured_cell = to;
-        r.captured_was_facedown = (dst.state == Cell::State::FaceDown);
-        if (!r.captured_was_facedown) r.captured_piece = dst.piece;
+        r.captured_piece = dst.piece;
     }
     Piece moving = src.piece;
     src.state = Cell::State::Empty;
@@ -260,12 +264,6 @@ MoveResult BanqiRules::apply_move(int from, int to) {
     dst.piece = moving;
     advance_turn();
     return r;
-}
-
-void BanqiRules::apply_capture_reveal(int /*captured_cell*/, Piece /*revealed*/) {
-    // Currently a no-op for the rule engine itself: the captured piece has
-    // already been removed by apply_move. The reveal exists so the protocol
-    // and UI can record what was captured. Hook left here for future use.
 }
 
 void BanqiRules::force_color_assignment(int side_to_move_player, Color p0_color) {

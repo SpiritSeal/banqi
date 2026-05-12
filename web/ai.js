@@ -113,7 +113,9 @@ class Board {
           if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
           if (!this.cells[rcIdx(nr, nc)]) out.push({ from, to: rcIdx(nr, nc) });
         }
-        // Jump: scan outward; first non-empty = screen, second non-empty = target
+        // Jump: scan outward; first non-empty = screen, second non-empty = target.
+        // Taiwanese rule: target must be a face-up enemy piece. A face-down piece
+        // can serve as the screen but cannot itself be captured.
         for (let d = 0; d < 4; d++) {
           let nr = r + DR[d], nc = co + DC[d], screens = 0;
           while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
@@ -121,7 +123,7 @@ class Board {
             const tc = this.cells[to];
             if (tc) {
               if (++screens === 2) {
-                if (!(tc.color === mc && !tc.fd)) out.push({ from, to });
+                if (!tc.fd && tc.color !== mc) out.push({ from, to });
                 break;
               }
             }
@@ -387,9 +389,6 @@ function chooseMoveMedium(state, legal, playerIndex) {
         // always beat passive moves even on losing trades.
         const dstVal = PIECE_VALUE[dst.type] || 0;
         score = 200 + dstVal - srcVal * 0.5;
-      } else if (dst.state === 'facedown') {
-        // Capture unknown piece: expected value minus risk of losing attacker
-        score = 150 + Math.random() * 50;
       } else {
         // Passive move to empty cell
         score = 10 + Math.random() * 10;

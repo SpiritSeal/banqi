@@ -112,7 +112,6 @@ TEST_CASE("BanqiRules: capture face-up enemy by rank") {
     CHECK(contains(moves, Move{0, 1}));
     auto r = b.apply_move(0, 1);
     CHECK(r.captured);
-    CHECK_FALSE(r.captured_was_facedown);
     CHECK(r.captured_piece == Piece{Color::Black, PieceType::Advisor});
     CHECK(b.at(0).state == Cell::State::Empty);
     CHECK(b.at(1).piece == Piece{Color::Red, PieceType::General});
@@ -192,20 +191,28 @@ TEST_CASE("BanqiRules: cannon jumps any distance over single screen with empties
     CHECK(contains(m, Move{0, 4}));
 }
 
-TEST_CASE("BanqiRules: cannon jump captures face-down piece") {
+TEST_CASE("BanqiRules: cannon cannot capture a face-down piece (Taiwanese rule)") {
     BanqiRules b;
     b.clear();
     b.force_color_assignment(0, Color::Red);
     // Row 0: [RC, RS(screen), facedown, _]
+    // A face-down piece can act as a screen but is never a legal capture target;
+    // the attacker must flip it first before it can be taken.
     b.set_faceup(0, Piece{Color::Red, PieceType::Cannon});
     b.set_faceup(1, Piece{Color::Red, PieceType::Soldier});
     b.set_facedown(2);
     auto m = b.legal_moves(0);
-    CHECK(contains(m, Move{0, 2}));
+    CHECK_FALSE(contains(m, Move{0, 2}));
+    // Flipping the face-down cell is still legal.
+    CHECK(contains(m, Move{-1, 2}));
 
+    // Same setup with a face-up Black target past the screen: capture is legal.
+    b.set_faceup(2, Piece{Color::Black, PieceType::General});
+    auto m2 = b.legal_moves(0);
+    CHECK(contains(m2, Move{0, 2}));
     auto r = b.apply_move(0, 2);
     CHECK(r.captured);
-    CHECK(r.captured_was_facedown);
+    CHECK(r.captured_piece == Piece{Color::Black, PieceType::General});
     CHECK(b.at(2).piece.type == PieceType::Cannon);
 }
 

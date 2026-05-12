@@ -80,13 +80,6 @@ private:
     void on_reveal_message(const json& msg, std::vector<json>& out);
     void on_move_entry(const json& msg, std::vector<json>& out);
 
-    // Apply a flip on the local rule engine if the protocol has resolved it.
-    void apply_resolved_flip_if_pending(int cell, const Piece& p);
-    void apply_resolved_capture_if_pending(int cell, const Piece& p);
-
-    // Try to drive the active player's flip (whichever side's turn it is).
-    void try_apply_local_flip_after_reveal(int cell, const Piece& p);
-
     bool is_host_;
     Mode mode_;
     std::string game_id_;
@@ -102,10 +95,9 @@ private:
     Transcript transcript_;
     std::unique_ptr<IShuffleProtocol> protocol_;
 
-    // Pending flips/captures that need a Piece resolution from the protocol
+    // Pending flips that need a Piece resolution from the protocol
     // (crypto mode) before the rule engine can be advanced.
     std::set<int> pending_flips_;
-    std::set<int> pending_captures_;
     bool started_setup_ = false;
 };
 
