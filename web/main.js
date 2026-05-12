@@ -68,6 +68,30 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 
+// ---- sign-in ----
+// Renders the GitHub/Google/dev sign-in buttons into `container`. After a
+// successful sign-in the relay redirects the browser back to `nextHash`
+// (e.g. '#/g/ABCDEF') so deep-linked invites resume where the user left off.
+function renderSignInButtons(container, nextHash) {
+  const next = nextHash && nextHash.startsWith('#') ? `/${nextHash}` : '/';
+  const q = next === '/' ? '' : `?next=${encodeURIComponent(next)}`;
+  const buttons = [];
+  if (providers.github) buttons.push(`<a class="primary" href="/auth/github${q}">Sign in with GitHub</a>`);
+  if (providers.google) buttons.push(`<a class="primary" href="/auth/google${q}">Sign in with Google</a>`);
+  if (providers.dev) {
+    buttons.push(`<button id="btn-dev-signin" class="primary">Sign in (dev)</button>`);
+  }
+  if (buttons.length === 0) {
+    buttons.push(`<div class="muted">Sign-in is not configured. Ask the relay admin to set OAuth credentials.</div>`);
+  }
+  container.innerHTML = `<div class="sign-in">${buttons.join(' ')}</div>`;
+  const dev = container.querySelector('#btn-dev-signin');
+  if (dev) dev.onclick = () => {
+    const name = prompt('Pick a display name:', 'Player') || 'Player';
+    location.href = `/auth/dev?name=${encodeURIComponent(name)}${q ? `&${q.slice(1)}` : ''}`;
+  };
+}
+
 // ---- lobby ----
 function renderLobby() {
   showView('lobby');
@@ -84,21 +108,7 @@ function renderLobby() {
       </div>`;
     $('btn-signout').onclick = signOut;
   } else {
-    const buttons = [];
-    if (providers.github) buttons.push(`<a class="primary" href="/auth/github">Sign in with GitHub</a>`);
-    if (providers.google) buttons.push(`<a class="primary" href="/auth/google">Sign in with Google</a>`);
-    if (providers.dev) {
-      buttons.push(`<button id="btn-dev-signin" class="primary">Sign in (dev)</button>`);
-    }
-    if (buttons.length === 0) {
-      buttons.push(`<div class="muted">Sign-in is not configured. Ask the relay admin to set OAuth credentials, or play "on this device" below.</div>`);
-    }
-    meBox.innerHTML = `<div class="sign-in">${buttons.join(' ')}</div>`;
-    const dev = $('btn-dev-signin');
-    if (dev) dev.onclick = async () => {
-      const name = prompt('Pick a display name:', 'Player') || 'Player';
-      location.href = `/auth/dev?name=${encodeURIComponent(name)}`;
-    };
+    renderSignInButtons(meBox, null);
   }
   $('btn-start-online').disabled = !me;
   $('btn-start-online').onclick = startOnlineGame;
@@ -134,9 +144,15 @@ async function openFederatedGame(roomCode) {
   $('game-header').innerHTML = `<div class="muted">Connecting to room <code>${roomCode}</code>…</div>`;
 
   if (!me) {
-    $('game-header').innerHTML = `
-      <div>You need to be signed in to play online.
-      <a href="#/">Back to lobby</a> to sign in.</div>`;
+    const header = $('game-header');
+    header.innerHTML = `
+      <div class="invite-signin">
+        <h2>You've been invited to a game</h2>
+        <p>Sign in to join room <code>${escapeHtml(roomCode)}</code>. We'll bring you right back here.</p>
+        <div id="invite-signin-buttons"></div>
+        <p class="muted small"><a href="#/">← Back to lobby</a></p>
+      </div>`;
+    renderSignInButtons($('invite-signin-buttons'), `#/g/${roomCode}`);
     return;
   }
 

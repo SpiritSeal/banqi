@@ -8,6 +8,29 @@ import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import session from 'express-session';
 import { upsertOAuthUser, getUser } from './db.mjs';
 
+// Same-origin relative path or '/' — rejects protocol-relative ('//evil.com')
+// and absolute URLs so a crafted `?next=` can't turn the relay into an open
+// redirect after sign-in.
+function safeNext(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 256) return null;
+  if (value[0] !== '/') return null;
+  if (value[1] === '/' || value[1] === '\\') return null;
+  return value;
+}
+
+// Stash a validated `?next=` on the session before kicking off OAuth, and
+// pull it back out (single-use) when the provider redirects us home.
+function stashNext(req, _res, nextFn) {
+  const n = safeNext(req.query.next);
+  if (n) req.session.postLoginNext = n;
+  nextFn();
+}
+function popNext(req) {
+  const n = req.session?.postLoginNext;
+  if (req.session && 'postLoginNext' in req.session) delete req.session.postLoginNext;
+  return n || '/';
+}
+
 export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   const sessionParser = session({
     secret: serverSecret,
@@ -53,11 +76,11 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
       callbackURL:  `${publicUrl}/auth/callback/github`,
     }, adapt('github')));
 
-    app.get('/auth/github',
+    app.get('/auth/github', stashNext,
       passport.authenticate('github', { scope: ['read:user'] }));
     app.get('/auth/callback/github',
       passport.authenticate('github', { failureRedirect: '/?auth=fail' }),
-      (_req, res) => res.redirect('/'));
+      (req, res) => res.redirect(popNext(req)));
   }
 
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
@@ -67,11 +90,11 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
       callbackURL:  `${publicUrl}/auth/callback/google`,
     }, adapt('google')));
 
-    app.get('/auth/google',
+    app.get('/auth/google', stashNext,
       passport.authenticate('google', { scope: ['profile'] }));
     app.get('/auth/callback/google',
       passport.authenticate('google', { failureRedirect: '/?auth=fail' }),
-      (_req, res) => res.redirect('/'));
+      (req, res) => res.redirect(popNext(req)));
   }
 
   // Dev backdoor: /auth/dev?name=Alice creates or logs in a user with
@@ -80,6 +103,7 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   if (env.AUTH_DEV === '1') {
     app.get('/auth/dev', async (req, res, next) => {
       const name = String(req.query.name || 'Dev').slice(0, 32);
+      const target = safeNext(req.query.next) || '/';
       try {
         const user = await upsertOAuthUser(db, {
           provider:    'dev',
@@ -89,7 +113,7 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
         });
         req.login(user, (err) => {
           if (err) return next(err);
-          res.redirect('/');
+          res.redirect(target);
         });
       } catch (e) { next(e); }
     });
