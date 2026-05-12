@@ -132,6 +132,20 @@ describe('banqi relay backend', () => {
 
     aliceWs.send(JSON.stringify({ type: 'HELLO', game_id: 'x', mode: 'casual',
                                    is_host: true, pubkey: 'aa'.repeat(32) }));
+    // Wait for alice's HELLO to reach bob before bob sends his — otherwise
+    // the two sends race and bob's frame can land at seq=0, breaking the
+    // ordered-log assertion below. (Cross-socket send order isn't a TCP
+    // guarantee, only same-socket ordering is.)
+    await new Promise((resolve, reject) => {
+      const start = Date.now();
+      const t = setInterval(() => {
+        if (bobMsgs.some((m) => m.includes('"is_host":true'))) {
+          clearInterval(t); resolve();
+        } else if (Date.now() - start > 2000) {
+          clearInterval(t); reject(new Error('alice HELLO did not reach bob in time'));
+        }
+      }, 10);
+    });
     bobWs.send(JSON.stringify({ type: 'HELLO', game_id: 'x', mode: 'casual',
                                  is_host: false, pubkey: 'bb'.repeat(32) }));
 
