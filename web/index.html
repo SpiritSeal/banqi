@@ -37,15 +37,27 @@
     <div id="lobby-me"></div>
 
     <div class="lobby-grid">
-      <div class="lobby-card">
+      <div class="lobby-card primary-card">
+        <span class="card-badge">Most popular</span>
         <h3>Play with a friend online</h3>
-        <p class="muted">Click Start, copy the link the next page shows you, and send it to your friend. They click it, and you play. You can come back to the game any time — even days later.</p>
+        <p class="muted">Click Start, copy the link, send it to your friend. They click it and you play — come back to the game any time, even days later.</p>
+        <details class="lobby-advanced-settings">
+          <summary>Advanced settings</summary>
+          <div class="row">
+            <label for="lobby-mode">Mode</label>
+            <select id="lobby-mode">
+              <option value="casual">Standard (fast)</option>
+              <option value="crypto">Encrypted (slower, hides hidden pieces)</option>
+            </select>
+            <button type="button" class="link-btn" id="btn-mode-explain" aria-expanded="false"
+                    aria-controls="mode-explain-box">What's the difference?</button>
+          </div>
+          <div id="mode-explain-box" class="mode-explain hidden" role="region" aria-label="Mode explanation">
+            <p><strong>Standard</strong> is fast and works for almost everyone. Both clients see the shuffled deck and exchange signed moves; the relay can't fabricate moves on your behalf.</p>
+            <p><strong>Encrypted</strong> uses SRA mental poker. Neither client (nor the relay) can see a face-down piece's identity until it's flipped. Slower per move, useful if you don't trust your peer not to peek.</p>
+          </div>
+        </details>
         <div class="row">
-          <label for="lobby-mode">Mode</label>
-          <select id="lobby-mode">
-            <option value="casual">Standard (fast)</option>
-            <option value="crypto">Encrypted (slower, hides hidden pieces)</option>
-          </select>
           <button id="btn-start-online" class="primary big">Start a game →</button>
         </div>
       </div>
@@ -73,6 +85,7 @@
 
     <details class="advanced">
       <summary>Advanced: pure peer-to-peer (no account, no rating)</summary>
+      <p class="muted small">Pure WebRTC — no relay, no Elo, no message log. You swap a peer ID with your friend manually. Useful if you'd rather not depend on a server, or for offline LAN play.</p>
       <div><button id="btn-classic" class="link-btn">Open the classic WebRTC/PeerJS flow</button></div>
     </details>
   </section>
@@ -81,8 +94,11 @@
   <section id="view-game" class="panel hidden" aria-labelledby="game-heading">
     <h2 id="game-heading" class="sr-only" tabindex="-1">Online game</h2>
     <div id="game-header"></div>
-    <div id="game-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
-    <div id="game-transcript" class="transcript-panel"></div>
+    <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
+    <div class="game-layout">
+      <div id="game-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+      <div id="game-transcript" class="transcript-panel"></div>
+    </div>
     <p class="muted small">Tip: bookmark this page or save the room link. Coming back continues the game where you left off.</p>
   </section>
 
@@ -90,12 +106,15 @@
   <section id="view-otb" class="panel hidden" aria-labelledby="otb-heading">
     <h2 id="otb-heading" class="sr-only" tabindex="-1">Hot-seat (over the board)</h2>
     <div id="otb-banner" class="otb-banner" role="status" aria-live="polite">setting up…</div>
-    <div id="otb-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+    <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
+    <div class="game-layout">
+      <div id="otb-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+      <div id="otb-transcript" class="transcript-panel"></div>
+    </div>
     <div class="row" style="margin-top:12px">
       <button id="otb-resign">Resign</button>
       <a class="link-btn" href="#/">Back to lobby</a>
     </div>
-    <div id="otb-transcript" class="transcript-panel"></div>
   </section>
 
   <!-- VS AI -->
@@ -105,14 +124,17 @@
       <div id="ai-banner" class="otb-banner" role="status" aria-live="polite">setting up…</div>
       <div id="ai-meta" class="ai-meta"></div>
     </div>
-    <div id="ai-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+    <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
+    <div class="game-layout">
+      <div id="ai-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+      <div id="ai-transcript" class="transcript-panel"></div>
+    </div>
     <div class="row" style="margin-top:12px">
       <button id="ai-resign">Resign</button>
       <button id="ai-new-game" class="primary">New game</button>
       <a class="link-btn" href="#/">Back to lobby</a>
     </div>
     <div id="ai-thinking" class="ai-thinking hidden" role="status" aria-live="polite">AI is thinking…</div>
-    <div id="ai-transcript" class="transcript-panel"></div>
   </section>
 
   <!-- DASHBOARD -->
@@ -144,9 +166,10 @@
   </section>
   </main>
 
-  <!-- Always-visible pieces & rules crib sheet -->
-  <aside id="crib" class="panel" aria-labelledby="crib-heading">
-    <h2 id="crib-heading">Pieces &amp; rules</h2>
+  <!-- Pieces & rules — collapsible crib sheet. Default open ≥700px, closed below. -->
+  <aside id="crib" class="panel crib-collapsible" aria-labelledby="crib-heading">
+    <details id="crib-details" open>
+      <summary><h2 id="crib-heading">Pieces &amp; rules</h2></summary>
     <div class="crib-grid">
       <div>
         <h3>Pieces (rank high → low)</h3>
@@ -174,6 +197,7 @@
         </ul>
       </div>
     </div>
+    </details>
   </aside>
 </div>
 

@@ -252,6 +252,15 @@ function renderLobby() {
   $('btn-otb').onclick = () => { location.hash = '#/otb'; };
   $('btn-ai').onclick = () => { location.hash = '#/ai'; };
   $('btn-classic').onclick = () => { location.hash = '#/classic'; };
+  const modeExplainBtn = $('btn-mode-explain');
+  const modeExplainBox = $('mode-explain-box');
+  if (modeExplainBtn && modeExplainBox) {
+    modeExplainBtn.onclick = () => {
+      const isOpen = !modeExplainBox.classList.contains('hidden');
+      modeExplainBox.classList.toggle('hidden', isOpen);
+      modeExplainBtn.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+    };
+  }
 }
 
 async function signOut() {
@@ -823,7 +832,23 @@ function refreshAI() {
     banner = active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(view.my_color === 1 ? 2 : 1)})`;
   }
   $('ai-banner').textContent = banner;
-  $('ai-meta').textContent = `Difficulty: ${diffLabel}`;
+  // Render difficulty as an interactive chip — click cycles to the next
+  // difficulty; the change takes effect on the next "New game".
+  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'easy' }[active.difficulty] || 'medium';
+  $('ai-meta').innerHTML = `
+    <span class="meta-label">Difficulty</span>
+    <button id="ai-diff-chip" class="diff-chip" type="button"
+            aria-label="Difficulty ${diffLabel}. Click to change to ${nextDiff} on next new game"
+            title="Click to cycle (takes effect on next New game)">${diffLabel} ↻</button>`;
+  $('ai-diff-chip').onclick = () => {
+    active.difficulty = nextDiff;
+    // Reflect in lobby selector so a re-entry uses the new value.
+    const sel = $('lobby-ai-difficulty');
+    if (sel) sel.value = nextDiff;
+    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard'})[nextDiff]} on the next new game.`,
+          { kind: 'info', timeoutMs: 3000 });
+    refreshAI();
+  };
   $('ai-resign').disabled = !liveState.setup_done || liveState.game_over
     || liveState.side_to_move !== liveState.my_player_index
     || view.replayViewing;
@@ -1204,18 +1229,38 @@ function onFedCellClick(idx, state) {
 async function copyInviteLink() {
   if (!active?.info) return;
   const url = `${location.origin}/#/g/${active.info.room_code}`;
+  // Prefer the native share sheet when it's available AND the input was a
+  // touch tap — on desktop, copying to the clipboard is faster than a share
+  // sheet detour. window.matchMedia tracks input type cheaply.
+  const preferShare = typeof navigator.share === 'function'
+    && window.matchMedia?.('(pointer: coarse)').matches;
+  if (preferShare) {
+    try {
+      await navigator.share({
+        title: 'Banqi game',
+        text: `Join my Banqi game (room ${active.info.room_code})`,
+        url,
+      });
+      return;
+    } catch (e) {
+      // AbortError is the user dismissing — fall through silently. Other
+      // errors fall through to clipboard.
+      if (e?.name === 'AbortError') return;
+    }
+  }
   try {
     await navigator.clipboard.writeText(url);
-    flashCopied();
+    flashCopied('Copied!');
   } catch (_) {
+    // Last-ditch fallback if clipboard API is blocked (insecure context, etc).
     prompt('Share this link:', url);
   }
 }
-function flashCopied() {
+function flashCopied(label = 'Copied!') {
   const btn = $('btn-copy-link');
   if (!btn) return;
   const orig = btn.textContent;
-  btn.textContent = 'Copied!';
+  btn.textContent = label;
   setTimeout(() => { btn.textContent = orig; }, 1500);
 }
 
@@ -1644,5 +1689,17 @@ function parseJsonSafe(s) {
 }
 
 // ---- boot ----
+//
+// Default the crib sheet collapsed on small screens to free up vertical
+// space; on desktop it stays open.
+function initCribDefault() {
+  const details = document.getElementById('crib-details');
+  if (!details) return;
+  const small = window.matchMedia('(max-width: 700px)');
+  // Only set initial state — preserve user toggling on subsequent resizes.
+  details.open = !small.matches;
+}
+initCribDefault();
+
 await refreshSession();
 route();

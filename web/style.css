@@ -689,3 +689,150 @@ body.is-offline #btn-start-online { opacity: 0.55; }
   margin: 0 auto;
 }
 .sw-update-banner button { white-space: nowrap; }
+
+/* ---- crib collapsible ---- */
+.crib-collapsible > details > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.crib-collapsible > details > summary::-webkit-details-marker { display: none; }
+.crib-collapsible > details > summary::before {
+  content: "▸";
+  color: var(--accent);
+  font-size: 14px;
+  transition: transform 0.15s;
+}
+.crib-collapsible > details[open] > summary::before { transform: rotate(90deg); }
+.crib-collapsible > details > summary h2 { margin: 0; display: inline; }
+
+/* ---- desktop side-panel layout for the game view ---- */
+.game-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-top: 10px;
+}
+@media (min-width: 900px) {
+  .game-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+    align-items: start;
+  }
+  .game-layout > .board { margin-top: 0; }
+  .game-layout > .transcript-panel { margin-top: 0; max-height: 75vh; display: flex; flex-direction: column; }
+  .game-layout > .transcript-panel .transcript-list { max-height: none; flex: 1; }
+}
+
+/* ---- lobby primary-card emphasis (E4) ---- */
+.lobby-card.primary-card {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(255, 180, 60, 0.05), #1a1a1c 30%);
+  position: relative;
+}
+.lobby-card.primary-card .card-badge {
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  background: var(--accent);
+  color: var(--primary-fg);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.lobby-card:not(.primary-card) .card-badge { display: none; }
+.lobby-advanced-settings {
+  margin-top: 10px;
+  color: var(--muted);
+}
+.lobby-advanced-settings > summary {
+  cursor: pointer;
+  font-size: 13px;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.lobby-advanced-settings > summary::-webkit-details-marker { display: none; }
+.lobby-advanced-settings > summary::before {
+  content: "▸";
+  color: var(--accent);
+  font-size: 12px;
+  transition: transform 0.15s;
+}
+.lobby-advanced-settings[open] > summary::before { transform: rotate(90deg); }
+
+.mode-explain {
+  background: #161618;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.mode-explain p { margin: 0 0 8px 0; }
+.mode-explain p:last-child { margin-bottom: 0; }
+
+/* ---- AI difficulty chip (G5) ---- */
+.diff-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(255, 180, 60, 0.14);
+  color: var(--accent);
+  border: 1px solid rgba(255, 180, 60, 0.4);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.diff-chip:hover:not([disabled]) { background: rgba(255, 180, 60, 0.22); }
+.diff-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.diff-chip[disabled] { cursor: not-allowed; opacity: 0.6; }
+
+/* ---- F4: sticky mobile game header ---- */
+@media (max-width: 700px) {
+  #game-header, #ai-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: #232326;
+    padding-top: 6px;
+    margin: 0 -18px;       /* extend past the .panel inner padding */
+    padding-left: 18px;
+    padding-right: 18px;
+    border-bottom: 1px solid #2f2f33;
+  }
+}
+
+/* ---- F2: touch-target sizing ---- */
+@media (pointer: coarse) {
+  .transcript-controls button {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .toast .toast-close { width: 36px; height: 36px; font-size: 20px; }
+  button, a.primary, .link-btn { min-height: 36px; }
+}
+
+/* ---- F3: portrait rotate hint (small phones) ---- */
+.rotate-hint {
+  display: none;
+  background: #2a2416;
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  text-align: center;
+  margin: 8px 0;
+}
+@media (orientation: portrait) and (max-width: 480px) {
+  .rotate-hint { display: block; }
+}
