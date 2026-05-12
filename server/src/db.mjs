@@ -40,6 +40,23 @@ export async function getUser(db, id) {
   return rows[0] || null;
 }
 
+// Anonymize, don't hard-delete. The users table is referenced by games,
+// messages, elo_history, and finalize_claims (all non-cascading) — wiping a
+// row would orphan opponents' rating history and break head-to-head queries.
+// Instead we strip PII (display name + avatar) and rotate the OAuth tuple so
+// the same provider account, on signing in again, gets a fresh user row.
+export async function deleteUser(db, id) {
+  const tag = `deleted-${id}-${Date.now()}`;
+  const { rowCount } = await db.query(`
+    UPDATE users
+       SET display_name = '[deleted user]',
+           avatar_url   = NULL,
+           provider_id  = $1
+     WHERE id = $2
+  `, [tag, id]);
+  return rowCount > 0;
+}
+
 // ---------- Games ----------
 
 export async function createGame(db, { roomCode, mode, hostUserId }) {

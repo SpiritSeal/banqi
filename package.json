@@ -8,6 +8,7 @@
     "wasm-test": "node tests/wasm_smoke.mjs"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "peer": "^1.0.2",
     "playwright": "^1.49.0"
   }

@@ -119,6 +119,24 @@ e2e:
 	node tests/e2e_browser.mjs casual
 	node tests/e2e_browser.mjs crypto
 
+# PWA validation. The manifest check is fast and dependency-free. The smoke
+# test boots a static server + Chromium and exercises the service worker, so
+# it needs the WASM build (the SW precaches banqi.wasm).
+.PHONY: pwa-test
+pwa-test:
+	node tests/pwa_manifest.mjs
+
+.PHONY: pwa-smoke
+pwa-smoke: wasm
+	node tests/pwa_smoke.mjs
+
+# Regenerate web/icons/*.png from web/favicon.svg. Run after editing the
+# favicon. Requires fonts-noto-cjk installed system-wide (for the 將 glyph)
+# and the @resvg/resvg-js dev dependency (already pinned in package.json).
+.PHONY: icons
+icons:
+	node scripts/gen-icons.mjs
+
 .PHONY: serve
 serve:
 	cd $(WEB_DIR) && python3 -m http.server 8080

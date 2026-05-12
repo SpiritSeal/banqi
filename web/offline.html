@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Banqi · Offline</title>
+<meta name="theme-color" content="#ffb43a">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #1c1c1e;
+    color: #e7e7e7;
+    font: 16px/1.5 system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    box-sizing: border-box;
+    padding-top: max(24px, env(safe-area-inset-top));
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+  .card { max-width: 460px; text-align: center; }
+  h1 { color: #ffb43a; margin: 0 0 12px; }
+  p { color: #cfcfcf; margin: 0 0 12px; }
+  a {
+    display: inline-block;
+    margin-top: 12px;
+    padding: 10px 18px;
+    background: #ffb43a;
+    color: #2a1502;
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <main class="card">
+    <h1>You're offline</h1>
+    <p>Banqi can't reach the network right now. If you've opened the app before, hot-seat and AI modes will work once it's loaded — try reopening from your home screen.</p>
+    <a href="./">Retry</a>
+  </main>
+</body>
+</html>
