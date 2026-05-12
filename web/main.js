@@ -31,6 +31,28 @@ const views = {
 function showView(name) {
   for (const v of Object.values(views)) v?.classList.add('hidden');
   views[name]?.classList.remove('hidden');
+  // After the new view is shown, move keyboard focus to its heading so
+  // screen-reader users land somewhere meaningful and keyboard users
+  // resume from a sensible spot.
+  queueMicrotask(() => {
+    const view = views[name];
+    if (!view) return;
+    const target = view.querySelector('h2[tabindex], h2, button, a[href], select, input, [tabindex="0"]');
+    target?.focus({ preventScroll: false });
+  });
+}
+
+// Polite, throttled screen-reader announcement. Replays an empty string
+// first so identical consecutive messages still re-announce. Truncates
+// loud cascades by debouncing.
+let _announceTimer = null;
+function announce(text) {
+  if (!text) return;
+  const el = document.getElementById('sr-announce');
+  if (!el) return;
+  el.textContent = '';
+  clearTimeout(_announceTimer);
+  _announceTimer = setTimeout(() => { el.textContent = String(text); }, 30);
 }
 
 // ---- session ----
@@ -52,18 +74,18 @@ async function refreshSession() {
 async function route() {
   const hash = location.hash || '#/';
   const m = hash.match(/^#\/g\/([0-9A-Za-z]+)$/);
-  if (m) return openFederatedGame(m[1].toUpperCase());
+  if (m) { announce(`Game room ${m[1]}`); return openFederatedGame(m[1].toUpperCase()); }
 
   const mp = hash.match(/^#\/profile\/(\d+)$/);
-  if (mp) return renderProfile(+mp[1]);
+  if (mp) { announce('Profile'); return renderProfile(+mp[1]); }
 
   switch (hash) {
-    case '#/otb':         return openOTB();
-    case '#/ai':          return openAIGame();
-    case '#/dashboard':   return renderDashboard();
-    case '#/leaderboard': return renderLeaderboard();
-    case '#/classic':     return renderClassicLobby();
-    default:              return renderLobby();
+    case '#/otb':         announce('Hot-seat game');   return openOTB();
+    case '#/ai':          announce('Vs AI game');       return openAIGame();
+    case '#/dashboard':   announce('My games');         return renderDashboard();
+    case '#/leaderboard': announce('Leaderboard');      return renderLeaderboard();
+    case '#/classic':     announce('Classic P2P');      return renderClassicLobby();
+    default:              announce('Lobby');            return renderLobby();
   }
 }
 window.addEventListener('hashchange', route);
@@ -79,17 +101,28 @@ function renderSignInButtons(container, nextHash) {
   if (providers.github) buttons.push(`<a class="primary" href="/auth/github${q}">Sign in with GitHub</a>`);
   if (providers.google) buttons.push(`<a class="primary" href="/auth/google${q}">Sign in with Google</a>`);
   if (providers.dev) {
-    buttons.push(`<button id="btn-dev-signin" class="primary">Sign in (dev)</button>`);
+    buttons.push(`
+      <form class="dev-signin" data-dev-signin>
+        <label for="dev-signin-name" class="sr-only">Display name</label>
+        <input id="dev-signin-name" type="text" placeholder="Display name"
+               maxlength="40" autocomplete="off" required>
+        <button type="submit" class="primary">Sign in (dev)</button>
+      </form>`);
   }
   if (buttons.length === 0) {
     buttons.push(`<div class="muted">Sign-in is not configured. Ask the relay admin to set OAuth credentials.</div>`);
   }
   container.innerHTML = `<div class="sign-in">${buttons.join(' ')}</div>`;
-  const dev = container.querySelector('#btn-dev-signin');
-  if (dev) dev.onclick = () => {
-    const name = prompt('Pick a display name:', 'Player') || 'Player';
-    location.href = `/auth/dev?name=${encodeURIComponent(name)}${q ? `&${q.slice(1)}` : ''}`;
-  };
+  const devForm = container.querySelector('[data-dev-signin]');
+  if (devForm) {
+    devForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const name = (devForm.querySelector('#dev-signin-name').value || 'Player').trim() || 'Player';
+      const params = new URLSearchParams({ name });
+      if (q) params.set('next', next);
+      location.href = `/auth/dev?${params.toString()}`;
+    });
+  }
 }
 
 // ---- lobby ----
@@ -131,7 +164,7 @@ async function startOnlineGame() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mode }),
   });
-  if (!res.ok) { alert('Could not create game.'); return; }
+  if (!res.ok) { toast('Could not create game. Try again.', { kind: 'error' }); return; }
   const g = await res.json();
   location.hash = `#/g/${g.roomCode}`;
 }
@@ -233,21 +266,36 @@ async function openFederatedGame(roomCode) {
 
 function attachConnAsTransport(act) {
   const { conn } = act;
+  act.connState = 'live';
   conn.on('open', () => {
     // The game has already emitted HELLO during bootstrap/start; resending
     // it is harmless because the peer ignores duplicate HELLOs (game.cpp:59).
+    if (act.connState !== 'live') {
+      announce('Connection restored');
+      toast('Reconnected.', { kind: 'success', timeoutMs: 2500 });
+    }
+    act.connState = 'live';
+    refreshGame();
   });
   conn.on('data', (line) => {
     if (act.bootstrapping) return;  // shouldn't happen, but be safe
     try {
       const out = applyPeerMessage(act, line);
       if (act.conn && out) act.conn.send(out);
-    } catch (e) { console.warn('handleMessage:', e); }
+    } catch (e) {
+      console.warn('handleMessage:', e);
+      toast('Couldn’t process a message from the relay.', { kind: 'warn' });
+    }
     refreshGame();
   });
   conn.on('close', () => {
-    const el = $('game-status-line');
-    if (el) el.textContent = 'disconnected';
+    if (act.connState === 'live') announce('Connection lost. Reconnecting…');
+    act.connState = 'offline';
+    refreshGame();
+  });
+  conn.on('reconnecting', () => {
+    act.connState = 'reconnecting';
+    refreshGame();
   });
   conn.on('meta', (m) => {
     // Server tells us our role; we already know it from REST, but log for diagnostics.
@@ -297,6 +345,17 @@ function applyPeerMessage(act, line) {
     throw e;
   }
   act.replay.observe(JSON.parse(game.stateJson()));
+  // Announce the opponent's move + briefly flag the destination cell so it
+  // flashes on the next render. Skipped during bootstrap to avoid replaying
+  // the whole log into the screen-reader buffer.
+  if (pushed && !act.bootstrapping) {
+    const lastSnap = act.replay.snapshots[act.replay.snapshots.length - 1];
+    if (lastSnap) {
+      announce(`Opponent: ${describeAction(lastSnap, act.replay)}`);
+      act.flashCellIdx = lastSnap.action?.to;
+      act.flashUntil = Date.now() + 1200;
+    }
+  }
   return out;
 }
 
@@ -347,8 +406,10 @@ function applyAIAction(act, side, action) {
 // possibly frozen to a past snapshot, legal_moves stripped to disable
 // interactivity, and a replayViewing flag for the renderer.
 function viewState(act, liveState) {
+  const lastMoveCells = lastMoveFromReplay(act.replay);
+  const flashCellIdx = act.flashUntil && Date.now() < act.flashUntil ? act.flashCellIdx : -1;
   if (!act.replay || act.replay.isLive()) {
-    return { ...liveState, replayViewing: false };
+    return { ...liveState, replayViewing: false, lastMoveCells, flashCellIdx };
   }
   const finality = act.replay.finalityFor(liveState);
   // Highlight the move that produced this position. viewIndex === -1 → no move.
@@ -367,6 +428,39 @@ function viewState(act, liveState) {
     replayViewing: true,
     replayMoveCells,
   };
+}
+
+function lastMoveFromReplay(replay) {
+  if (!replay || replay.snapshots.length === 0) return null;
+  const snap = replay.snapshots[replay.snapshots.length - 1];
+  const a = snap.action || {};
+  if (a.kind === 'move') return { from: a.from, to: a.to };
+  if (a.kind === 'flip') return { from: -1, to: a.to };
+  return null;
+}
+
+// Plain-English description of a transcript snapshot, for the SR announcer.
+function describeAction(snap, replay) {
+  const a = snap?.action || {};
+  const toCoord = (i) => i >= 0 ? 'abcdefgh'[i % 8] + ((i >> 3) + 1) : '';
+  if (a.kind === 'flip') {
+    const cell = snap.cellsAfter?.[a.to];
+    const name = cell && cell.state === 'faceup'
+      ? `${cell.color === 1 ? 'Red' : 'Black'} ${['','Soldier','Cannon','Horse','Chariot','Elephant','Advisor','General'][cell.type] || ''}`.trim()
+      : 'face-down piece';
+    return `flipped ${toCoord(a.to)} — ${name}`;
+  }
+  if (a.kind === 'move') {
+    let s = `${toCoord(a.from)} to ${toCoord(a.to)}`;
+    if (snap.captured) {
+      s += snap.captured.facedown
+        ? ', capturing a face-down piece'
+        : `, capturing ${snap.captured.color === 1 ? 'Red' : 'Black'} ${['','Soldier','Cannon','Horse','Chariot','Elephant','Advisor','General'][snap.captured.type] || ''}`.trim();
+    }
+    return s;
+  }
+  if (a.kind === 'resign') return 'resigned';
+  return 'made a move';
 }
 
 // ---- over-the-board ----
@@ -450,11 +544,19 @@ function refreshOTB() {
   }
   $('otb-banner').textContent = banner;
   $('otb-resign').disabled = !liveState.setup_done || liveState.game_over || view.replayViewing;
-  $('otb-resign').onclick = () => {
+  $('otb-resign').onclick = async () => {
     if (view.replayViewing) return;
     const liveTurn = JSON.parse(active.hostGame.stateJson()).side_to_move;
+    const ok = await confirmModal({
+      title: 'Resign this game?',
+      body: `Player ${liveTurn + 1} resigns. The other player wins. This can't be undone.`,
+      confirmLabel: 'Resign',
+      cancelLabel: 'Keep playing',
+      danger: true,
+    });
+    if (!ok) return;
     try { applyOTBAction(active, { kind: 'resign' }, liveTurn); }
-    catch (e) { console.warn(e); }
+    catch (e) { toast(`Couldn't resign: ${e.message || e}`, { kind: 'error' }); }
     refreshOTB();
   };
 
@@ -555,14 +657,22 @@ function _startAIGame(difficulty) {
   };
 
   // Button wiring
-  $('ai-resign').onclick = () => {
+  $('ai-resign').onclick = async () => {
     if (!active?.isAI) return;
     const state = JSON.parse(active.humanGame.stateJson());
     if (!state.setup_done || state.game_over) return;
     if (state.side_to_move !== state.my_player_index) return; // only resign on your turn
     if (!active.replay.isLive()) return; // resign disabled in replay view
+    const ok = await confirmModal({
+      title: 'Resign this game?',
+      body: 'You forfeit the game. The AI wins. This can’t be undone.',
+      confirmLabel: 'Resign',
+      cancelLabel: 'Keep playing',
+      danger: true,
+    });
+    if (!ok) return;
     try { applyAIAction(active, 'human', { kind: 'resign' }); }
-    catch (e) { console.warn(e); }
+    catch (e) { toast(`Couldn't resign: ${e.message || e}`, { kind: 'error' }); }
     refreshAI();
   };
   $('ai-new-game').onclick = () => {
@@ -684,9 +794,69 @@ function scheduleAIMove() {
 }
 
 // ---- shared rendering ----
+const PIECE_NAMES = ['', 'Soldier', 'Cannon', 'Horse', 'Chariot', 'Elephant', 'Advisor', 'General'];
+
+function cellAriaLabel(idx, cell, opts = {}) {
+  const col = 'abcdefgh'[idx % 8];
+  const row = (idx >> 3) + 1;
+  const coord = `${col}${row}`;
+  let base;
+  if (cell.state === 'facedown') base = `${coord}, face-down`;
+  else if (cell.state === 'empty') base = `${coord}, empty`;
+  else {
+    const color = cell.color === 1 ? 'Red' : 'Black';
+    const name = PIECE_NAMES[cell.type] || '';
+    base = `${coord}, ${color} ${name}`.trim();
+  }
+  const tags = [];
+  if (opts.selected) tags.push('selected');
+  if (opts.legal === 'flip') tags.push('legal flip');
+  else if (opts.legal === 'move-target') tags.push('legal move target');
+  else if (opts.legal === 'movable') tags.push('your piece — selectable');
+  if (opts.lastMove) tags.push('last move');
+  return tags.length ? `${base}; ${tags.join(', ')}` : base;
+}
+
+// Move focus by a (dRow, dCol) step on a board grid keyed by data-cell-index.
+function boardArrowFocus(boardEl, currentIdx, dr, dc) {
+  const r = (currentIdx >> 3) + dr;
+  const c = (currentIdx & 7) + dc;
+  if (r < 0 || r > 3 || c < 0 || c > 7) return;
+  const next = boardEl.querySelector(`[data-cell-index="${r * 8 + c}"]`);
+  if (next) next.focus();
+}
+
+function attachBoardKeyNav(boardEl) {
+  if (boardEl.dataset.keyNav === '1') return;
+  boardEl.dataset.keyNav = '1';
+  boardEl.addEventListener('keydown', (e) => {
+    const target = e.target.closest('[data-cell-index]');
+    if (!target || target.parentElement !== boardEl) return;
+    const idx = parseInt(target.dataset.cellIndex, 10);
+    if (isNaN(idx)) return;
+    let handled = true;
+    switch (e.key) {
+      case 'ArrowLeft':  boardArrowFocus(boardEl, idx, 0, -1); break;
+      case 'ArrowRight': boardArrowFocus(boardEl, idx, 0,  1); break;
+      case 'ArrowUp':    boardArrowFocus(boardEl, idx, -1, 0); break;
+      case 'ArrowDown':  boardArrowFocus(boardEl, idx,  1, 0); break;
+      case 'Home':       boardArrowFocus(boardEl, idx, 0, -8); break;
+      case 'End':        boardArrowFocus(boardEl, idx, 0,  8); break;
+      default: handled = false;
+    }
+    if (handled) e.preventDefault();
+  });
+}
+
 function renderBoard(boardEl, state, onClick) {
+  // Roving-tabindex: remember which cell holds tab focus across re-renders.
+  const prevFocusIdx = boardEl.querySelector('[data-cell-index][tabindex="0"]')?.dataset.cellIndex;
+  const hadDomFocus = boardEl.contains(document.activeElement);
+
   boardEl.innerHTML = '';
   boardEl.classList.toggle('replay-viewing', !!state.replayViewing);
+  attachBoardKeyNav(boardEl);
+
   const legal = state.legal_moves_for_me || [];
   const flipTargets = new Set();
   const moveTargetsBySrc = new Map();
@@ -697,29 +867,67 @@ function renderBoard(boardEl, state, onClick) {
       moveTargetsBySrc.get(m.from).add(m.to);
     }
   }
-  // Highlight the cells involved in the move being viewed (replay mode).
-  const highlight = state.replayMoveCells || null;
+  // Highlight the cells involved in the move being viewed (replay mode) or
+  // the most recent move (live mode).
+  const highlight = state.replayMoveCells || state.lastMoveCells || null;
+  const myTurnLive = state.side_to_move === state.my_player_index && !state.game_over && !state.replayViewing;
+
+  // Determine which cell will hold tabindex=0 (single tab-stop into the grid).
+  let focusIdx;
+  if (prevFocusIdx != null && +prevFocusIdx >= 0 && +prevFocusIdx < 32) focusIdx = +prevFocusIdx;
+  else if (active?.selected != null) focusIdx = active.selected;
+  else if (myTurnLive && legal.length) focusIdx = legal[0].from < 0 ? legal[0].to : legal[0].from;
+  else focusIdx = 0;
+
   for (let i = 0; i < 32; ++i) {
     const c = state.cells[i];
-    const div = document.createElement('div');
-    div.className = 'cell ' + c.state;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'cell ' + c.state;
+    btn.dataset.cellIndex = String(i);
+    btn.tabIndex = i === focusIdx ? 0 : -1;
+
+    let opts = {};
     if (c.state === 'faceup') {
-      div.classList.add(c.color === 1 ? 'red' : 'black');
-      div.textContent = c.glyph;
+      btn.classList.add(c.color === 1 ? 'red' : 'black');
+      btn.textContent = c.glyph;
     }
-    if (!state.replayViewing && active?.selected === i) div.classList.add('selected');
-    if (state.side_to_move === state.my_player_index && !state.game_over && !state.replayViewing) {
+    const isSelected = !state.replayViewing && active?.selected === i;
+    if (isSelected) { btn.classList.add('selected'); opts.selected = true; }
+    if (myTurnLive) {
       if (active?.selected != null && moveTargetsBySrc.get(active.selected)?.has(i)) {
-        div.classList.add('legal-target');
-      } else if (active?.selected == null && (flipTargets.has(i) || moveTargetsBySrc.has(i))) {
-        div.classList.add('legal');
+        btn.classList.add('legal-target'); opts.legal = 'move-target';
+      } else if (active?.selected == null && flipTargets.has(i)) {
+        btn.classList.add('legal'); opts.legal = 'flip';
+      } else if (active?.selected == null && moveTargetsBySrc.has(i)) {
+        btn.classList.add('legal'); opts.legal = 'movable';
       }
     }
-    if (highlight && (i === highlight.from || i === highlight.to)) {
-      div.classList.add('replay-highlight');
+    const isLastMove = highlight && (i === highlight.from || i === highlight.to);
+    if (isLastMove) {
+      btn.classList.add(state.replayViewing ? 'replay-highlight' : 'last-move');
+      opts.lastMove = true;
     }
-    div.addEventListener('click', () => onClick(i));
-    boardEl.appendChild(div);
+    if (state.flashCellIdx === i) btn.classList.add('opp-move-flash');
+    btn.setAttribute('aria-label', cellAriaLabel(i, c, opts));
+    if (state.replayViewing) btn.setAttribute('aria-disabled', 'true');
+    btn.addEventListener('click', () => onClick(i));
+    boardEl.appendChild(btn);
+  }
+
+  // Watermark when viewing a past position.
+  if (state.replayViewing) {
+    const wm = document.createElement('div');
+    wm.className = 'replay-watermark';
+    wm.textContent = 'REPLAY';
+    wm.setAttribute('aria-hidden', 'true');
+    boardEl.appendChild(wm);
+  }
+
+  // Restore DOM focus if it was inside the board before the redraw.
+  if (hadDomFocus) {
+    const tgt = boardEl.querySelector(`[data-cell-index="${focusIdx}"]`);
+    tgt?.focus();
   }
 }
 
@@ -734,32 +942,71 @@ function refreshGame() {
     onFedCellClick(idx, view);
   });
   const opp = active.isHost ? active.info.join_name : active.info.host_name;
+  const colorChip = liveState.my_color === 1
+    ? '<span class="color-chip red" aria-label="You are Red">帥 Red</span>'
+    : liveState.my_color === 2
+      ? '<span class="color-chip black" aria-label="You are Black">將 Black</span>'
+      : '';
+  const connState = active.connState || 'live';   // live | reconnecting | offline
+  const connLabel = connState === 'live' ? 'Live'
+                   : connState === 'reconnecting' ? 'Reconnecting…'
+                   : 'Offline';
   const replayBadge = view.replayViewing
     ? `<div class="replay-badge">Reviewing move ${active.replay.currentStep()}/${active.replay.totalMoves()}</div>`
     : '';
+  const disconnectBanner = connState !== 'live'
+    ? `<div class="disconnect-banner" role="alert">
+         <span>${connState === 'offline'
+            ? 'Connection lost. Trying to reconnect…'
+            : 'Reconnecting to the relay…'}</span>
+         <button id="btn-retry-conn" type="button">Retry now</button>
+       </div>`
+    : '';
   $('game-header').innerHTML = `
-    <div class="meta">
+    ${disconnectBanner}
+    <div class="meta game-meta">
       ${replayBadge}
-      <div><b>Room:</b> <code>${active.info.room_code}</code>
-           <button id="btn-copy-link" class="link-btn">Copy invite link</button></div>
-      <div><b>Opponent:</b> ${escapeHtml(opp || '(waiting…)')}</div>
-      <div><b>You are:</b> ${active.isHost ? 'Host (Player 1)' : 'Joiner (Player 2)'}
-        ${liveState.my_color === 1 ? '· Red' : liveState.my_color === 2 ? '· Black' : ''}</div>
-      <div><b>Turn:</b> <span id="game-turn">${turnLabel(liveState)}</span></div>
-      <div><b>Status:</b> <span id="game-status-line">${statusLabel(liveState, active.info)}</span></div>
-      <div><b>Moves:</b> ${liveState.transcript_seq}</div>
-      <button id="btn-resign" ${liveState.setup_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
-      <a class="link-btn" href="#/dashboard">My games</a>
+      <div class="meta-row meta-row-top">
+        <div class="meta-room">
+          <span class="meta-label">Room</span>
+          <code>${escapeHtml(active.info.room_code)}</code>
+          <button id="btn-copy-link" class="link-btn" type="button" aria-label="Copy invite link">Copy invite link</button>
+        </div>
+        <div class="meta-row-right">
+          <span class="conn-state conn-${connState}" aria-live="polite" aria-atomic="true">${connLabel}</span>
+          <a class="link-btn" href="#/dashboard">My games</a>
+        </div>
+      </div>
+      <div class="meta-row">
+        <div><span class="meta-label">You vs</span> <strong>${escapeHtml(opp || '(waiting for opponent)')}</strong> ${colorChip}</div>
+        <button id="btn-resign" class="btn-danger-inline" type="button"
+          ${liveState.setup_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
+      </div>
+      <div class="meta-row meta-row-status">
+        <span><span class="meta-label">Move</span> ${liveState.transcript_seq}</span>
+        <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info)}</span></span>
+        <span><span class="meta-label">Turn</span> <span id="game-turn">${turnLabel(liveState)}</span></span>
+      </div>
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
-  $('btn-resign').onclick = () => {
+  $('btn-resign').onclick = async () => {
     if (!active.replay.isLive()) return;
+    const ok = await confirmModal({
+      title: 'Resign this game?',
+      body: 'Your opponent will win. This can’t be undone.',
+      confirmLabel: 'Resign',
+      cancelLabel: 'Keep playing',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       const out = applyLocalAction(active, { kind: 'resign' });
       if (active.conn && out) active.conn.send(out);
-    } catch (e) { console.warn(e); }
+    } catch (e) { toast(`Couldn't resign: ${e.message || e}`, { kind: 'error' }); }
     refreshGame();
   };
+  const retryBtn = $('btn-retry-conn');
+  if (retryBtn) retryBtn.onclick = () => { active.conn?.reconnect?.(); };
 
   renderTranscript($('game-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshGame(); },
@@ -779,7 +1026,13 @@ function refreshGame() {
         tip_hash: liveState.tip_hash || '',
         i_won: iWon,
       }),
-    }).catch(() => {});
+    }).then((r) => {
+      if (!r.ok) throw new Error(`finalize HTTP ${r.status}`);
+    }).catch(() => {
+      // Reset so the next render retries.
+      active.finalizeReported = false;
+      toast('Couldn’t save the result. Will retry…', { kind: 'warn' });
+    });
   }
 }
 
@@ -858,15 +1111,31 @@ async function renderDashboard() {
   showView('dashboard');
   const list = $('dashboard-list');
   if (!me) { list.innerHTML = `<div>Sign in first. <a href="#/">Lobby</a></div>`; return; }
-  const games = await fetch('/api/games').then(r => r.json()).catch(() => []);
+  let games;
+  try {
+    const r = await fetch('/api/games');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    games = await r.json();
+  } catch (e) {
+    list.innerHTML = `<div class="err">Couldn't load your games.
+      <a href="#/dashboard">Retry</a>.</div>`;
+    toast('Couldn’t load your games.', { kind: 'error' });
+    return;
+  }
   if (!games.length) {
-    list.innerHTML = `<div class="muted">No games yet.
-      <a href="#/">Start one</a>.</div>`;
+    list.innerHTML = `
+      <div class="empty-state">
+        <p>You haven’t played a game yet.</p>
+        <div class="row">
+          <a href="#/" class="primary">Start a game</a>
+          <a href="#/ai" class="link-btn">…or play the AI</a>
+        </div>
+      </div>`;
     return;
   }
   list.innerHTML = games.map(g => {
-    const opp = g.host_user_id === me.id ? (g.join_name || '(waiting)')
-                                          : (g.host_name || '(empty)');
+    const opp = g.host_user_id === me.id ? (g.join_name || '(waiting for opponent)')
+                                          : (g.host_name || '(waiting for opponent)');
     const ts = new Date(g.last_move_at || g.created_at).toLocaleString();
     const tag = g.status === 'complete'  ? 'complete'
               : g.status === 'disputed'  ? 'disputed'
@@ -883,9 +1152,22 @@ async function renderDashboard() {
 // ---- leaderboard ----
 async function renderLeaderboard() {
   showView('leaderboard');
-  const data = await fetch('/api/leaderboard').then(r => r.json()).catch(() => []);
+  let data;
+  try {
+    const r = await fetch('/api/leaderboard');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    data = await r.json();
+  } catch (e) {
+    $('leaderboard-table').innerHTML = `<div class="err">Couldn't load the leaderboard.
+      <a href="#/leaderboard">Retry</a>.</div>`;
+    toast('Couldn’t load the leaderboard.', { kind: 'error' });
+    return;
+  }
   if (!data.length) {
-    $('leaderboard-table').innerHTML = `<div class="muted">No rated games yet.</div>`;
+    $('leaderboard-table').innerHTML = `<div class="empty-state">
+      <p>No rated games yet. Be the first — invite a friend.</p>
+      <div class="row"><a href="#/" class="primary">Start a game</a></div>
+    </div>`;
     return;
   }
   $('leaderboard-table').innerHTML = `
@@ -902,8 +1184,15 @@ async function renderLeaderboard() {
 // ---- profile ----
 async function renderProfile(userId) {
   showView('profile');
-  const p = await fetch(`/api/users/${userId}`).then(r => r.json()).catch(() => null);
-  if (!p) { $('profile-body').innerHTML = `<div>Not found.</div>`; return; }
+  let p;
+  try {
+    const r = await fetch(`/api/users/${userId}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    p = await r.json();
+  } catch (e) {
+    $('profile-body').innerHTML = `<div class="err">Profile not found.</div>`;
+    return;
+  }
   const h2h = p.head_to_head || [];
   $('profile-body').innerHTML = `
     <h2>${escapeHtml(p.display_name)}</h2>
@@ -963,15 +1252,26 @@ function initClassicUI() {
     </div>`;
   $('cl-create').onclick = classicCreate;
   $('cl-join').onclick   = classicJoin;
-  $('cl-resign').onclick = () => {
+  $('cl-resign').onclick = async () => {
     if (!classicGame) return;
     if (classicReplay && !classicReplay.isLive()) return;
+    const ok = await confirmModal({
+      title: 'Resign this game?',
+      body: 'Your peer will win. This can’t be undone.',
+      confirmLabel: 'Resign',
+      cancelLabel: 'Keep playing',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       classicReplay?.pushPending({ kind: 'resign' }, classicGame.myPlayerIndex());
       const out = classicGame.localResign();
       classicReplay?.observe(JSON.parse(classicGame.stateJson()));
       classicConn?.send(out);
-    } catch (e) { classicReplay?.dropPending(); }
+    } catch (e) {
+      classicReplay?.dropPending();
+      toast(`Couldn't resign: ${e.message || e}`, { kind: 'error' });
+    }
     classicRefresh();
   };
 }
@@ -1112,6 +1412,87 @@ function classicCellClick(idx, state) {
   }
   active.selected = null;
   classicRefresh();
+}
+
+// ---- toast notifications ----
+let _toastSeq = 0;
+function toast(message, opts = {}) {
+  const stack = document.getElementById('toast-stack');
+  if (!stack) return;
+  const kind = opts.kind || 'info';
+  const id = `toast-${++_toastSeq}`;
+  const div = document.createElement('div');
+  div.className = `toast toast-${kind}`;
+  div.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  div.id = id;
+  div.innerHTML = `
+    <button class="toast-close" type="button" aria-label="Dismiss">×</button>
+    <span class="toast-msg"></span>`;
+  div.querySelector('.toast-msg').textContent = message;
+  const close = () => { div.remove(); };
+  div.querySelector('.toast-close').addEventListener('click', close);
+  stack.appendChild(div);
+  const timeoutMs = opts.timeoutMs ?? (kind === 'error' ? 8000 : 5000);
+  if (timeoutMs > 0) setTimeout(close, timeoutMs);
+  return close;
+}
+
+// ---- modal dialog ----
+//
+// confirmModal({ title, body, confirmLabel, cancelLabel, danger }) → Promise<bool>
+// Renders a focus-trapped modal at #modal-root. Esc and backdrop click resolve
+// to false. Used for resign confirmation; reusable for any destructive action.
+function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(false); return; }
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"
+           aria-describedby="modal-body" tabindex="-1">
+        <h2 id="modal-title"></h2>
+        <p id="modal-body" class="modal-body"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel"></button>
+          <button type="button" class="btn-confirm${danger ? ' btn-danger' : ' primary'}"></button>
+        </div>
+      </div>`;
+    overlay.querySelector('#modal-title').textContent = title || 'Are you sure?';
+    overlay.querySelector('#modal-body').textContent = body || '';
+    const btnCancel = overlay.querySelector('.btn-cancel');
+    const btnConfirm = overlay.querySelector('.btn-confirm');
+    btnCancel.textContent = cancelLabel;
+    btnConfirm.textContent = confirmLabel;
+
+    const close = (result) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(false); return; }
+      if (e.key === 'Tab') {
+        // Trap focus between the two buttons.
+        const focusables = [btnCancel, btnConfirm];
+        const idx = focusables.indexOf(document.activeElement);
+        if (idx === -1) { focusables[0].focus(); e.preventDefault(); return; }
+        const next = e.shiftKey ? (idx - 1 + focusables.length) % focusables.length
+                                : (idx + 1) % focusables.length;
+        focusables[next].focus();
+        e.preventDefault();
+      }
+    };
+    btnCancel.addEventListener('click', () => close(false));
+    btnConfirm.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    // Focus the destructive button's safe partner (Cancel) by default.
+    (danger ? btnCancel : btnConfirm).focus();
+  });
 }
 
 // ---- utils ----
