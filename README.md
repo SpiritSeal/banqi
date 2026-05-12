@@ -104,8 +104,9 @@ one process is enough.
   equal-or-lower rank (with the Soldier/General exception above).
 - **Cannon**: never captures adjacently. Jumps along a row or column
   over exactly one screen piece (any color, face-up or face-down) onto
-  the target. Ignores rank; may capture face-down pieces (revealed on
-  capture).
+  the target. Ignores rank, but the target itself must be a face-up
+  enemy piece — a face-down piece can be the screen but is never a
+  legal capture target; flip it first.
 - The very first flip determines that player's color. You lose if you
   have no legal move.
 
