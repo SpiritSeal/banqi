@@ -31,6 +31,10 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
                                   publicUrl = PUBLIC_URL, envOverride = env } = {}) {
   const db = await openDb(databaseUrl);
   const app = express();
+  // Cloud Run (and most PaaS) terminate TLS at the load balancer and forward
+  // X-Forwarded-Proto: https. Without this, req.secure reads false and
+  // express-session refuses to send Set-Cookie for `secure: true` cookies.
+  app.set('trust proxy', 1);
   app.use(express.json({ limit: '64kb' }));
 
   const { sessionParser, passport } = configureAuth(app, {
