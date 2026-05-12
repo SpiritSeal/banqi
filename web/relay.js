@@ -9,12 +9,20 @@
 
 export class RelayConnection {
   constructor(url) {
-    this._ws = new WebSocket(url);
-    this._handlers = { open: [], data: [], close: [], error: [], meta: [] };
+    this._url = url;
+    this._handlers = { open: [], data: [], close: [], error: [], meta: [], reconnecting: [] };
     this.open = false;
+    this._reconnectAttempts = 0;
+    this._reconnectTimer = null;
+    this._userClosed = false;
+    this._connect();
+  }
 
+  _connect() {
+    this._ws = new WebSocket(this._url);
     this._ws.addEventListener('open', () => {
       this.open = true;
+      this._reconnectAttempts = 0;
       this._emit('open');
     });
     this._ws.addEventListener('message', (ev) => {
@@ -34,10 +42,33 @@ export class RelayConnection {
     this._ws.addEventListener('close', () => {
       this.open = false;
       this._emit('close');
+      if (!this._userClosed) this._scheduleReconnect();
     });
     this._ws.addEventListener('error', (ev) => {
       this._emit('error', ev);
     });
+  }
+
+  _scheduleReconnect() {
+    if (this._reconnectTimer) return;
+    const attempt = ++this._reconnectAttempts;
+    const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt - 1, 5));
+    this._emit('reconnecting', { attempt, delayMs: delay });
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (!this._userClosed) this._connect();
+    }, delay);
+  }
+
+  // Manually trigger an immediate reconnect (bypass the pending backoff).
+  reconnect() {
+    if (this._userClosed) return;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    try { this._ws?.close(); } catch (_) {}
+    this._connect();
   }
 
   on(event, cb) {
@@ -49,6 +80,8 @@ export class RelayConnection {
   }
 
   close() {
+    this._userClosed = true;
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     try { this._ws.close(); } catch (_) {}
   }
 
