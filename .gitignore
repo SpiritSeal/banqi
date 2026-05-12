@@ -6,6 +6,11 @@ emsdk/
 .DS_Store
 node_modules/
 
+# Compiled WebAssembly artifacts — built locally via `make wasm` and in CI
+# via the emsdk install step. Not source.
+web/banqi.js
+web/banqi.wasm
+
 # Relay runtime artifacts.
 server/.env
 server/banqi.db

@@ -62,6 +62,26 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Cache Emscripten
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          key: emsdk-${{ runner.os }}-latest
+
+      - name: Install Emscripten (emsdk)
+        run: |
+          if [ ! -d emsdk ]; then
+            git clone https://github.com/emscripten-core/emsdk.git
+          fi
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build WebAssembly
+        run: |
+          source emsdk/emsdk_env.sh
+          make wasm
+
       - name: Install npm deps
         run: npm install
 
