@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.mjs",
     "dev":   "node --watch src/index.mjs",
-    "test":  "node --test tests/*.mjs"
+    "test":  "node --test --test-concurrency=1 tests/*.mjs"
   },
   "dependencies": {
     "cookie":                 "^1.0.1",

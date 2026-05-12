@@ -77,3 +77,27 @@ describe('session cookies behind a TLS-terminating proxy', () => {
     );
   });
 });
+
+describe('post-login ?next= redirect', () => {
+  it('redirects to the requested hash route after dev sign-in', async () => {
+    const next = '/#/g/ABCDEF';
+    const res = await fetch(
+      `${baseUrl}/auth/dev?name=Carol&next=${encodeURIComponent(next)}`,
+      { headers: { 'X-Forwarded-Proto': 'https' }, redirect: 'manual' },
+    );
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), next);
+  });
+
+  it('rejects an off-origin ?next= and falls back to /', async () => {
+    for (const evil of ['//evil.example.com', '/\\\\evil.example.com', 'https://evil.example.com', '']) {
+      const res = await fetch(
+        `${baseUrl}/auth/dev?name=Mallory&next=${encodeURIComponent(evil)}`,
+        { headers: { 'X-Forwarded-Proto': 'https' }, redirect: 'manual' },
+      );
+      assert.equal(res.status, 302, `evil=${evil}`);
+      assert.equal(res.headers.get('location'), '/',
+        `expected '/' for evil=${JSON.stringify(evil)}, got ${res.headers.get('location')}`);
+    }
+  });
+});

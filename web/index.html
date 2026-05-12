@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1c1e">
 <title>Banqi (半棋) — online + over the board</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="manifest" href="manifest.webmanifest">
-<meta name="theme-color" content="#ffb43a">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -14,48 +14,58 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<!-- Polite screen-reader region for cross-view announcements (route changes,
+     opponent moves, connection status). Populated by main.js announce(). -->
+<div id="sr-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<!-- Toast stack: visible notifications. -->
+<div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+
+<!-- Modal mount point. The modal helper renders into here. -->
+<div id="modal-root"></div>
+
 <div class="page">
   <header>
     <a href="#/" class="brand"><h1>Banqi · 半棋</h1></a>
     <div class="subtitle">Chinese Dark Chess · play online or share a screen</div>
   </header>
 
+  <main id="main-content">
   <!-- LOBBY -->
-  <section id="view-lobby" class="panel">
+  <section id="view-lobby" class="panel" aria-labelledby="lobby-heading">
+    <h2 id="lobby-heading" class="sr-only">Lobby</h2>
     <div id="lobby-me"></div>
 
     <div class="lobby-grid">
       <div class="lobby-card">
-        <h2>Play with a friend online</h2>
+        <h3>Play with a friend online</h3>
         <p class="muted">Click Start, copy the link the next page shows you, and send it to your friend. They click it, and you play. You can come back to the game any time — even days later.</p>
         <div class="row">
-          <label>Mode:
-            <select id="lobby-mode">
-              <option value="casual">Standard (fast)</option>
-              <option value="crypto">Encrypted (slower, hides hidden pieces)</option>
-            </select>
-          </label>
+          <label for="lobby-mode">Mode</label>
+          <select id="lobby-mode">
+            <option value="casual">Standard (fast)</option>
+            <option value="crypto">Encrypted (slower, hides hidden pieces)</option>
+          </select>
           <button id="btn-start-online" class="primary big">Start a game →</button>
         </div>
       </div>
 
       <div class="lobby-card">
-        <h2>Play on this device</h2>
+        <h3>Play on this device</h3>
         <p class="muted">No internet, no sign-in. Two players take turns on the same screen.</p>
         <button id="btn-otb" class="primary big">Hot-seat →</button>
       </div>
 
       <div class="lobby-card">
-        <h2>Play vs AI</h2>
+        <h3>Play vs AI</h3>
         <p class="muted">Challenge a computer opponent. Pick your difficulty — the hardest mode uses full lookahead search.</p>
         <div class="row">
-          <label>Difficulty:
-            <select id="lobby-ai-difficulty">
-              <option value="easy">Easy</option>
-              <option value="medium" selected>Medium</option>
-              <option value="hard">Hard</option>
-            </select>
-          </label>
+          <label for="lobby-ai-difficulty">Difficulty</label>
+          <select id="lobby-ai-difficulty">
+            <option value="easy">Easy</option>
+            <option value="medium" selected>Medium</option>
+            <option value="hard">Hard</option>
+          </select>
           <button id="btn-ai" class="primary big">vs AI →</button>
         </div>
       </div>
@@ -68,17 +78,19 @@
   </section>
 
   <!-- GAME -->
-  <section id="view-game" class="panel hidden">
+  <section id="view-game" class="panel hidden" aria-labelledby="game-heading">
+    <h2 id="game-heading" class="sr-only" tabindex="-1">Online game</h2>
     <div id="game-header"></div>
-    <div id="game-board" class="board"></div>
+    <div id="game-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
     <div id="game-transcript" class="transcript-panel"></div>
     <p class="muted small">Tip: bookmark this page or save the room link. Coming back continues the game where you left off.</p>
   </section>
 
   <!-- OTB -->
-  <section id="view-otb" class="panel hidden">
-    <div id="otb-banner" class="otb-banner">setting up…</div>
-    <div id="otb-board" class="board"></div>
+  <section id="view-otb" class="panel hidden" aria-labelledby="otb-heading">
+    <h2 id="otb-heading" class="sr-only" tabindex="-1">Hot-seat (over the board)</h2>
+    <div id="otb-banner" class="otb-banner" role="status" aria-live="polite">setting up…</div>
+    <div id="otb-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
     <div class="row" style="margin-top:12px">
       <button id="otb-resign">Resign</button>
       <a class="link-btn" href="#/">Back to lobby</a>
@@ -87,63 +99,67 @@
   </section>
 
   <!-- VS AI -->
-  <section id="view-ai" class="panel hidden">
+  <section id="view-ai" class="panel hidden" aria-labelledby="ai-heading">
+    <h2 id="ai-heading" class="sr-only" tabindex="-1">Vs AI</h2>
     <div id="ai-header" class="ai-header">
-      <div id="ai-banner" class="otb-banner">setting up…</div>
+      <div id="ai-banner" class="otb-banner" role="status" aria-live="polite">setting up…</div>
       <div id="ai-meta" class="ai-meta"></div>
     </div>
-    <div id="ai-board" class="board"></div>
+    <div id="ai-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
     <div class="row" style="margin-top:12px">
       <button id="ai-resign">Resign</button>
       <button id="ai-new-game" class="primary">New game</button>
       <a class="link-btn" href="#/">Back to lobby</a>
     </div>
-    <div id="ai-thinking" class="ai-thinking hidden">AI is thinking…</div>
+    <div id="ai-thinking" class="ai-thinking hidden" role="status" aria-live="polite">AI is thinking…</div>
     <div id="ai-transcript" class="transcript-panel"></div>
   </section>
 
   <!-- DASHBOARD -->
-  <section id="view-dashboard" class="panel hidden">
-    <h2>My games</h2>
+  <section id="view-dashboard" class="panel hidden" aria-labelledby="dashboard-heading">
+    <h2 id="dashboard-heading" tabindex="-1">My games</h2>
     <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="dashboard-list" class="dashboard-list"></div>
   </section>
 
   <!-- LEADERBOARD -->
-  <section id="view-leaderboard" class="panel hidden">
-    <h2>Leaderboard</h2>
+  <section id="view-leaderboard" class="panel hidden" aria-labelledby="leaderboard-heading">
+    <h2 id="leaderboard-heading" tabindex="-1">Leaderboard</h2>
     <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="leaderboard-table"></div>
   </section>
 
   <!-- PROFILE -->
-  <section id="view-profile" class="panel hidden">
+  <section id="view-profile" class="panel hidden" aria-labelledby="profile-heading">
+    <h2 id="profile-heading" class="sr-only" tabindex="-1">Profile</h2>
     <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="profile-body"></div>
   </section>
 
   <!-- CLASSIC P2P -->
-  <section id="view-classic" class="panel hidden">
+  <section id="view-classic" class="panel hidden" aria-labelledby="classic-heading">
+    <h2 id="classic-heading" class="sr-only" tabindex="-1">Classic peer-to-peer</h2>
     <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="classic-body"></div>
   </section>
+  </main>
 
   <!-- Always-visible pieces & rules crib sheet -->
-  <section id="crib" class="panel">
-    <h2>Pieces &amp; rules</h2>
+  <aside id="crib" class="panel" aria-labelledby="crib-heading">
+    <h2 id="crib-heading">Pieces &amp; rules</h2>
     <div class="crib-grid">
       <div>
         <h3>Pieces (rank high → low)</h3>
         <table class="crib">
           <thead><tr><th>Rank</th><th>Red</th><th>Black</th><th>Name</th><th>×</th></tr></thead>
           <tbody>
-            <tr><td>7</td><td class="zh red">帥</td><td class="zh black">將</td><td>General</td><td>1</td></tr>
-            <tr><td>6</td><td class="zh red">仕</td><td class="zh black">士</td><td>Advisor</td><td>2</td></tr>
-            <tr><td>5</td><td class="zh red">相</td><td class="zh black">象</td><td>Elephant</td><td>2</td></tr>
-            <tr><td>4</td><td class="zh red">俥</td><td class="zh black">車</td><td>Chariot</td><td>2</td></tr>
-            <tr><td>3</td><td class="zh red">傌</td><td class="zh black">馬</td><td>Horse</td><td>2</td></tr>
-            <tr><td>2</td><td class="zh red">炮</td><td class="zh black">砲</td><td>Cannon</td><td>2</td></tr>
-            <tr><td>1</td><td class="zh red">兵</td><td class="zh black">卒</td><td>Soldier</td><td>5</td></tr>
+            <tr><td>7</td><td class="zh red" aria-label="Red General">帥</td><td class="zh black" aria-label="Black General">將</td><td>General</td><td>1</td></tr>
+            <tr><td>6</td><td class="zh red" aria-label="Red Advisor">仕</td><td class="zh black" aria-label="Black Advisor">士</td><td>Advisor</td><td>2</td></tr>
+            <tr><td>5</td><td class="zh red" aria-label="Red Elephant">相</td><td class="zh black" aria-label="Black Elephant">象</td><td>Elephant</td><td>2</td></tr>
+            <tr><td>4</td><td class="zh red" aria-label="Red Chariot">俥</td><td class="zh black" aria-label="Black Chariot">車</td><td>Chariot</td><td>2</td></tr>
+            <tr><td>3</td><td class="zh red" aria-label="Red Horse">傌</td><td class="zh black" aria-label="Black Horse">馬</td><td>Horse</td><td>2</td></tr>
+            <tr><td>2</td><td class="zh red" aria-label="Red Cannon">炮</td><td class="zh black" aria-label="Black Cannon">砲</td><td>Cannon</td><td>2</td></tr>
+            <tr><td>1</td><td class="zh red" aria-label="Red Soldier">兵</td><td class="zh black" aria-label="Black Soldier">卒</td><td>Soldier</td><td>5</td></tr>
           </tbody>
         </table>
       </div>
@@ -158,7 +174,7 @@
         </ul>
       </div>
     </div>
-  </section>
+  </aside>
 </div>
 
 <script type="module" src="main.js"></script>

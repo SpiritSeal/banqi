@@ -273,13 +273,13 @@ export function renderTranscript(container, replay, opts = {}) {
 
   const header = `
     <div class="transcript-head">
-      <h3>Transcript</h3>
-      <div class="transcript-controls">
-        <button data-jump="first"  ${N === 0 || step === 0 ? 'disabled' : ''} title="Initial position">|◀</button>
-        <button data-jump="prev"   ${step === 0 ? 'disabled' : ''} title="Previous move">◀</button>
-        <span class="transcript-step">${N === 0 ? 'no moves' : (live ? `live (${N}/${N})` : `${step}/${N}`)}</span>
-        <button data-jump="next"   ${live || N === 0 ? 'disabled' : ''} title="Next move">▶</button>
-        <button data-jump="last"   ${live || N === 0 ? 'disabled' : ''} title="Latest / Live">▶|</button>
+      <h3 id="transcript-heading">Transcript</h3>
+      <div class="transcript-controls" role="group" aria-label="Replay navigation">
+        <button data-jump="first" type="button" aria-label="Go to initial position" ${N === 0 || step === 0 ? 'disabled' : ''} title="Initial position">|◀</button>
+        <button data-jump="prev"  type="button" aria-label="Previous move" ${step === 0 ? 'disabled' : ''} title="Previous move">◀</button>
+        <span class="transcript-step" aria-live="polite">${N === 0 ? 'no moves' : (live ? `live (${N}/${N})` : `${step}/${N}`)}</span>
+        <button data-jump="next"  type="button" aria-label="Next move" ${live || N === 0 ? 'disabled' : ''} title="Next move">▶</button>
+        <button data-jump="last"  type="button" aria-label="Latest position (live)" ${live || N === 0 ? 'disabled' : ''} title="Latest / Live">▶|</button>
       </div>
     </div>`;
 
@@ -292,31 +292,35 @@ export function renderTranscript(container, replay, opts = {}) {
       const isCurrent = !live && replay.viewIndex === i;
       const moverCls = s.mover === 0 ? 'mover-p1' : s.mover === 1 ? 'mover-p2' : '';
       const moverLbl = s.mover === 0 ? 'P1' : s.mover === 1 ? 'P2' : '?';
+      const moverFull = s.mover === 0 ? 'Player 1' : s.mover === 1 ? 'Player 2' : 'Unknown player';
       const cls = [
         'transcript-row',
         isCurrent ? 'current' : '',
         s.action?.kind === 'resign' ? 'resign' : '',
       ].filter(Boolean).join(' ');
-      const jumpLabel = parts.jump ? '<span class="badge jump">jump</span>' : '';
-      const piece = parts.piece ? `<span class="t-piece">${parts.piece}</span>` : '';
+      const jumpLabel = parts.jump ? '<span class="badge jump" aria-label="cannon jump">jump</span>' : '';
+      const piece = parts.piece ? `<span class="t-piece" aria-hidden="true">${parts.piece}</span>` : '';
       const detail = parts.detail ? `<span class="t-detail">${escapeHtml(parts.detail)}</span>` : '';
+      const screenLabel = `Move ${i + 1}, ${moverFull}: ${parts.primary}${parts.detail ? ', ' + parts.detail : ''}${parts.jump ? ', cannon jump' : ''}`;
       return `
-        <button class="${cls}" data-step="${i + 1}" type="button">
-          <span class="t-num">${i + 1}.</span>
-          <span class="t-mover ${moverCls}">${moverLbl}</span>
+        <button class="${cls}" data-step="${i + 1}" type="button"
+                aria-label="${escapeHtml(screenLabel)}"
+                ${isCurrent ? 'aria-current="true"' : ''}>
+          <span class="t-num" aria-hidden="true">${i + 1}.</span>
+          <span class="t-mover ${moverCls}" aria-hidden="true">${moverLbl}</span>
           ${piece}
-          <span class="t-notation">${escapeHtml(parts.primary)}</span>
+          <span class="t-notation" aria-hidden="true">${escapeHtml(parts.primary)}</span>
           ${jumpLabel}
           ${detail}
         </button>`;
     }).join('');
-    rows = `<div class="transcript-list">${items}</div>`;
+    rows = `<div class="transcript-list" role="list" aria-labelledby="transcript-heading">${items}</div>`;
   }
 
   const banner = live
     ? ''
-    : `<div class="replay-banner">Reviewing move ${step} of ${N}.
-         <button class="link-btn" data-jump="last">Return to live →</button></div>`;
+    : `<div class="replay-banner" role="status">Reviewing move ${step} of ${N}.
+         <button class="link-btn" data-jump="last" type="button">Return to live →</button></div>`;
 
   container.innerHTML = `${banner}${header}${rows}`;
 
