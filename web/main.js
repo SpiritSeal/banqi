@@ -333,9 +333,6 @@ async function openFederatedGame(roomCode) {
   }
   const isHost = info.my_role === 'host';
 
-  // Pull the message log so we can replay if mid-game.
-  const log = await fetch(`/api/games/${info.id}/messages?since=0`).then(r => r.json());
-
   // Construct the Game with our deterministic identity seed.
   const modeInt = info.mode === 'crypto' ? 2 : 1;
   const gameIdForCpp = String(info.id);  // any stable token works; both sides must use the same
@@ -345,7 +342,9 @@ async function openFederatedGame(roomCode) {
 
   active = {
     info, game, isHost, conn: null,
-    bootstrapping: log.length > 0,
+    bootstrapping: true,
+    queuedData: [],
+    pendingSends: [],
     selected: null,
     pendingFinalize: false,
     finalizeReported: false,
@@ -353,44 +352,70 @@ async function openFederatedGame(roomCode) {
     replay: new Replay(),
   };
 
-  // Bootstrap phase: feed log entries through the Game. The helper drives
-  // the same applyLocalAction / applyPeerMessage path the live transport
-  // uses, captures every outbound message the Game emits, and returns
-  // whichever ones aren't already persisted in the server's log. On a
-  // fresh game (empty log) this is the initial HELLO; on a mid-protocol
-  // reconnect it's whatever response we never managed to send before.
-  // See test_game.cpp "reconnect-by-replay" for the same shape.
-  active.pendingSends = bootstrapFederated({
-    game,
-    log,
-    myUserId: me.id,
-    applyLocal: (action) => applyLocalAction(active, action),
-    applyPeer:  (body)   => applyPeerMessage(active, body),
-    parseJson:  parseJsonSafe,
-    normalizeAction,
-  });
-  active.bootstrapping = false;
-
-  // Open the live WebSocket.
+  // Open the live WebSocket. The bootstrap (log fetch + replay) happens in
+  // attachConnAsTransport's 'open' handler, AFTER our WS has been added to
+  // the server's peer set. Doing the log fetch beforehand is racy: a peer
+  // who connects and sends HELLO while we're not yet in the peer set will
+  // have their HELLO persisted, but the broadcast goes to peers minus
+  // themselves (= ∅) and never reaches us on the wire. Fetching the log
+  // post-connect guarantees we see every message persisted up to our
+  // connect time; anything persisted after arrives via 'data'.
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
   active.conn = new RelayConnection(`${wsScheme}://${location.host}/ws/${info.id}`);
   attachConnAsTransport(active);
 
-  // If the live message log just brought us into a finished game state,
-  // attempt finalize.
   refreshGame();
 }
 
 function attachConnAsTransport(act) {
   const { conn } = act;
   act.connState = 'live';
-  conn.on('open', () => {
-    // Flush anything bootstrapFederated identified as missing from the
-    // server's log — for a brand-new game this is our initial HELLO, which
-    // is what kicks off the shuffle protocol. We only send on the FIRST
-    // open: once the server persists these messages, a later reconnect's
-    // bootstrap will see them in the log and dedupe them away.
-    if (act.pendingSends?.length) {
+  conn.on('open', async () => {
+    if (act.bootstrapping) {
+      // First open: fetch the log AFTER our WS has joined the peer set, so
+      // any HELLO a peer broadcast before we connected (which goes to
+      // peers minus the sender = ∅ in that race) is captured by the log
+      // fetch instead of being silently lost. Then bootstrap, flush, and
+      // drain anything that arrived live while we were fetching.
+      let log;
+      try {
+        log = await fetch(`/api/games/${act.info.id}/messages?since=0`)
+          .then((r) => r.json());
+      } catch (e) {
+        console.error('relay log fetch failed:', e);
+        return;
+      }
+      act.pendingSends = bootstrapFederated({
+        game: act.game,
+        log,
+        myUserId: me.id,
+        applyLocal: (action) => applyLocalAction(act, action),
+        applyPeer:  (body)   => applyPeerMessage(act, body),
+        parseJson:  parseJsonSafe,
+        normalizeAction,
+      });
+      act.bootstrapping = false;
+      if (act.pendingSends?.length) {
+        act.conn.send(act.pendingSends.join('\n'));
+        act.pendingSends = [];
+      }
+      // Drain queued live frames, deduping against the log snapshot we
+      // just bootstrapped from (a frame can race with our fetch and arrive
+      // on both paths).
+      const logBodies = new Set(log.map((m) => String(m.body).trim()));
+      const queued = act.queuedData;
+      act.queuedData = [];
+      for (const line of queued) {
+        if (logBodies.has(String(line).trim())) continue;
+        try {
+          const out = applyPeerMessage(act, line);
+          if (act.conn && out) act.conn.send(out);
+        } catch (e) {
+          console.warn('handleMessage:', e);
+        }
+      }
+    } else if (act.pendingSends?.length) {
+      // Reconnect: flush anything we generated while offline.
       act.conn.send(act.pendingSends.join('\n'));
       act.pendingSends = [];
     }
@@ -402,7 +427,7 @@ function attachConnAsTransport(act) {
     refreshGame();
   });
   conn.on('data', (line) => {
-    if (act.bootstrapping) return;  // shouldn't happen, but be safe
+    if (act.bootstrapping) { act.queuedData.push(line); return; }
     try {
       const out = applyPeerMessage(act, line);
       if (act.conn && out) act.conn.send(out);
