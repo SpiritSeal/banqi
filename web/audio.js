@@ -1,13 +1,43 @@
-// Move sound effects synthesized via Web Audio API.
-// AudioContext is created lazily on the first move (user has already clicked,
-// so autoplay policy is satisfied by then).
+// Move sound effects.
+//   * move + capture: real wooden-clack sample (CC0 from freesound.org,
+//     "Small Wood Piece Sound" by qubodup, id 822567), pitched and layered
+//     via Web Audio.
+//   * flip + game-over: synthesized on the fly.
+// AudioContext is created lazily on the first move; sample bytes are
+// pre-fetched at module load so the first move doesn't wait on the network.
 
 let ctx = null;
+let sampleBytes = null;
+let sampleBuffer = null;
+
+const sampleBytesPromise = fetch('./sounds/move.mp3')
+  .then(r => r.arrayBuffer())
+  .then(b => { sampleBytes = b; })
+  .catch(() => { /* offline / blocked — playMoveSound will degrade silently */ });
 
 function getCtx() {
   if (!ctx) ctx = new AudioContext();
   if (ctx.state === 'suspended') ctx.resume();
   return ctx;
+}
+
+async function getSample(ac) {
+  if (sampleBuffer) return sampleBuffer;
+  await sampleBytesPromise;
+  if (!sampleBytes) return null;
+  if (!sampleBuffer) sampleBuffer = await ac.decodeAudioData(sampleBytes.slice(0));
+  return sampleBuffer;
+}
+
+function playSample(ac, buf, { rate = 1, gain = 1, offsetSec = 0 } = {}) {
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  src.playbackRate.value = rate;
+  const g = ac.createGain();
+  g.gain.value = gain;
+  src.connect(g);
+  g.connect(ac.destination);
+  src.start(ac.currentTime + offsetSec);
 }
 
 function noise(ac, duration, frequency, gain) {
@@ -37,23 +67,6 @@ function noise(ac, duration, frequency, gain) {
   src.stop(t + duration);
 }
 
-function tone(ac, frequency, gain, attack, duration) {
-  const osc = ac.createOscillator();
-  osc.type = 'triangle';
-  osc.frequency.value = frequency;
-
-  const g = ac.createGain();
-  const t = ac.currentTime;
-  g.gain.setValueAtTime(0, t);
-  g.gain.linearRampToValueAtTime(gain, t + attack);
-  g.gain.exponentialRampToValueAtTime(0.001, t + duration);
-
-  osc.connect(g);
-  g.connect(ac.destination);
-  osc.start(t);
-  osc.stop(t + duration);
-}
-
 function chime(ac, frequencies, noteDuration) {
   frequencies.forEach((freq, i) => {
     const osc = ac.createOscillator();
@@ -79,20 +92,26 @@ export function playMoveSound(event) {
     const kind = event.action?.kind;
 
     if (event.game_over) {
-      // Ascending chime for any game end.
       chime(ac, [523, 659, 784], 0.08);
       return;
     }
 
     if (kind === 'flip') {
       noise(ac, 0.085, 700, 0.4);
-    } else if (kind === 'move') {
-      if (event.capture) {
-        tone(ac, 340, 0.5, 0.003, 0.13);
-        noise(ac, 0.09, 600, 0.45);
-      } else {
-        tone(ac, 520, 0.25, 0.003, 0.055);
-      }
+      return;
+    }
+
+    if (kind === 'move') {
+      getSample(ac).then(buf => {
+        if (!buf) return;
+        if (event.capture) {
+          // Light first contact + heavier displaced hit ~30ms later.
+          playSample(ac, buf, { rate: 1.0, gain: 0.5 });
+          playSample(ac, buf, { rate: 0.7, gain: 1.0, offsetSec: 0.030 });
+        } else {
+          playSample(ac, buf, { rate: 0.92 });
+        }
+      }).catch(() => { /* swallow */ });
     }
   } catch (e) {
     // Audio errors should never break gameplay.
