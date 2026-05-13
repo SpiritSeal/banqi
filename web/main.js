@@ -63,6 +63,7 @@ const views = {
   dashboard:   $('view-dashboard'),
   leaderboard: $('view-leaderboard'),
   profile:     $('view-profile'),
+  friends:     $('view-friends'),
   classic:     $('view-classic'),
 };
 function showView(name) {
@@ -181,11 +182,15 @@ async function route() {
   const mp = hash.match(/^#\/profile\/(\d+)$/);
   if (mp) { announce('Profile'); return renderProfile(+mp[1]); }
 
+  const ma = hash.match(/^#\/add-friend\/(\d+-[0-9a-f]{16})$/);
+  if (ma) { announce('Add friend'); return addFriendByToken(ma[1]); }
+
   switch (hash) {
     case '#/otb':         announce('Hot-seat game');   return openOTB();
     case '#/ai':          announce('Vs AI game');       return openAIGame();
     case '#/dashboard':   announce('My games');         return renderDashboard();
     case '#/leaderboard': announce('Leaderboard');      return renderLeaderboard();
+    case '#/friends':     announce('Friends');          return renderFriends();
     case '#/classic':     announce('Classic P2P');      return renderClassicLobby();
     default:              announce('Lobby');            return renderLobby();
   }
@@ -237,11 +242,13 @@ function renderLobby() {
         <div><b>Hi, ${escapeHtml(me.display_name)}</b> · Elo ${me.elo}
           · <a href="#/dashboard">my games</a>
           · <a href="#/leaderboard">leaderboard</a>
+          · <a href="#/friends">friends<span id="nav-notif-badge" class="badge hidden"></span></a>
           · <a href="#/profile/${me.id}">profile</a>
         </div>
         <button id="btn-signout" class="link-btn">Sign out</button>
       </div>`;
     $('btn-signout').onclick = signOut;
+    refreshNotificationBadge();
   } else {
     renderSignInButtons(meBox, null);
   }
@@ -1299,6 +1306,7 @@ function flashCopied(label = 'Copied!') {
 // ---- dashboard ----
 async function renderDashboard() {
   showView('dashboard');
+  refreshNotificationBadge();
   const list = $('dashboard-list');
   if (!me) { list.innerHTML = `<div>Sign in first. <a href="#/">Lobby</a></div>`; return; }
   if (!online) { list.innerHTML = `<div class="muted">You're offline — can't load games. <a href="#/">Lobby</a></div>`; return; }
@@ -1421,9 +1429,15 @@ async function renderProfile(userId) {
   }
   const h2h = p.head_to_head || [];
   const isSelf = me && p.id === me.id;
+  const challengeBlock = (me && !isSelf) ? `
+    <div class="row" style="margin:12px 0">
+      <button id="btn-challenge" class="primary">Challenge to a game</button>
+      <span class="muted small">Sends a match request. They have to be a friend or someone you've played before.</span>
+    </div>` : '';
   $('profile-body').innerHTML = `
     <h2>${escapeHtml(p.display_name)}</h2>
     <div><b>Elo:</b> ${p.elo}</div>
+    ${challengeBlock}
     <h3>Head-to-head</h3>
     ${h2h.length === 0 ? `<div class="muted">No games played yet.</div>` :
       `<table><thead><tr><th>Opponent</th><th>W</th><th>L</th><th>D</th></tr></thead>
@@ -1436,6 +1450,9 @@ async function renderProfile(userId) {
       <h3>Danger zone</h3>
       <p class="muted">Deleting your account anonymizes your past games and removes your sign-in. This cannot be undone.</p>
       <button id="btn-delete-account" class="link-btn" style="color:#d24343">Delete my account…</button>` : ''}`;
+  if (challengeBlock) {
+    $('btn-challenge').onclick = () => challengePlayer(p.id);
+  }
   if (isSelf) {
     $('btn-delete-account').onclick = async () => {
       const typed = prompt(`To confirm deletion, type your display name:\n\n${p.display_name}`);
@@ -1447,6 +1464,225 @@ async function renderProfile(userId) {
       location.hash = '#/';
     };
   }
+}
+
+// ---- friends + match requests ----
+
+async function challengePlayer(toUserId, mode = 'casual') {
+  if (!me) return;
+  const res = await fetch('/api/match-requests', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to_user_id: toUserId, mode }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 403) {
+    toast(body.error || 'Become friends first to challenge each other.', { kind: 'warn' });
+    return;
+  }
+  if (!res.ok) {
+    toast(body.error || 'Could not send challenge.', { kind: 'error' });
+    return;
+  }
+  toast('Challenge sent.', { kind: 'success' });
+}
+
+async function addFriendByToken(combined) {
+  if (!me) {
+    showView('friends');
+    $('friends-invite-box').innerHTML = `
+      <div class="invite-signin">
+        <h3>Sign in to add a friend</h3>
+        <p>We'll bring you right back here.</p>
+        <div id="add-friend-signin-buttons"></div>
+      </div>`;
+    $('friends-incoming-requests').innerHTML = '';
+    $('friends-outgoing-requests').innerHTML = '';
+    $('friends-list').innerHTML = '';
+    renderSignInButtons($('add-friend-signin-buttons'), `#/add-friend/${combined}`);
+    return;
+  }
+  showView('friends');
+  $('friends-invite-box').innerHTML = `<div class="muted">Adding friend…</div>`;
+  $('friends-incoming-requests').innerHTML = '';
+  $('friends-outgoing-requests').innerHTML = '';
+  $('friends-list').innerHTML = '';
+  const res = await fetch('/api/friends/by-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: combined }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    toast(body.error || 'Could not add friend.', { kind: 'error' });
+  } else {
+    toast(`You and ${body.friend?.display_name || 'your friend'} are now friends.`, { kind: 'success' });
+  }
+  location.hash = '#/friends';
+  // hashchange fires the renderFriends() route.
+}
+
+async function renderFriends() {
+  showView('friends');
+  if (!me) {
+    $('friends-invite-box').innerHTML = `<div>Sign in to use friends. <a href="#/">Lobby</a></div>`;
+    $('friends-incoming-requests').innerHTML = '';
+    $('friends-outgoing-requests').innerHTML = '';
+    $('friends-list').innerHTML = '';
+    return;
+  }
+  if (!online) {
+    $('friends-invite-box').innerHTML = `<div class="muted">You're offline — can't load friends. <a href="#/">Lobby</a></div>`;
+    $('friends-incoming-requests').innerHTML = '';
+    $('friends-outgoing-requests').innerHTML = '';
+    $('friends-list').innerHTML = '';
+    return;
+  }
+  refreshNotificationBadge();
+  // Optimistic placeholders, then populate in parallel.
+  $('friends-invite-box').innerHTML = `<div class="muted">Loading…</div>`;
+  $('friends-incoming-requests').innerHTML = '';
+  $('friends-outgoing-requests').innerHTML = '';
+  $('friends-list').innerHTML = '';
+
+  let invite, friends, requests;
+  try {
+    [invite, friends, requests] = await Promise.all([
+      fetch('/api/friends/my-invite').then(r => r.json()),
+      fetch('/api/friends').then(r => r.json()),
+      fetch('/api/match-requests').then(r => r.json()),
+    ]);
+  } catch (e) {
+    $('friends-invite-box').innerHTML = `<div class="err">Couldn't load friends.</div>`;
+    toast('Couldn’t load friends.', { kind: 'error' });
+    return;
+  }
+
+  $('friends-invite-box').innerHTML = `
+    <div class="friends-invite">
+      <h3>Your invite link</h3>
+      <p class="muted">Send this to anyone you want to add as a friend. Anyone who opens it while signed in becomes your friend instantly — same trust model as a game room link.</p>
+      <div class="row">
+        <input id="friends-invite-url" type="text" readonly value="${escapeHtml(invite.url)}" style="flex:1">
+        <button id="friends-invite-copy" class="primary">Copy</button>
+      </div>
+    </div>`;
+  $('friends-invite-copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(invite.url);
+      toast('Invite link copied.', { kind: 'success', timeoutMs: 2500 });
+    } catch (_) {
+      $('friends-invite-url').select();
+      toast('Press Cmd/Ctrl+C to copy the link.', { kind: 'info' });
+    }
+  };
+
+  const incoming = requests?.incoming || [];
+  $('friends-incoming-requests').innerHTML = `
+    <h3>Incoming match requests${incoming.length ? ` (${incoming.length})` : ''}</h3>
+    ${incoming.length === 0 ? `<div class="muted">No pending requests.</div>` :
+      `<ul class="friends-req-list">${incoming.map(r => `
+        <li data-req="${r.id}">
+          <span><b>${escapeHtml(r.from_name || '')}</b> wants to play
+            <code>${escapeHtml(r.mode)}</code></span>
+          <span class="row">
+            <button class="primary" data-action="accept" data-req="${r.id}">Accept</button>
+            <button class="link-btn" data-action="decline" data-req="${r.id}">Decline</button>
+          </span>
+        </li>`).join('')}</ul>`}`;
+
+  const outgoing = requests?.outgoing || [];
+  $('friends-outgoing-requests').innerHTML = `
+    <h3>Sent challenges${outgoing.length ? ` (${outgoing.length})` : ''}</h3>
+    ${outgoing.length === 0 ? `<div class="muted">No outgoing requests.</div>` :
+      `<ul class="friends-req-list">${outgoing.map(r => `
+        <li data-req="${r.id}">
+          <span>Sent to <b>${escapeHtml(r.to_name || '')}</b>
+            (<code>${escapeHtml(r.mode)}</code>)</span>
+          <button class="link-btn" data-action="cancel" data-req="${r.id}">Cancel</button>
+        </li>`).join('')}</ul>`}`;
+
+  // Friends list + per-friend Challenge + Remove.
+  $('friends-list').innerHTML = `
+    <h3>Your friends${friends.length ? ` (${friends.length})` : ''}</h3>
+    ${friends.length === 0 ? `<div class="muted">No friends yet — copy your invite link above and share it.</div>` :
+      `<ul class="friends-list">${friends.map(f => `
+        <li data-friend="${f.id}">
+          <span><a href="#/profile/${f.id}">${escapeHtml(f.display_name)}</a>
+            <span class="muted small">Elo ${f.elo}</span></span>
+          <span class="row">
+            <button class="primary" data-action="challenge" data-friend="${f.id}">Challenge</button>
+            <button class="link-btn" data-action="remove" data-friend="${f.id}">Remove</button>
+          </span>
+        </li>`).join('')}</ul>`}`;
+
+  // Single delegated click handler for all the action buttons in the friends view.
+  views.friends.onclick = async (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const reqId = btn.dataset.req ? +btn.dataset.req : null;
+    const friendId = btn.dataset.friend ? +btn.dataset.friend : null;
+    btn.disabled = true;
+    try {
+      if (action === 'accept' && reqId) {
+        const res = await fetch(`/api/match-requests/${reqId}/accept`, { method: 'POST' });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(body.error || 'Could not accept.', { kind: 'error' }); return; }
+        if (body.room_code) { location.hash = `#/g/${body.room_code}`; return; }
+        renderFriends();
+      } else if (action === 'decline' && reqId) {
+        const res = await fetch(`/api/match-requests/${reqId}/decline`, { method: 'POST' });
+        if (!res.ok) toast('Could not decline.', { kind: 'error' });
+        renderFriends();
+      } else if (action === 'cancel' && reqId) {
+        const res = await fetch(`/api/match-requests/${reqId}`, { method: 'DELETE' });
+        if (!res.ok) toast('Could not cancel.', { kind: 'error' });
+        renderFriends();
+      } else if (action === 'challenge' && friendId) {
+        await challengePlayer(friendId);
+        renderFriends();
+      } else if (action === 'remove' && friendId) {
+        const ok = await confirmModal({
+          title: 'Remove this friend?',
+          body: 'You can re-add each other any time with an invite link.',
+          confirmLabel: 'Remove',
+          danger: true,
+        });
+        if (!ok) return;
+        const res = await fetch(`/api/friends/${friendId}`, { method: 'DELETE' });
+        if (!res.ok) { toast('Could not remove.', { kind: 'error' }); return; }
+        renderFriends();
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
+// Polls /api/notifications. Updates #nav-notif-badge if present.
+let _notifTimer = null;
+async function refreshNotificationBadge() {
+  if (_notifTimer) { clearInterval(_notifTimer); _notifTimer = null; }
+  if (!me) return;
+  const tick = async () => {
+    try {
+      const r = await fetch('/api/notifications');
+      if (!r.ok) return;
+      const { incoming_match_requests = 0 } = await r.json();
+      const badge = document.getElementById('nav-notif-badge');
+      if (!badge) return;
+      if (incoming_match_requests > 0) {
+        badge.textContent = ` ${incoming_match_requests}`;
+        badge.classList.remove('hidden');
+      } else {
+        badge.textContent = '';
+        badge.classList.add('hidden');
+      }
+    } catch (_) { /* offline-ish; try again next tick */ }
+  };
+  tick();
+  _notifTimer = setInterval(tick, 60_000);
 }
 
 // ---- classic P2P lobby (legacy PeerJS flow, preserved) ----
