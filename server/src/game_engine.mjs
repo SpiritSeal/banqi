@@ -172,6 +172,10 @@ export async function createGameEngine({ db }) {
     return viewerState(session, pi);
   }
 
+  function detach(gameId) {
+    cache.delete(gameId);
+  }
+
   function close() {
     clearInterval(evictTimer);
     cache.clear();
@@ -179,6 +183,6 @@ export async function createGameEngine({ db }) {
 
   return {
     createGame, attachJoin, getSession, applyIntent,
-    viewerState, viewerStateForUser, close,
+    viewerState, viewerStateForUser, detach, close,
   };
 }

@@ -8,7 +8,8 @@
 import express from 'express';
 import { randomBytes } from 'node:crypto';
 import {
-  createGame, findGameById, findGameByRoom, joinGame, listGamesForUser, getUser,
+  createGame, findGameById, findGameByRoom, joinGame,
+  listGamesForUser, deleteGameForUser, getUser,
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 
@@ -66,6 +67,21 @@ export function gamesRouter({ db, engine }) {
       }
     }
     res.json(annotated);
+  }));
+
+  // Remove a game from the caller's dashboard. Hard-deletes only when it's a
+  // waiting game the caller hosts and nobody joined; otherwise soft-hides it
+  // for this user so opponent rating history stays intact.
+  r.delete('/games/:id', requireAuth, asyncRoute(async (req, res) => {
+    const id = +req.params.id;
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'invalid id' });
+    }
+    const result = await deleteGameForUser(db, id, req.user.id);
+    if (result === 'not_found') return res.status(404).json({ error: 'not found' });
+    if (result === 'forbidden') return res.status(403).json({ error: 'not a player in this game' });
+    if (result === 'removed') engine.detach(id);
+    res.json({ ok: true, result });
   }));
 
   r.post('/games/:id/join', requireAuth, asyncRoute(async (req, res) => {

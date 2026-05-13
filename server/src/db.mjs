@@ -104,7 +104,10 @@ export async function listGamesForUser(db, userId, { status, limit = 50 } = {}) 
       FROM games g
       JOIN users hu ON hu.id = g.host_user_id
       LEFT JOIN users ju ON ju.id = g.join_user_id
-     WHERE (g.host_user_id = $1 OR g.join_user_id = $2)`;
+     WHERE (
+             (g.host_user_id = $1 AND NOT g.hidden_for_host)
+          OR (g.join_user_id = $2 AND NOT g.hidden_for_join)
+           )`;
   if (status) {
     params.push(status);
     sql += ` AND g.status = $${params.length}`;
@@ -115,20 +118,35 @@ export async function listGamesForUser(db, userId, { status, limit = 50 } = {}) 
   return rows;
 }
 
+// Remove a game from a user's dashboard.
+//   - 'removed'   — host clicked delete on a waiting game with no opponent;
+//                   the game (and its game_state / game_events rows via FK
+//                   cascade) is hard-deleted.
+//   - 'hidden'    — soft-hide for this user only. Elo history and the
+//                   opponent's view are preserved.
+//   - 'forbidden' — caller is not a player in this game.
+//   - 'not_found' — no such game id.
+export async function deleteGameForUser(db, gameId, userId) {
+  const g = await findGameById(db, gameId);
+  if (!g) return 'not_found';
+  const isHost = g.host_user_id === userId;
+  const isJoin = g.join_user_id === userId;
+  if (!isHost && !isJoin) return 'forbidden';
+
+  if (isHost && !g.join_user_id && g.status === 'waiting') {
+    await db.query('DELETE FROM games WHERE id = $1', [gameId]);
+    return 'removed';
+  }
+  const col = isHost ? 'hidden_for_host' : 'hidden_for_join';
+  await db.query(`UPDATE games SET ${col} = TRUE WHERE id = $1`, [gameId]);
+  return 'hidden';
+}
+
 export async function markGameEnded(db, gameId, winnerColor) {
   const now = Date.now();
-  // Resolve winner_user_id from winner_color + host/join.
   const game = await findGameById(db, gameId);
   if (!game) return false;
   if (game.status === 'complete') return false;
-  let winnerUserId = null;
-  if (winnerColor === 1 || winnerColor === 2) {
-    // The first flip assigns color → player_index. The engine state knows
-    // who's which; we infer here by listing events and finding the first
-    // flip's revealed color, but it's simpler to look at game_state. For
-    // now, callers updating elo will resolve this independently — store
-    // winner_color, leave winner_user_id null and let the elo updater fill it.
-  }
   await db.query(`
     UPDATE games
        SET status = 'complete', winner_color = $1, ended_at = $2

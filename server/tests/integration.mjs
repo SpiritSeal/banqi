@@ -258,10 +258,73 @@ describe('banqi server-authoritative backend', () => {
     const board = await (await fetch(`${baseUrl}/api/leaderboard`)).json();
     assert.ok(Array.isArray(board));
     for (const u of board) {
-      // Guests have provider='guest' and their accounts are excluded.
-      // Names should not contain "Guest " prefix.
       assert.ok(!u.display_name.startsWith('Guest '),
                 `guest leaked into leaderboard: ${u.display_name}`);
     }
+  });
+
+  it('delete: host hard-removes a waiting game with no opponent', async () => {
+    const eve = await signInDev('Eve');
+    const game = await (await authedFetch(eve, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+
+    const before = await (await authedFetch(eve, '/api/games')).json();
+    assert.ok(before.some((g) => g.id === game.id), 'game appears before delete');
+
+    const del = await authedFetch(eve, `/api/games/${game.id}`, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+    assert.equal((await del.json()).result, 'removed');
+
+    // Hard delete: lookup by id is now 404, and it's gone from the dashboard.
+    const lookup = await authedFetch(eve, `/api/games/${game.id}`);
+    assert.equal(lookup.status, 404);
+    const after = await (await authedFetch(eve, '/api/games')).json();
+    assert.ok(!after.some((g) => g.id === game.id), 'game is gone after delete');
+  });
+
+  it('delete: with an opponent, soft-hides for caller only', async () => {
+    const frank = await signInDev('Frank');
+    const gina  = await signInDev('Gina');
+
+    const game = await (await authedFetch(frank, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+    await authedFetch(gina, `/api/games/${game.id}/join`, { method: 'POST' });
+
+    const del = await authedFetch(frank, `/api/games/${game.id}`, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+    assert.equal((await del.json()).result, 'hidden');
+
+    const frankList = await (await authedFetch(frank, '/api/games')).json();
+    assert.ok(!frankList.some((g) => g.id === game.id), 'hidden from host');
+    const ginaList = await (await authedFetch(gina, '/api/games')).json();
+    assert.ok(ginaList.some((g) => g.id === game.id), 'still visible to opponent');
+
+    // The game itself still exists (direct lookup works), so the game state
+    // and event log remain intact.
+    const lookup = await authedFetch(frank, `/api/games/${game.id}`);
+    assert.equal(lookup.status, 200);
+
+    const del2 = await authedFetch(gina, `/api/games/${game.id}`, { method: 'DELETE' });
+    assert.equal(del2.status, 200);
+    assert.equal((await del2.json()).result, 'hidden');
+    const ginaList2 = await (await authedFetch(gina, '/api/games')).json();
+    assert.ok(!ginaList2.some((g) => g.id === game.id), 'hidden from joiner');
+  });
+
+  it('delete: non-players get 403, missing ids get 404', async () => {
+    const harry = await signInDev('Harry');
+    const ivy   = await signInDev('Ivy');
+
+    const game = await (await authedFetch(harry, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+
+    const denied = await authedFetch(ivy, `/api/games/${game.id}`, { method: 'DELETE' });
+    assert.equal(denied.status, 403);
+
+    const missing = await authedFetch(harry, '/api/games/9999999', { method: 'DELETE' });
+    assert.equal(missing.status, 404);
   });
 });
