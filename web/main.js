@@ -16,6 +16,7 @@ import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
 import { Replay, renderTranscript } from './replay.js';
+import { playMoveSound } from './audio.js';
 
 // ---- service worker / PWA ----
 if ('serviceWorker' in navigator) {
@@ -349,6 +350,7 @@ async function openOnlineGame(roomCode) {
     if (frame.type === 'event') {
       active.state = frame.state;
       active.replay.appendEvent(frame.event);
+      playMoveSound(frame.event);
       if (frame.event.mover !== rolePlayerIndex(active)) {
         announce(`Opponent: ${describeAction(frame.event)}`);
         const to = frame.event.action?.to;
@@ -614,6 +616,7 @@ function localApply(intent) {
   event.game_over = game.gameOver();
   event.winner = game.winner();
   active.replay.appendEvent(event);
+  playMoveSound(event);
   return event;
 }
 
