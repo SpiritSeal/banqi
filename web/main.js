@@ -452,6 +452,7 @@ function refreshGame() {
          <button id="btn-retry-conn" type="button">Retry now</button>
        </div>`
     : '';
+  const counts = pieceCounts(view.cells, active.replay);
   $('game-header').innerHTML = `
     ${disconnectBanner}
     <div class="meta game-meta">
@@ -476,6 +477,9 @@ function refreshGame() {
         <span><span class="meta-label">Move</span> ${active.replay.totalMoves()}</span>
         <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info)}</span></span>
         <span><span class="meta-label">Turn</span> <span id="game-turn">${turnLabel(liveState)}</span></span>
+      </div>
+      <div class="meta-row meta-row-counts">
+        ${renderPieceCountsHtml(counts)}
       </div>
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
@@ -642,6 +646,7 @@ function refreshOTB() {
     banner = `${sideName}'s turn (${colorWord(liveState.player0_color === liveState.side_to_move ? liveState.player0_color : liveState.player1_color)})`;
   }
   $('otb-banner').textContent = banner;
+  $('otb-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
   $('otb-resign').disabled = !liveState.first_flip_done || liveState.game_over || view.replayViewing;
   $('otb-resign').onclick = async () => {
     if (view.replayViewing) return;
@@ -780,6 +785,7 @@ function refreshAI() {
     banner = active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(view.my_color === 1 ? 2 : 1)})`;
   }
   $('ai-banner').textContent = banner;
+  $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
   const nextDiff = { easy: 'medium', medium: 'hard', hard: 'easy' }[active.difficulty] || 'medium';
   $('ai-meta').innerHTML = `
     <span class="meta-label">Difficulty</span>
@@ -836,6 +842,42 @@ function scheduleAIMove() {
 
 // ---- shared rendering ----
 const PIECE_NAMES = ['', 'Soldier', 'Cannon', 'Horse', 'Chariot', 'Elephant', 'Advisor', 'General'];
+
+function pieceCounts(cells, replay) {
+  let shown_red = 0, shown_black = 0;
+  for (const c of cells) {
+    if (c.state === 'faceup') {
+      if (c.color === 1) shown_red++;
+      else if (c.color === 2) shown_black++;
+    }
+  }
+  let captured_red = 0, captured_black = 0;
+  if (replay) {
+    const upTo = replay.isLive()
+      ? replay.snapshots.length
+      : (replay.viewIndex >= 0 ? replay.viewIndex + 1 : 0);
+    for (let i = 0; i < upTo; i++) {
+      const cap = replay.snapshots[i]?.capture;
+      if (cap?.color === 1) captured_red++;
+      else if (cap?.color === 2) captured_black++;
+    }
+  }
+  return {
+    red:   { shown: shown_red,   hidden: 16 - shown_red   - captured_red,   captured: captured_red   },
+    black: { shown: shown_black, hidden: 16 - shown_black - captured_black, captured: captured_black },
+  };
+}
+
+function renderPieceCountsHtml(counts) {
+  const row = (label, cls, c) =>
+    `<div class="pc-row">
+      <span class="pc-side ${cls}">${label}</span>
+      <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}</span>
+      <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}</span>
+      <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}</span>
+    </div>`;
+  return `<div class="piece-counts">${row('Red', 'red', counts.red)}${row('Black', 'black', counts.black)}</div>`;
+}
 
 function cellAriaLabel(idx, cell, opts = {}) {
   const col = 'abcdefgh'[idx % 8];

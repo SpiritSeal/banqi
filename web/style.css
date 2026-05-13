@@ -828,6 +828,28 @@ body.is-offline #btn-start-online { opacity: 0.55; }
 .diff-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .diff-chip[disabled] { cursor: not-allowed; opacity: 0.6; }
 
+/* ---- piece counts bar ---- */
+.piece-counts-bar { margin-top: 6px; }
+.piece-counts { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.piece-counts .pc-row { display: flex; align-items: center; gap: 14px; }
+.piece-counts .pc-side {
+  font-weight: 600;
+  font-size: 12px;
+  min-width: 36px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.piece-counts .pc-side.red   { color: #f5a5a5; }
+.piece-counts .pc-side.black { color: #e0e0e0; }
+.piece-counts .pc-stat { white-space: nowrap; }
+.piece-counts .pc-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 3px;
+}
+
 /* ---- F4: sticky mobile game header ---- */
 @media (max-width: 700px) {
   #game-header, #ai-header {
