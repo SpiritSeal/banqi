@@ -14,13 +14,10 @@
 // activate(), and the new SW reaches the page via the "Update available"
 // banner wired up in main.js.
 
-const BUILD_ID = '2026-05-12-1';
+const BUILD_ID = '2026-05-13-1';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
-// Files cached on install. peerjs.min.js is intentionally excluded — it's
-// lazy-loaded only when a user enters the legacy classic-P2P flow, so it
-// lands in the runtime cache on first use.
 const APP_SHELL = [
   './',
   './index.html',

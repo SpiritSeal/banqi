@@ -1,11 +1,13 @@
-// Passport-based OAuth (GitHub + Google) plus an opt-in dev backdoor for
-// local testing. Session id sits in a signed cookie; the user row id is the
-// only thing stored in the session.
+// Passport-based OAuth (GitHub + Google), an opt-in dev backdoor, and a
+// guest-session endpoint so visitors can play without signing up.
+// Session id sits in a signed cookie; the user row id is the only thing
+// stored in the session.
 
 import passport from 'passport';
 import GitHubStrategy from 'passport-github2';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import session from 'express-session';
+import { randomBytes } from 'node:crypto';
 import { upsertOAuthUser, getUser } from './db.mjs';
 
 // Same-origin relative path or '/' — rejects protocol-relative ('//evil.com')
@@ -18,8 +20,6 @@ function safeNext(value) {
   return value;
 }
 
-// Stash a validated `?next=` on the session before kicking off OAuth, and
-// pull it back out (single-use) when the provider redirects us home.
 function stashNext(req, _res, nextFn) {
   const n = safeNext(req.query.next);
   if (n) req.session.postLoginNext = n;
@@ -31,6 +31,29 @@ function popNext(req) {
   return n || '/';
 }
 
+// Coarse per-IP guard for the guest endpoint: 5 new guest sessions per IP per
+// hour. Survives process restarts no, intentionally — guests are ephemeral.
+function makeGuestRateLimiter({ windowMs = 60 * 60 * 1000, max = 5 } = {}) {
+  const buckets = new Map();   // ip → [timestamp, ...]
+  return function check(ip) {
+    const now = Date.now();
+    const list = (buckets.get(ip) || []).filter((t) => t > now - windowMs);
+    if (list.length >= max) { buckets.set(ip, list); return false; }
+    list.push(now);
+    buckets.set(ip, list);
+    return true;
+  };
+}
+
+const GUEST_ANIMALS = [
+  'Otter', 'Sparrow', 'Cricket', 'Heron', 'Magpie', 'Tortoise',
+  'Marten', 'Vixen', 'Falcon', 'Stoat', 'Crane', 'Hare',
+];
+function newGuestName() {
+  const animal = GUEST_ANIMALS[Math.floor(Math.random() * GUEST_ANIMALS.length)];
+  return `Guest ${animal} ${Math.floor(1000 + Math.random() * 9000)}`;
+}
+
 export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   const sessionParser = session({
     secret: serverSecret,
@@ -39,10 +62,8 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
     cookie: {
       httpOnly: true,
       sameSite: 'lax',
-      // secure cookies require HTTPS. In production the relay should sit
-      // behind a TLS terminator (Cloud Run, Caddy, ...).
       secure: publicUrl.startsWith('https://'),
-      maxAge: 30 * 24 * 60 * 60 * 1000,    // 30 days
+      maxAge: 30 * 24 * 60 * 60 * 1000,
     },
   });
   app.use(sessionParser);
@@ -97,9 +118,33 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
       (req, res) => res.redirect(popNext(req)));
   }
 
-  // Dev backdoor: /auth/dev?name=Alice creates or logs in a user with
-  // provider='dev'. Gated behind AUTH_DEV=1 so production deployments can't
-  // accidentally enable it.
+  // Guest sessions: create an ephemeral user with provider='guest'. Useful for
+  // people clicking an invite link without an account. Excluded from Elo /
+  // leaderboard / profile pages.
+  const guestLimit = makeGuestRateLimiter();
+  app.get('/auth/guest', async (req, res, next) => {
+    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    if (!guestLimit(String(ip))) {
+      return res.status(429).send('Too many guest sessions from this network. Try again later.');
+    }
+    const target = safeNext(req.query.next) || '/';
+    try {
+      const providerId = randomBytes(16).toString('hex');
+      const user = await upsertOAuthUser(db, {
+        provider:    'guest',
+        providerId,
+        displayName: newGuestName(),
+        avatarUrl:   null,
+      });
+      req.login(user, (err) => {
+        if (err) return next(err);
+        res.redirect(target);
+      });
+    } catch (e) { next(e); }
+  });
+
+  // Dev backdoor: /auth/dev?name=Alice. Gated behind AUTH_DEV=1 so production
+  // deployments can't accidentally enable it.
   if (env.AUTH_DEV === '1') {
     app.get('/auth/dev', async (req, res, next) => {
       const name = String(req.query.name || 'Dev').slice(0, 32);
@@ -135,11 +180,12 @@ export function requireAuth(req, res, next) {
 }
 
 // Tells the client which providers are configured, so the landing page can
-// hide buttons we can't actually fulfill.
+// hide buttons we can't actually fulfill. Guest is always available.
 export function authProviders(env) {
   return {
     github: !!(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET),
     google: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
     dev:    env.AUTH_DEV === '1',
+    guest:  true,
   };
 }

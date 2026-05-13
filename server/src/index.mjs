@@ -15,6 +15,7 @@ import { friendsRouter } from './routes/friends.mjs';
 import { matchRequestsRouter } from './routes/match_requests.mjs';
 import { notificationsRouter } from './routes/notifications.mjs';
 import { attachWebSocket } from './ws.mjs';
+import { createGameEngine } from './game_engine.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -33,10 +34,8 @@ if (SERVER_SECRET === 'dev-insecure-secret-change-me' && env.NODE_ENV === 'produ
 export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERVER_SECRET,
                                   publicUrl = PUBLIC_URL, envOverride = env } = {}) {
   const db = await openDb(databaseUrl);
+  const engine = await createGameEngine({ db });
   const app = express();
-  // Cloud Run (and most PaaS) terminate TLS at the load balancer and forward
-  // X-Forwarded-Proto: https. Without this, req.secure reads false and
-  // express-session refuses to send Set-Cookie for `secure: true` cookies.
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '64kb' }));
 
@@ -44,7 +43,6 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
     db, serverSecret, publicUrl, env: envOverride,
   });
 
-  // Static client assets (the existing web/ directory).
   app.use(express.static(WEB_DIR, { index: 'index.html' }));
 
   app.get('/api/config', (_req, res) => {
@@ -53,11 +51,11 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
       public_url: publicUrl,
     });
   });
-  app.use('/api', usersRouter({ db, serverSecret }));
-  app.use('/api', gamesRouter({ db }));
+  app.use('/api', usersRouter({ db }));
+  app.use('/api', gamesRouter({ db, engine }));
   app.use('/api', leaderboardRouter({ db }));
   app.use('/api', friendsRouter({ db, serverSecret, publicUrl }));
-  app.use('/api', matchRequestsRouter({ db }));
+  app.use('/api', matchRequestsRouter({ db, engine }));
   app.use('/api', notificationsRouter({ db }));
 
   // SPA-style fallback: send index.html for unknown GETs that look like
@@ -67,11 +65,10 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   });
 
   const server = createServer(app);
-  attachWebSocket(server, { db, sessionParser, passport });
-  return { app, server, db };
+  attachWebSocket(server, { db, sessionParser, passport, engine });
+  return { app, server, db, engine };
 }
 
-// Allow this file to be both imported (tests) and run directly.
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   const { server } = await buildApp();

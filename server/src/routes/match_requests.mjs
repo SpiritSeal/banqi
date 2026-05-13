@@ -1,7 +1,7 @@
 // Directed match invitations.
 //
 //   GET    /api/match-requests                { incoming, outgoing }
-//   POST   /api/match-requests                body: { to_user_id, mode }
+//   POST   /api/match-requests                body: { to_user_id }
 //   POST   /api/match-requests/:id/accept     recipient-only; auto-creates game
 //   POST   /api/match-requests/:id/decline    recipient-only
 //   DELETE /api/match-requests/:id            sender-only cancel
@@ -21,7 +21,7 @@ import { newRoomCode } from '../rooms.mjs';
 
 const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
-export function matchRequestsRouter({ db }) {
+export function matchRequestsRouter({ db, engine }) {
   const r = express.Router();
 
   r.get('/match-requests', requireAuth, asyncRoute(async (req, res) => {
@@ -34,7 +34,6 @@ export function matchRequestsRouter({ db }) {
 
   r.post('/match-requests', requireAuth, asyncRoute(async (req, res) => {
     const toUserId = parseInt(req.body?.to_user_id, 10);
-    const mode = req.body?.mode === 'crypto' ? 'crypto' : 'casual';
     if (!Number.isFinite(toUserId)) {
       return res.status(400).json({ error: 'to_user_id required' });
     }
@@ -49,7 +48,7 @@ export function matchRequestsRouter({ db }) {
       });
     }
     const created = await createMatchRequest(db, {
-      fromUserId: req.user.id, toUserId, mode,
+      fromUserId: req.user.id, toUserId,
     });
     res.json(created);
   }));
@@ -64,14 +63,17 @@ export function matchRequestsRouter({ db }) {
       // game info so the client can still navigate.
       if (existing?.status === 'accepted' && existing.game_id &&
           existing.to_user_id === req.user.id) {
-        return res.json({ game_id: existing.game_id, mode: existing.mode });
+        return res.json({ game_id: existing.game_id });
       }
       return res.status(409).json({ error: 'not acceptable' });
     }
+    // Seed the in-memory engine session for the just-created game. The host
+    // is the request sender; the acceptor is already auto-joined in SQL.
+    await engine.createGame(result.game.id, result.game.host_user_id);
+    await engine.attachJoin(result.game.id, req.user.id);
     res.json({
-      game_id: result.game.id,
+      game_id:   result.game.id,
       room_code: result.game.room_code,
-      mode: result.game.mode,
     });
   }));
 

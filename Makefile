@@ -24,17 +24,10 @@ CFLAGS_COMMON    := -Wall -Wextra -O2 -I$(THIRD_PARTY)/monocypher
 
 # --- sources ---
 CPP_SOURCES := \
-  $(SRC_DIR)/bigint.cpp \
   $(SRC_DIR)/hash.cpp \
   $(SRC_DIR)/prng.cpp \
-  $(SRC_DIR)/signer.cpp \
-  $(SRC_DIR)/transcript.cpp \
-  $(SRC_DIR)/sra.cpp \
   $(SRC_DIR)/piece.cpp \
   $(SRC_DIR)/banqi_rules.cpp \
-  $(SRC_DIR)/casual_shuffle.cpp \
-  $(SRC_DIR)/mental_poker.cpp \
-  $(SRC_DIR)/messages.cpp \
   $(SRC_DIR)/game.cpp
 
 C_SOURCES := \
@@ -43,15 +36,9 @@ C_SOURCES := \
 
 TEST_SOURCES := \
   $(TEST_DIR)/test_main.cpp \
-  $(TEST_DIR)/test_bigint.cpp \
   $(TEST_DIR)/test_hash.cpp \
   $(TEST_DIR)/test_prng.cpp \
-  $(TEST_DIR)/test_signer.cpp \
-  $(TEST_DIR)/test_transcript.cpp \
-  $(TEST_DIR)/test_sra.cpp \
   $(TEST_DIR)/test_banqi_rules.cpp \
-  $(TEST_DIR)/test_casual_shuffle.cpp \
-  $(TEST_DIR)/test_mental_poker.cpp \
   $(TEST_DIR)/test_game.cpp
 
 # --- native build ---
@@ -110,23 +97,6 @@ $(WASM_BUILD_DIR)/%.o: $(THIRD_PARTY)/%.c
 wasm-test: wasm
 	node tests/wasm_smoke.mjs
 	node tests/replay_smoke.mjs
-	node --test tests/fed_bootstrap_test.mjs
-
-# Real-browser end-to-end test. Spawns a static server, a local PeerServer,
-# and two Chromium pages, then drives a full game through PeerJS / WebRTC.
-# Requires: npm install && npx playwright install chromium
-.PHONY: e2e
-e2e:
-	node tests/e2e_browser.mjs casual
-	node tests/e2e_browser.mjs crypto
-
-# Federated-relay end-to-end test. Starts the real relay (REST + WS + Postgres)
-# and two Chromium pages, signs them in via the AUTH_DEV backdoor, and walks
-# through challenge → accept → shuffle → first flip. Guards against the
-# "stuck on shuffling" regression. Requires Playwright + a reachable Postgres.
-.PHONY: e2e-fed
-e2e-fed: wasm
-	node tests/e2e_federated.mjs
 
 # PWA validation. The manifest check is fast and dependency-free. The smoke
 # test boots a static server + Chromium and exercises the service worker, so

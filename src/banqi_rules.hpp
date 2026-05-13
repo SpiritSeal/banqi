@@ -67,9 +67,14 @@ public:
     int  side_to_move_player() const { return side_to_move_player_; }
 
     // Bypass the normal first-flip flow: directly assign colors and the
-    // side-to-move. Used by tests and by the shuffle protocol layer when it
-    // needs to force a known starting state.
+    // side-to-move. Used by tests and when restoring a game from a snapshot.
     void force_color_assignment(int side_to_move_player, Color p0_color);
+
+    // Recompute game_over / winner from the current cell layout. Normally
+    // happens implicitly inside apply_flip / apply_move; expose it so callers
+    // restoring a snapshot end up with correct terminal flags without having
+    // to play a move.
+    void recheck_terminal();
 
     // ---- legality and generation ----
     // Returns true if the move is legal for the given side (player index).

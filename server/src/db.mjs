@@ -16,12 +16,8 @@ types.setTypeParser(20, (val) => parseInt(val, 10));
 export async function openDb(connectionString) {
   const pool = new Pool({ connectionString });
   const schema = readFileSync(join(__dirname, '..', 'schema.sql'), 'utf8');
-  // The schema is idempotent (CREATE TABLE / INDEX IF NOT EXISTS), but
-  // concurrent first-time bootstraps still race on pg_type / pg_class — the
-  // SERIAL columns implicitly create sequence types, and existence checks
-  // are not atomic with the catalog insert. Serialize via a Postgres
-  // advisory lock keyed off a stable hash so multiple workers / test files
-  // / processes coordinate correctly.
+  // Idempotent bootstrap serialized through a Postgres advisory lock so
+  // multiple workers / test files / processes coordinate correctly.
   const client = await pool.connect();
   try {
     await client.query('SELECT pg_advisory_lock($1)', [0x42414e51]); // 'BANQ'
@@ -53,11 +49,10 @@ export async function getUser(db, id) {
   return rows[0] || null;
 }
 
-// Anonymize, don't hard-delete. The users table is referenced by games,
-// messages, elo_history, and finalize_claims (all non-cascading) — wiping a
-// row would orphan opponents' rating history and break head-to-head queries.
-// Instead we strip PII (display name + avatar) and rotate the OAuth tuple so
-// the same provider account, on signing in again, gets a fresh user row.
+// Anonymize, don't hard-delete. The users table is referenced by games and
+// elo_history; wiping a row would orphan opponents' rating history. Strip
+// PII (display name + avatar) and rotate the OAuth tuple so the same provider
+// account, on signing in again, gets a fresh user row.
 export async function deleteUser(db, id) {
   const tag = `deleted-${id}-${Date.now()}`;
   const { rowCount } = await db.query(`
@@ -72,13 +67,13 @@ export async function deleteUser(db, id) {
 
 // ---------- Games ----------
 
-export async function createGame(db, { roomCode, mode, hostUserId }) {
+export async function createGame(db, { roomCode, hostUserId }) {
   const now = Date.now();
   const { rows } = await db.query(`
-    INSERT INTO games (room_code, mode, host_user_id, status, created_at)
-    VALUES ($1, $2, $3, 'waiting', $4)
+    INSERT INTO games (room_code, host_user_id, status, created_at)
+    VALUES ($1, $2, 'waiting', $3)
     RETURNING *
-  `, [roomCode, mode, hostUserId, now]);
+  `, [roomCode, hostUserId, now]);
   return rows[0];
 }
 
@@ -125,7 +120,8 @@ export async function listGamesForUser(db, userId, { status, limit = 50 } = {}) 
 
 // Remove a game from a user's dashboard.
 //   - 'removed'   — host clicked delete on a waiting game with no opponent;
-//                   the game (and any messages) is hard-deleted.
+//                   the game (and its game_state / game_events rows via FK
+//                   cascade) is hard-deleted.
 //   - 'hidden'    — soft-hide for this user only. Elo history and the
 //                   opponent's view are preserved.
 //   - 'forbidden' — caller is not a player in this game.
@@ -146,79 +142,72 @@ export async function deleteGameForUser(db, gameId, userId) {
   return 'hidden';
 }
 
-// ---------- Messages ----------
-
-export async function appendMessage(db, { gameId, senderUserId, body }) {
+export async function markGameEnded(db, gameId, winnerColor) {
   const now = Date.now();
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-    // Lock the game row to serialize concurrent appends for the same game.
-    await client.query('SELECT id FROM games WHERE id = $1 FOR UPDATE', [gameId]);
-    const { rows: [{ seq }] } = await client.query(
-      'SELECT COALESCE(MAX(seq), -1) + 1 AS seq FROM messages WHERE game_id = $1',
-      [gameId]
-    );
-    await client.query(`
-      INSERT INTO messages (game_id, seq, sender_user_id, body, created_at)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [gameId, seq, senderUserId, body, now]);
-    await client.query('UPDATE games SET last_move_at = $1 WHERE id = $2', [now, gameId]);
-    await client.query('COMMIT');
-    return seq;
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
-export async function listMessages(db, gameId, sinceSeq = 0) {
-  const { rows } = await db.query(`
-    SELECT seq, sender_user_id, body, created_at
-      FROM messages
-     WHERE game_id = $1 AND seq >= $2
-     ORDER BY seq ASC
-  `, [gameId, sinceSeq]);
-  return rows;
-}
-
-// ---------- Finalize / Elo ----------
-
-export async function recordFinalizeClaim(db, { gameId, userId, winnerColor, tipHash }) {
-  const now = Date.now();
-  const { rows } = await db.query(`
-    INSERT INTO finalize_claims (game_id, user_id, winner_color, tip_hash, created_at)
-    VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (game_id, user_id) DO NOTHING
-    RETURNING *
-  `, [gameId, userId, winnerColor, tipHash, now]);
-  if (rows.length > 0) return rows[0];
-  const { rows: existing } = await db.query(
-    'SELECT * FROM finalize_claims WHERE game_id = $1 AND user_id = $2',
-    [gameId, userId]
-  );
-  return existing[0];
-}
-
-export async function getFinalizeClaims(db, gameId) {
-  const { rows } = await db.query(
-    'SELECT * FROM finalize_claims WHERE game_id = $1 ORDER BY user_id',
-    [gameId]
-  );
-  return rows;
-}
-
-export async function applyFinalResult(db, { gameId, winnerColor, winnerUserId, tipHash, status }) {
-  const now = Date.now();
+  const game = await findGameById(db, gameId);
+  if (!game) return false;
+  if (game.status === 'complete') return false;
   await db.query(`
     UPDATE games
-       SET status = $1, winner_color = $2, winner_user_id = $3,
-           tip_hash = $4, ended_at = $5
-     WHERE id = $6
-  `, [status, winnerColor, winnerUserId, tipHash, now, gameId]);
+       SET status = 'complete', winner_color = $1, ended_at = $2
+     WHERE id = $3
+  `, [winnerColor || null, now, gameId]);
+  return true;
 }
+
+export async function setGameWinnerUser(db, gameId, winnerUserId) {
+  await db.query('UPDATE games SET winner_user_id = $1 WHERE id = $2',
+                 [winnerUserId, gameId]);
+}
+
+// ---------- Game state + events ----------
+
+export async function saveGameState(db, gameId, boardJson) {
+  const now = Date.now();
+  await db.query(`
+    INSERT INTO game_state (game_id, board_json, updated_at)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (game_id) DO UPDATE SET
+      board_json = EXCLUDED.board_json,
+      updated_at = EXCLUDED.updated_at
+  `, [gameId, boardJson, now]);
+  await db.query('UPDATE games SET last_move_at = $1 WHERE id = $2', [now, gameId]);
+}
+
+export async function loadGameState(db, gameId) {
+  const { rows } = await db.query(
+    'SELECT board_json FROM game_state WHERE game_id = $1', [gameId]);
+  return rows[0]?.board_json || null;
+}
+
+export async function appendGameEvent(db, gameId, event) {
+  const payload = JSON.stringify({
+    action: event.action,
+    revealed: event.revealed,
+    capture: event.capture,
+    game_over: event.game_over,
+    winner: event.winner,
+  });
+  await db.query(`
+    INSERT INTO game_events (game_id, seq, ts, mover, payload_json)
+    VALUES ($1, $2, $3, $4, $5)
+  `, [gameId, event.seq, event.ts, event.mover, payload]);
+}
+
+export async function listGameEvents(db, gameId) {
+  const { rows } = await db.query(`
+    SELECT seq, ts, mover, payload_json
+      FROM game_events
+     WHERE game_id = $1
+     ORDER BY seq ASC
+  `, [gameId]);
+  return rows.map((r) => {
+    const p = JSON.parse(r.payload_json);
+    return { seq: r.seq, ts: r.ts, mover: r.mover, ...p };
+  });
+}
+
+// ---------- Elo ----------
 
 export async function recordEloChange(db, { userId, gameId, opponentId,
                                             eloBefore, eloAfter, result }) {
@@ -233,13 +222,16 @@ export async function recordEloChange(db, { userId, gameId, opponentId,
 
 // ---------- Leaderboard / profile ----------
 
+// Guests don't appear on the leaderboard or in head-to-head queries: their
+// accounts are ephemeral and not meant to accumulate a record.
 export async function topLeaderboard(db, limit = 50) {
   const { rows } = await db.query(`
     SELECT u.id, u.display_name, u.avatar_url, u.elo,
            (SELECT COUNT(*)::int FROM elo_history e WHERE e.user_id = u.id AND e.result = 'win')  AS wins,
            (SELECT COUNT(*)::int FROM elo_history e WHERE e.user_id = u.id AND e.result = 'loss') AS losses
       FROM users u
-     WHERE EXISTS (SELECT 1 FROM elo_history e WHERE e.user_id = u.id)
+     WHERE u.provider != 'guest'
+       AND EXISTS (SELECT 1 FROM elo_history e WHERE e.user_id = u.id)
      ORDER BY u.elo DESC
      LIMIT $1
   `, [limit]);
@@ -330,7 +322,7 @@ const MATCH_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Idempotent create: if a pending non-expired row already exists from→to,
 // returns it instead of inserting a duplicate.
-export async function createMatchRequest(db, { fromUserId, toUserId, mode }) {
+export async function createMatchRequest(db, { fromUserId, toUserId }) {
   const now = Date.now();
   const expires = now + MATCH_REQUEST_TTL_MS;
   const { rows: existing } = await db.query(`
@@ -342,10 +334,10 @@ export async function createMatchRequest(db, { fromUserId, toUserId, mode }) {
   if (existing[0]) return existing[0];
   const { rows } = await db.query(`
     INSERT INTO match_requests
-      (from_user_id, to_user_id, mode, status, created_at, expires_at)
-    VALUES ($1, $2, $3, 'pending', $4, $5)
+      (from_user_id, to_user_id, status, created_at, expires_at)
+    VALUES ($1, $2, 'pending', $3, $4)
     RETURNING *
-  `, [fromUserId, toUserId, mode, now, expires]);
+  `, [fromUserId, toUserId, now, expires]);
   return rows[0];
 }
 
@@ -432,10 +424,10 @@ export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode
     for (let i = 0; i < 5; ++i) {
       try {
         const { rows: gRows } = await client.query(`
-          INSERT INTO games (room_code, mode, host_user_id, status, created_at)
-          VALUES ($1, $2, $3, 'waiting', $4)
+          INSERT INTO games (room_code, host_user_id, status, created_at)
+          VALUES ($1, $2, 'waiting', $3)
           RETURNING *
-        `, [allocateRoomCode(), req.mode, req.from_user_id, now]);
+        `, [allocateRoomCode(), req.from_user_id, now]);
         game = gRows[0];
         break;
       } catch (e) {

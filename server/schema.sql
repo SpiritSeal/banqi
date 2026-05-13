@@ -1,9 +1,9 @@
--- Banqi federated relay: schema. PostgreSQL.
+-- Banqi server-authoritative game schema. PostgreSQL.
 -- Applied idempotently via CREATE TABLE/INDEX IF NOT EXISTS on startup.
 
 CREATE TABLE IF NOT EXISTS users (
   id              SERIAL  PRIMARY KEY,
-  provider        TEXT    NOT NULL,
+  provider        TEXT    NOT NULL,                          -- 'github' | 'google' | 'dev' | 'guest'
   provider_id     TEXT    NOT NULL,
   display_name    TEXT    NOT NULL,
   avatar_url      TEXT,
@@ -15,13 +15,11 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS games (
   id              SERIAL  PRIMARY KEY,
   room_code       TEXT    NOT NULL UNIQUE,
-  mode            TEXT    NOT NULL,                            -- 'casual' | 'crypto'
   host_user_id    INTEGER NOT NULL REFERENCES users(id),
   join_user_id    INTEGER          REFERENCES users(id),
-  status          TEXT    NOT NULL,                            -- 'waiting' | 'playing' | 'complete' | 'disputed' | 'abandoned'
+  status          TEXT    NOT NULL,                            -- 'waiting' | 'playing' | 'complete' | 'abandoned'
   winner_color    INTEGER,                                     -- 1=red, 2=black, NULL=unfinished
   winner_user_id  INTEGER          REFERENCES users(id),
-  tip_hash        TEXT,
   created_at      BIGINT  NOT NULL,
   last_move_at    BIGINT,
   ended_at        BIGINT
@@ -37,16 +35,26 @@ CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
 ALTER TABLE games ADD COLUMN IF NOT EXISTS hidden_for_host BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE games ADD COLUMN IF NOT EXISTS hidden_for_join BOOLEAN NOT NULL DEFAULT FALSE;
 
-CREATE TABLE IF NOT EXISTS messages (
+-- Latest authoritative state of each game. board_json is the C++ Game's
+-- snapshot JSON: hidden deck + cell-by-cell state + turn metadata.
+CREATE TABLE IF NOT EXISTS game_state (
+  game_id    INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+  board_json TEXT    NOT NULL,
+  updated_at BIGINT  NOT NULL
+);
+
+-- Append-only audit log of accepted actions, in monotonic order per game.
+-- Drives the replay UI and supports user-facing game review.
+CREATE TABLE IF NOT EXISTS game_events (
   id              SERIAL  PRIMARY KEY,
   game_id         INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-  seq             INTEGER NOT NULL,                            -- monotonic per game
-  sender_user_id  INTEGER NOT NULL REFERENCES users(id),
-  body            TEXT    NOT NULL,                            -- raw JSON line
-  created_at      BIGINT  NOT NULL,
+  seq             INTEGER NOT NULL,
+  ts              BIGINT  NOT NULL,
+  mover           INTEGER NOT NULL,                            -- 0 = host, 1 = join
+  payload_json    TEXT    NOT NULL,                            -- {action, revealed, capture, game_over, winner}
   UNIQUE(game_id, seq)
 );
-CREATE INDEX IF NOT EXISTS idx_messages_game ON messages(game_id, seq);
+CREATE INDEX IF NOT EXISTS idx_events_game ON game_events(game_id, seq);
 
 CREATE TABLE IF NOT EXISTS elo_history (
   id              SERIAL  PRIMARY KEY,
@@ -60,19 +68,6 @@ CREATE TABLE IF NOT EXISTS elo_history (
   created_at      BIGINT  NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_elo_user ON elo_history(user_id, created_at);
-
--- finalize_claims collects game-over reports from both clients. When both rows
--- for a game agree, the server applies Elo and marks the game complete. If they
--- disagree, the game is marked 'disputed' with no rating change.
-CREATE TABLE IF NOT EXISTS finalize_claims (
-  id              SERIAL  PRIMARY KEY,
-  game_id         INTEGER NOT NULL REFERENCES games(id),
-  user_id         INTEGER NOT NULL REFERENCES users(id),
-  winner_color    INTEGER,                                     -- 1, 2, or NULL for resign-with-no-flip
-  tip_hash        TEXT    NOT NULL,
-  created_at      BIGINT  NOT NULL,
-  UNIQUE(game_id, user_id)
-);
 
 -- Friendships. Stored canonically with user_lo < user_hi so a friendship is a
 -- single row. Either side may unfriend; doing so breaks the link for both.
@@ -96,7 +91,6 @@ CREATE TABLE IF NOT EXISTS match_requests (
   id              SERIAL  PRIMARY KEY,
   from_user_id    INTEGER NOT NULL REFERENCES users(id),
   to_user_id      INTEGER NOT NULL REFERENCES users(id),
-  mode            TEXT    NOT NULL,                            -- 'casual' | 'crypto'
   status          TEXT    NOT NULL,                            -- 'pending' | 'accepted' | 'declined' | 'cancelled'
   game_id         INTEGER          REFERENCES games(id),       -- non-null once accepted
   created_at      BIGINT  NOT NULL,
@@ -106,3 +100,13 @@ CREATE TABLE IF NOT EXISTS match_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_mreq_to_pending   ON match_requests(to_user_id,   status);
 CREATE INDEX IF NOT EXISTS idx_mreq_from_pending ON match_requests(from_user_id, status);
+
+-- Drop legacy federated-relay tables / columns if present. The server-
+-- authoritative model persists moves via game_state + game_events; end-of-
+-- game claims are unnecessary now that the server decides terminal state;
+-- and there's only one game mode.
+DROP TABLE IF EXISTS finalize_claims;
+DROP TABLE IF EXISTS messages;
+ALTER TABLE games           DROP COLUMN IF EXISTS mode;
+ALTER TABLE games           DROP COLUMN IF EXISTS tip_hash;
+ALTER TABLE match_requests  DROP COLUMN IF EXISTS mode;
