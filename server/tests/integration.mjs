@@ -46,7 +46,7 @@ before(async () => {
   server = built.server;
   // Wipe all data from a previous run so tests start from a clean slate.
   await db.query(
-    'TRUNCATE finalize_claims, elo_history, messages, games, users RESTART IDENTITY CASCADE'
+    'TRUNCATE match_requests, friends, finalize_claims, elo_history, messages, games, users RESTART IDENTITY CASCADE'
   );
   await new Promise((r) => server.listen(PORT, r));
   baseUrl = `http://localhost:${PORT}`;
@@ -249,5 +249,155 @@ describe('banqi relay backend', () => {
     const meD2 = await (await authedFetch(dave,  '/api/me')).json();
     assert.equal(meC2.elo, meC1.elo);
     assert.equal(meD2.elo, meD1.elo);
+  });
+});
+
+describe('friends + match requests', () => {
+  it('symmetric add via invite token; idempotent on re-post', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+
+    const invite = await (await authedFetch(alice, '/api/friends/my-invite')).json();
+    assert.match(invite.token, /^\d+-[0-9a-f]{16}$/);
+
+    const r1 = await authedFetch(bob, '/api/friends/by-token', {
+      method: 'POST', body: JSON.stringify({ token: invite.token }),
+    });
+    assert.equal(r1.status, 200);
+    const j1 = await r1.json();
+    assert.equal(j1.friend.display_name, 'Alice');
+
+    // Re-post — no duplicate row.
+    const r2 = await authedFetch(bob, '/api/friends/by-token', {
+      method: 'POST', body: JSON.stringify({ token: invite.token }),
+    });
+    assert.equal(r2.status, 200);
+
+    // Both sides see the friendship.
+    const aliceList = await (await authedFetch(alice, '/api/friends')).json();
+    const bobList   = await (await authedFetch(bob,   '/api/friends')).json();
+    assert.equal(aliceList.filter(f => f.display_name === 'Bob').length, 1);
+    assert.equal(bobList.filter(f => f.display_name === 'Alice').length, 1);
+
+    // Self-add via own token is rejected.
+    const self = await authedFetch(alice, '/api/friends/by-token', {
+      method: 'POST', body: JSON.stringify({ token: invite.token }),
+    });
+    assert.equal(self.status, 400);
+  });
+
+  it('challenging an unrelated user → 403; challenging a friend → 200', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const eve   = await signInAs('Eve');
+
+    const meE = await (await authedFetch(eve,   '/api/me')).json();
+    const meB = await (await authedFetch(bob,   '/api/me')).json();
+
+    // Alice and Eve have no friendship + no head-to-head → 403.
+    const blocked = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({ to_user_id: meE.id, mode: 'casual' }),
+    });
+    assert.equal(blocked.status, 403);
+
+    // Alice and Bob are already friends from the previous test → 200.
+    const ok = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({ to_user_id: meB.id, mode: 'casual' }),
+    });
+    assert.equal(ok.status, 200);
+    const created = await ok.json();
+    assert.equal(created.status, 'pending');
+    assert.equal(created.mode, 'casual');
+  });
+
+  it('notification count reflects the pending incoming request', async () => {
+    const bob = await signInAs('Bob');
+    const n = await (await authedFetch(bob, '/api/notifications')).json();
+    assert.ok(n.incoming_match_requests >= 1);
+  });
+
+  it('accept auto-creates a playing game with the sender as host', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meA = await (await authedFetch(alice, '/api/me')).json();
+    const meB = await (await authedFetch(bob,   '/api/me')).json();
+
+    // Find Bob's pending incoming request from Alice (created in the prior test).
+    const reqs = await (await authedFetch(bob, '/api/match-requests')).json();
+    const pending = reqs.incoming.find(r => r.from_user_id === meA.id);
+    assert.ok(pending, 'expected a pending incoming request from Alice');
+
+    const accept = await authedFetch(bob, `/api/match-requests/${pending.id}/accept`, {
+      method: 'POST',
+    });
+    assert.equal(accept.status, 200);
+    const body = await accept.json();
+    assert.ok(body.room_code);
+    assert.match(body.room_code, /^[0-9A-HJ-NP-TV-Z]{6}$/);
+
+    // Verify the game exists, status=playing, host=Alice, join=Bob, correct mode.
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${body.room_code}`)).json();
+    assert.equal(game.status, 'playing');
+    assert.equal(game.host_user_id, meA.id);
+    assert.equal(game.join_user_id, meB.id);
+    assert.equal(game.mode, 'casual');
+
+    // Bob's incoming list no longer has this row; notification count drops.
+    const after = await (await authedFetch(bob, '/api/match-requests')).json();
+    assert.equal(after.incoming.find(r => r.id === pending.id), undefined);
+    const n = await (await authedFetch(bob, '/api/notifications')).json();
+    assert.equal(n.incoming_match_requests, 0);
+  });
+
+  it('sender can cancel a pending request; accept on cancelled returns 409', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB   = await (await authedFetch(bob, '/api/me')).json();
+
+    const created = await (await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({ to_user_id: meB.id, mode: 'crypto' }),
+    })).json();
+
+    const cancel = await authedFetch(alice, `/api/match-requests/${created.id}`, {
+      method: 'DELETE',
+    });
+    assert.equal(cancel.status, 200);
+
+    const accept = await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    });
+    assert.equal(accept.status, 409);
+
+    // It also doesn't appear in Bob's incoming list anymore.
+    const after = await (await authedFetch(bob, '/api/match-requests')).json();
+    assert.equal(after.incoming.find(r => r.id === created.id), undefined);
+  });
+
+  it('remove friend works; cannot create token-add for an invalid token', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+
+    const bad = await authedFetch(alice, '/api/friends/by-token', {
+      method: 'POST', body: JSON.stringify({ token: `${meB.id}-0000000000000000` }),
+    });
+    assert.equal(bad.status, 400);
+
+    const malformed = await authedFetch(alice, '/api/friends/by-token', {
+      method: 'POST', body: JSON.stringify({ token: 'not-a-valid-shape' }),
+    });
+    assert.equal(malformed.status, 400);
+
+    const remove = await authedFetch(alice, `/api/friends/${meB.id}`, {
+      method: 'DELETE',
+    });
+    assert.equal(remove.status, 200);
+
+    const aliceList = await (await authedFetch(alice, '/api/friends')).json();
+    assert.equal(aliceList.find(f => f.id === meB.id), undefined);
   });
 });

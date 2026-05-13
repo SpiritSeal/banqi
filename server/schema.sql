@@ -66,3 +66,36 @@ CREATE TABLE IF NOT EXISTS finalize_claims (
   created_at      BIGINT  NOT NULL,
   UNIQUE(game_id, user_id)
 );
+
+-- Friendships. Stored canonically with user_lo < user_hi so a friendship is a
+-- single row. Either side may unfriend; doing so breaks the link for both.
+-- The "credential" to become someone's friend is their friend-invite URL,
+-- an HMAC of (SERVER_SECRET, user_id); same trust model as a game room code.
+CREATE TABLE IF NOT EXISTS friends (
+  user_lo         INTEGER NOT NULL REFERENCES users(id),
+  user_hi         INTEGER NOT NULL REFERENCES users(id),
+  created_at      BIGINT  NOT NULL,
+  PRIMARY KEY (user_lo, user_hi),
+  CHECK (user_lo < user_hi)
+);
+CREATE INDEX IF NOT EXISTS idx_friends_lo ON friends(user_lo);
+CREATE INDEX IF NOT EXISTS idx_friends_hi ON friends(user_hi);
+
+-- Directed match invitations. On accept the route handler creates the
+-- games row + auto-joins the acceptor, then writes back game_id and
+-- status='accepted' in the same transaction. Eligibility (friends OR
+-- prior head-to-head) is enforced at INSERT time in the route, not in SQL.
+CREATE TABLE IF NOT EXISTS match_requests (
+  id              SERIAL  PRIMARY KEY,
+  from_user_id    INTEGER NOT NULL REFERENCES users(id),
+  to_user_id      INTEGER NOT NULL REFERENCES users(id),
+  mode            TEXT    NOT NULL,                            -- 'casual' | 'crypto'
+  status          TEXT    NOT NULL,                            -- 'pending' | 'accepted' | 'declined' | 'cancelled'
+  game_id         INTEGER          REFERENCES games(id),       -- non-null once accepted
+  created_at      BIGINT  NOT NULL,
+  expires_at      BIGINT  NOT NULL,
+  responded_at    BIGINT,
+  CHECK (from_user_id <> to_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mreq_to_pending   ON match_requests(to_user_id,   status);
+CREATE INDEX IF NOT EXISTS idx_mreq_from_pending ON match_requests(from_user_id, status);

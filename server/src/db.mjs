@@ -235,3 +235,220 @@ export async function headToHead(db, userId) {
   `, [userId]);
   return rows;
 }
+
+// ---------- Friends / Match requests ----------
+
+// Symmetric add. Returns the friend's user row on success. Rejects self-add
+// and is idempotent on a duplicate (returns the friend either way).
+export async function addFriend(db, currentUserId, otherUserId) {
+  if (currentUserId === otherUserId) return null;
+  const now = Date.now();
+  const lo = Math.min(currentUserId, otherUserId);
+  const hi = Math.max(currentUserId, otherUserId);
+  await db.query(`
+    INSERT INTO friends (user_lo, user_hi, created_at)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (user_lo, user_hi) DO NOTHING
+  `, [lo, hi, now]);
+  return getUser(db, otherUserId);
+}
+
+export async function listFriends(db, userId) {
+  const { rows } = await db.query(`
+    SELECT u.id, u.display_name, u.avatar_url, u.elo, f.created_at
+      FROM friends f
+      JOIN users u
+        ON u.id = CASE WHEN f.user_lo = $1 THEN f.user_hi ELSE f.user_lo END
+     WHERE f.user_lo = $1 OR f.user_hi = $1
+     ORDER BY u.display_name ASC
+  `, [userId]);
+  return rows;
+}
+
+export async function areFriends(db, userId, otherId) {
+  if (userId === otherId) return false;
+  const lo = Math.min(userId, otherId);
+  const hi = Math.max(userId, otherId);
+  const { rowCount } = await db.query(
+    'SELECT 1 FROM friends WHERE user_lo = $1 AND user_hi = $2',
+    [lo, hi]
+  );
+  return rowCount > 0;
+}
+
+export async function removeFriend(db, userId, otherId) {
+  const lo = Math.min(userId, otherId);
+  const hi = Math.max(userId, otherId);
+  const { rowCount } = await db.query(
+    'DELETE FROM friends WHERE user_lo = $1 AND user_hi = $2',
+    [lo, hi]
+  );
+  return rowCount > 0;
+}
+
+// Eligible to send a match request to `otherId`: either already friends, or
+// has previously played them (any row in elo_history between the pair).
+export async function isMatchEligible(db, userId, otherId) {
+  if (userId === otherId) return false;
+  if (await areFriends(db, userId, otherId)) return true;
+  const { rowCount } = await db.query(`
+    SELECT 1 FROM elo_history
+     WHERE (user_id = $1 AND opponent_id = $2)
+        OR (user_id = $2 AND opponent_id = $1)
+     LIMIT 1
+  `, [userId, otherId]);
+  return rowCount > 0;
+}
+
+const MATCH_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Idempotent create: if a pending non-expired row already exists from→to,
+// returns it instead of inserting a duplicate.
+export async function createMatchRequest(db, { fromUserId, toUserId, mode }) {
+  const now = Date.now();
+  const expires = now + MATCH_REQUEST_TTL_MS;
+  const { rows: existing } = await db.query(`
+    SELECT * FROM match_requests
+     WHERE from_user_id = $1 AND to_user_id = $2
+       AND status = 'pending' AND expires_at > $3
+     LIMIT 1
+  `, [fromUserId, toUserId, now]);
+  if (existing[0]) return existing[0];
+  const { rows } = await db.query(`
+    INSERT INTO match_requests
+      (from_user_id, to_user_id, mode, status, created_at, expires_at)
+    VALUES ($1, $2, $3, 'pending', $4, $5)
+    RETURNING *
+  `, [fromUserId, toUserId, mode, now, expires]);
+  return rows[0];
+}
+
+export async function getMatchRequest(db, id) {
+  const { rows } = await db.query(
+    'SELECT * FROM match_requests WHERE id = $1', [id]
+  );
+  return rows[0] || null;
+}
+
+export async function listIncomingMatchRequests(db, userId) {
+  const now = Date.now();
+  const { rows } = await db.query(`
+    SELECT mr.*, u.display_name AS from_name
+      FROM match_requests mr
+      JOIN users u ON u.id = mr.from_user_id
+     WHERE mr.to_user_id = $1
+       AND mr.status = 'pending'
+       AND mr.expires_at > $2
+     ORDER BY mr.created_at DESC
+  `, [userId, now]);
+  return rows;
+}
+
+export async function listOutgoingMatchRequests(db, userId) {
+  const now = Date.now();
+  const { rows } = await db.query(`
+    SELECT mr.*, u.display_name AS to_name
+      FROM match_requests mr
+      JOIN users u ON u.id = mr.to_user_id
+     WHERE mr.from_user_id = $1
+       AND mr.status = 'pending'
+       AND mr.expires_at > $2
+     ORDER BY mr.created_at DESC
+  `, [userId, now]);
+  return rows;
+}
+
+export async function cancelMatchRequest(db, userId, requestId) {
+  const now = Date.now();
+  const { rowCount } = await db.query(`
+    UPDATE match_requests
+       SET status = 'cancelled', responded_at = $1
+     WHERE id = $2 AND from_user_id = $3 AND status = 'pending'
+  `, [now, requestId, userId]);
+  return rowCount > 0;
+}
+
+export async function declineMatchRequest(db, userId, requestId) {
+  const now = Date.now();
+  const { rowCount } = await db.query(`
+    UPDATE match_requests
+       SET status = 'declined', responded_at = $1
+     WHERE id = $2 AND to_user_id = $3 AND status = 'pending'
+  `, [now, requestId, userId]);
+  return rowCount > 0;
+}
+
+// Atomic accept: locks the request row, allocates a unique room code,
+// creates the games row with the sender as host + the acceptor as the
+// joined player (status='playing'), and marks the request 'accepted' with
+// game_id set. The caller supplies `allocateRoomCode` (a sync function
+// returning a fresh candidate code) so this module stays SQL-only.
+//
+// Returns `{ request, game }` on success, or `null` if the request was
+// not pending / not addressed to this user / expired.
+export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode) {
+  const now = Date.now();
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: locked } = await client.query(
+      'SELECT * FROM match_requests WHERE id = $1 FOR UPDATE',
+      [requestId]
+    );
+    const req = locked[0];
+    if (!req || req.to_user_id !== userId ||
+        req.status !== 'pending' || req.expires_at <= now) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    // Allocate a room code with the same 5-retry pattern as routes/games.mjs.
+    let game = null;
+    for (let i = 0; i < 5; ++i) {
+      try {
+        const { rows: gRows } = await client.query(`
+          INSERT INTO games (room_code, mode, host_user_id, status, created_at)
+          VALUES ($1, $2, $3, 'waiting', $4)
+          RETURNING *
+        `, [allocateRoomCode(), req.mode, req.from_user_id, now]);
+        game = gRows[0];
+        break;
+      } catch (e) {
+        if (i === 4) throw e;  // bubble up after exhausting retries
+      }
+    }
+    // Auto-join the acceptor (the recipient is the join player).
+    await client.query(`
+      UPDATE games
+         SET join_user_id = $1, status = 'playing', last_move_at = $2
+       WHERE id = $3
+    `, [userId, now, game.id]);
+    game.join_user_id = userId;
+    game.status       = 'playing';
+    game.last_move_at = now;
+    const { rows: updated } = await client.query(`
+      UPDATE match_requests
+         SET status = 'accepted', game_id = $1, responded_at = $2
+       WHERE id = $3
+       RETURNING *
+    `, [game.id, now, requestId]);
+    await client.query('COMMIT');
+    return { request: updated[0], game };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function notificationCounts(db, userId) {
+  const now = Date.now();
+  const { rows } = await db.query(`
+    SELECT COUNT(*)::int AS n
+      FROM match_requests
+     WHERE to_user_id = $1
+       AND status = 'pending'
+       AND expires_at > $2
+  `, [userId, now]);
+  return { incoming_match_requests: rows[0]?.n || 0 };
+}

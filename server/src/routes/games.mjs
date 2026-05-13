@@ -7,7 +7,6 @@
 //   POST /api/games/:id/finalize         report game-over; server applies Elo on agreement
 
 import express from 'express';
-import { randomBytes } from 'node:crypto';
 import {
   createGame, findGameById, findGameByRoom, joinGame, listGamesForUser,
   listMessages, recordFinalizeClaim, getFinalizeClaims, applyFinalResult,
@@ -15,16 +14,7 @@ import {
 } from '../db.mjs';
 import { eloDelta } from '../elo.mjs';
 import { requireAuth } from '../auth.mjs';
-
-// Crockford-style base32 without ambiguous chars (no I, L, O, U). 6 chars =
-// 32^6 ≈ 1.07B possible rooms — collision-resistant for casual use.
-const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-function newRoomCode() {
-  const b = randomBytes(6);
-  let s = '';
-  for (let i = 0; i < 6; ++i) s += ALPHABET[b[i] % ALPHABET.length];
-  return s;
-}
+import { newRoomCode } from '../rooms.mjs';
 
 const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
