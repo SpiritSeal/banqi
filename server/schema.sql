@@ -30,6 +30,13 @@ CREATE INDEX IF NOT EXISTS idx_games_host   ON games(host_user_id);
 CREATE INDEX IF NOT EXISTS idx_games_join   ON games(join_user_id);
 CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
 
+-- Per-side "remove from my dashboard" flags. Elo history references games(id)
+-- non-cascading, so we soft-hide instead of hard-deleting completed games.
+-- Hard delete is reserved for waiting games where no opponent ever joined
+-- (see deleteGameForUser in db.mjs).
+ALTER TABLE games ADD COLUMN IF NOT EXISTS hidden_for_host BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE games ADD COLUMN IF NOT EXISTS hidden_for_join BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS messages (
   id              SERIAL  PRIMARY KEY,
   game_id         INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,

@@ -1332,12 +1332,39 @@ async function renderDashboard() {
               : g.status === 'disputed'  ? 'disputed'
               : g.status === 'waiting'   ? 'awaiting opponent'
               : 'in progress';
-    return `<a class="game-row" href="#/g/${g.room_code}">
-              <div class="g-opp">vs ${escapeHtml(opp)}</div>
-              <div class="g-status">${tag}</div>
-              <div class="g-meta muted">${ts} · room ${g.room_code}</div>
-            </a>`;
+    return `<div class="game-row" data-game-id="${g.id}" data-room="${escapeHtml(g.room_code)}">
+              <a class="game-row-link" href="#/g/${g.room_code}">
+                <div class="g-opp">vs ${escapeHtml(opp)}</div>
+                <div class="g-status">${tag}</div>
+                <div class="g-meta muted">${ts} · room ${g.room_code}</div>
+              </a>
+              <button class="game-row-delete" type="button"
+                      title="Remove from my games"
+                      aria-label="Remove game vs ${escapeHtml(opp)} from my games">×</button>
+            </div>`;
   }).join('');
+  list.querySelectorAll('.game-row-delete').forEach((btn) => {
+    btn.onclick = async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const row = btn.closest('.game-row');
+      const id = row?.dataset.gameId;
+      const room = row?.dataset.room || '';
+      if (!id) return;
+      if (!confirm(`Remove game ${room} from your dashboard?\n\nThis hides it from your list. Completed games stay in the leaderboard / Elo history; an opponent who already joined will still see the game on their side.`)) return;
+      btn.disabled = true;
+      try {
+        const r = await fetch(`/api/games/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        row.remove();
+        if (!list.querySelector('.game-row')) renderDashboard();
+        toast('Removed from your games.', { kind: 'success', timeoutMs: 2500 });
+      } catch (e) {
+        btn.disabled = false;
+        toast(`Couldn't remove game: ${e.message || e}`, { kind: 'error' });
+      }
+    };
+  });
 }
 
 // ---- leaderboard ----

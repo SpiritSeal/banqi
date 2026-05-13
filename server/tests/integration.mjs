@@ -224,6 +224,74 @@ describe('banqi relay backend', () => {
     }
   });
 
+  it('delete: host hard-removes a waiting game with no opponent', async () => {
+    const eve = await signInAs('Eve');
+    const game = await (await authedFetch(eve, '/api/games', {
+      method: 'POST', body: JSON.stringify({ mode: 'casual' }),
+    })).json();
+
+    const before = await (await authedFetch(eve, '/api/games')).json();
+    assert.ok(before.some((g) => g.id === game.id), 'game appears before delete');
+
+    const del = await authedFetch(eve, `/api/games/${game.id}`, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+    assert.equal((await del.json()).result, 'removed');
+
+    // Hard delete: lookup by id is now 404, and it's gone from the dashboard.
+    const lookup = await authedFetch(eve, `/api/games/${game.id}`);
+    assert.equal(lookup.status, 404);
+    const after = await (await authedFetch(eve, '/api/games')).json();
+    assert.ok(!after.some((g) => g.id === game.id), 'game is gone after delete');
+  });
+
+  it('delete: with an opponent, soft-hides for caller only', async () => {
+    const frank = await signInAs('Frank');
+    const gina  = await signInAs('Gina');
+
+    const game = await (await authedFetch(frank, '/api/games', {
+      method: 'POST', body: JSON.stringify({ mode: 'casual' }),
+    })).json();
+    await authedFetch(gina, `/api/games/${game.id}/join`, { method: 'POST' });
+
+    // Frank (host) deletes — should soft-hide.
+    const del = await authedFetch(frank, `/api/games/${game.id}`, { method: 'DELETE' });
+    assert.equal(del.status, 200);
+    assert.equal((await del.json()).result, 'hidden');
+
+    const frankList = await (await authedFetch(frank, '/api/games')).json();
+    assert.ok(!frankList.some((g) => g.id === game.id), 'hidden from host');
+    const ginaList = await (await authedFetch(gina, '/api/games')).json();
+    assert.ok(ginaList.some((g) => g.id === game.id), 'still visible to opponent');
+
+    // The game itself still exists (direct lookup works) so messages /
+    // finalization aren't broken.
+    const lookup = await authedFetch(frank, `/api/games/${game.id}`);
+    assert.equal(lookup.status, 200);
+
+    // Gina (joiner) also deletes — hidden on her side too, game still exists.
+    const del2 = await authedFetch(gina, `/api/games/${game.id}`, { method: 'DELETE' });
+    assert.equal(del2.status, 200);
+    assert.equal((await del2.json()).result, 'hidden');
+    const ginaList2 = await (await authedFetch(gina, '/api/games')).json();
+    assert.ok(!ginaList2.some((g) => g.id === game.id), 'hidden from joiner');
+  });
+
+  it('delete: non-players get 403, missing ids get 404', async () => {
+    const harry = await signInAs('Harry');
+    const ivy   = await signInAs('Ivy');
+
+    const game = await (await authedFetch(harry, '/api/games', {
+      method: 'POST', body: JSON.stringify({ mode: 'casual' }),
+    })).json();
+
+    // Ivy never joined — she's not a player.
+    const denied = await authedFetch(ivy, `/api/games/${game.id}`, { method: 'DELETE' });
+    assert.equal(denied.status, 403);
+
+    const missing = await authedFetch(harry, '/api/games/9999999', { method: 'DELETE' });
+    assert.equal(missing.status, 404);
+  });
+
   it('finalize: clients disagree → game marked disputed, no Elo change', async () => {
     const carol = await signInAs('Carol');
     const dave  = await signInAs('Dave');

@@ -270,18 +270,41 @@ button.cell:disabled, button.cell[aria-disabled="true"] { cursor: default; }
 /* ---- dashboard list ---- */
 .dashboard-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .game-row {
+  display: flex;
+  align-items: stretch;
+  background: #1a1a1c;
+  border: 1px solid #2f2f33;
+  border-radius: 6px;
+}
+.game-row:hover { border-color: var(--accent); }
+.game-row-link {
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: 1fr auto;
   grid-template-rows: auto auto;
   gap: 2px 12px;
   padding: 10px 12px;
-  background: #1a1a1c;
-  border: 1px solid #2f2f33;
-  border-radius: 6px;
   text-decoration: none;
   color: inherit;
+  border-radius: 6px 0 0 6px;
+  min-width: 0;
 }
-.game-row:hover { border-color: var(--accent); }
+.game-row-delete {
+  flex: 0 0 auto;
+  width: 36px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid #2f2f33;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 0 6px 6px 0;
+  padding: 0;
+}
+.game-row-delete:hover:not(:disabled) { background: #3a1f1f; color: #ff8a8a; }
+.game-row-delete:focus-visible       { outline: 2px solid var(--accent); outline-offset: -2px; }
+.game-row-delete:disabled            { opacity: 0.4; cursor: default; }
 .g-opp    { font-weight: 600; }
 .g-status { color: var(--accent); font-size: 13px; }
 .g-meta   { grid-column: 1 / -1; font-size: 12px; }

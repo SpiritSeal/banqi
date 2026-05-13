@@ -11,7 +11,7 @@ import { randomBytes } from 'node:crypto';
 import {
   createGame, findGameById, findGameByRoom, joinGame, listGamesForUser,
   listMessages, recordFinalizeClaim, getFinalizeClaims, applyFinalResult,
-  recordEloChange, getUser,
+  recordEloChange, getUser, deleteGameForUser,
 } from '../db.mjs';
 import { eloDelta } from '../elo.mjs';
 import { requireAuth } from '../auth.mjs';
@@ -61,6 +61,20 @@ export function gamesRouter({ db }) {
     const g = await findGameById(db, +req.params.id);
     if (!g) return res.status(404).json({ error: 'not found' });
     res.json(decorate(req.user.id)(await annotate(db, g)));
+  }));
+
+  // Remove a game from the caller's dashboard. Hard-deletes only when it's a
+  // waiting game the caller hosts and nobody joined; otherwise soft-hides it
+  // for this user so opponent rating history stays intact.
+  r.delete('/games/:id', requireAuth, asyncRoute(async (req, res) => {
+    const id = +req.params.id;
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'invalid id' });
+    }
+    const result = await deleteGameForUser(db, id, req.user.id);
+    if (result === 'not_found') return res.status(404).json({ error: 'not found' });
+    if (result === 'forbidden') return res.status(403).json({ error: 'not a player in this game' });
+    res.json({ ok: true, result });
   }));
 
   r.post('/games/:id/join', requireAuth, asyncRoute(async (req, res) => {
