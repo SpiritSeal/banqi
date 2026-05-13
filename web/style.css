@@ -859,3 +859,48 @@ body.is-offline #btn-start-online { opacity: 0.55; }
 @media (orientation: portrait) and (max-width: 480px) {
   .rotate-hint { display: block; }
 }
+
+/* ---- Friends + match requests ---- */
+#nav-notif-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  min-width: 18px;
+  border-radius: 9px;
+  background: #d24343;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  vertical-align: 1px;
+}
+#nav-notif-badge.hidden { display: none; }
+.friends-invite { margin: 12px 0 16px; }
+.friends-invite h3 { margin: 0 0 6px; }
+.friends-invite p { margin: 0 0 8px; }
+.friends-invite .row { gap: 8px; align-items: center; }
+.friends-invite input[type=text] {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+.friends-req-list,
+.friends-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.friends-req-list li,
+.friends-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #333;
+  border-radius: 6px;
+}
+.friends-req-list .row,
+.friends-list .row { gap: 6px; }

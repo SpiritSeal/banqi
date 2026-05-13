@@ -6,21 +6,12 @@
 //   POST /api/games/:id/join       join a game by id (must already be 'waiting')
 
 import express from 'express';
-import { randomBytes } from 'node:crypto';
 import {
   createGame, findGameById, findGameByRoom, joinGame,
   listGamesForUser, deleteGameForUser, getUser,
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
-
-// Crockford-style base32 without ambiguous chars. 6 chars ≈ 1B rooms.
-const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-function newRoomCode() {
-  const b = randomBytes(6);
-  let s = '';
-  for (let i = 0; i < 6; ++i) s += ALPHABET[b[i] % ALPHABET.length];
-  return s;
-}
+import { newRoomCode } from '../rooms.mjs';
 
 const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
