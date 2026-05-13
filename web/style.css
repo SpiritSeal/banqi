@@ -176,9 +176,19 @@ button[disabled] { opacity: 0.4; cursor: not-allowed; }
 .cell.empty { background: var(--cell); cursor: default; }
 .cell.facedown { background: var(--face-down); color: #f4dca6; }
 .cell.facedown::before { content: "?"; font-size: 22px; }
-.cell.faceup { background: var(--face-up); }
+.cell.faceup { background: var(--face-up); position: relative; }
 .cell.faceup.red    { color: var(--red); }
 .cell.faceup.black  { color: var(--black); }
+.cell-value {
+  position: absolute;
+  bottom: 2px;
+  right: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0.55;
+  pointer-events: none;
+}
 .cell.selected { outline: 3px solid var(--accent); }
 .cell.legal { outline: 2px dashed rgba(255, 180, 60, 0.6); }
 .cell.legal-target { outline: 2px solid rgba(120, 220, 120, 0.7); }

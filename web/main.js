@@ -926,7 +926,15 @@ function renderBoard(boardEl, state, onClick) {
     let opts = {};
     if (c.state === 'faceup') {
       btn.classList.add(c.color === 1 ? 'red' : 'black');
-      btn.textContent = c.glyph;
+      const glyphSpan = document.createElement('span');
+      glyphSpan.className = 'cell-glyph';
+      glyphSpan.textContent = c.glyph;
+      btn.appendChild(glyphSpan);
+      const valueSpan = document.createElement('span');
+      valueSpan.className = 'cell-value';
+      valueSpan.textContent = String(c.type);
+      valueSpan.setAttribute('aria-hidden', 'true');
+      btn.appendChild(valueSpan);
     }
     const isSelected = !state.replayViewing && active?.selected === i;
     if (isSelected) { btn.classList.add('selected'); opts.selected = true; }
