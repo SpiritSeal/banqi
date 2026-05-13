@@ -42,6 +42,29 @@ jobs:
         with:
           node-version: '20'
 
+      # The federated shuffle smoke test drives real WASM Game instances
+      # through the WS relay, so the relay job needs the compiled module.
+      # Cache emsdk so cold-start cost is paid once.
+      - name: Cache Emscripten
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          key: emsdk-${{ runner.os }}-latest
+
+      - name: Install Emscripten (emsdk)
+        run: |
+          if [ ! -d emsdk ]; then
+            git clone https://github.com/emscripten-core/emsdk.git
+          fi
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build WebAssembly
+        run: |
+          source emsdk/emsdk_env.sh
+          make wasm
+
       - name: Install relay deps
         working-directory: server
         run: npm install --no-audit --no-fund
@@ -88,8 +111,71 @@ jobs:
       - name: WASM smoke (in-process)
         run: node tests/wasm_smoke.mjs
 
+      - name: Federated bootstrap unit tests
+        run: node --test tests/fed_bootstrap_test.mjs
+
       # NOTE: The Playwright browser E2E (tests/e2e_browser.mjs) drives the
       # legacy PeerJS flow which now lives behind a "Advanced / classic"
       # disclosure with renamed DOM selectors. It needs an update to navigate
       # to #/classic before driving the lobby. Skipping in CI until then;
       # run locally with `make e2e` if you need it.
+
+  e2e-fed:
+    name: Federated relay E2E (browser)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: banqi_test
+          POSTGRES_USER: banqi
+          POSTGRES_PASSWORD: banqi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache Emscripten
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          key: emsdk-${{ runner.os }}-latest
+
+      - name: Install Emscripten (emsdk)
+        run: |
+          if [ ! -d emsdk ]; then
+            git clone https://github.com/emscripten-core/emsdk.git
+          fi
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build WebAssembly
+        run: |
+          source emsdk/emsdk_env.sh
+          make wasm
+
+      - name: Install root deps (Playwright, peer)
+        run: npm install --no-audit --no-fund
+
+      - name: Install relay deps
+        working-directory: server
+        run: npm install --no-audit --no-fund
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run federated E2E
+        env:
+          DATABASE_URL: postgresql://banqi:banqi@localhost:5432/banqi_test
+          PORT: 19183
+        run: node tests/e2e_federated.mjs
