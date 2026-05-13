@@ -309,6 +309,35 @@ button.cell:disabled, button.cell[aria-disabled="true"] { cursor: default; }
 .g-status { color: var(--accent); font-size: 13px; }
 .g-meta   { grid-column: 1 / -1; font-size: 12px; }
 
+/* ---- notification settings (dashboard) ---- */
+.notify-settings { margin: 6px 0 14px; }
+.notify-card {
+  border: 1px solid #2f2f33;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #1f1f23;
+}
+.notify-card > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  list-style: revert;
+}
+.notify-card > summary::-webkit-details-marker { color: var(--muted); }
+.notify-card[open] { padding-bottom: 12px; }
+.notify-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid #2f2f33;
+}
+.notify-row:first-of-type { border-top: none; margin-top: 6px; }
+.notify-row label { cursor: pointer; user-select: none; }
+.notify-row input[type="checkbox"] { margin-right: 8px; vertical-align: middle; }
+
 /* ---- tables (leaderboard / profile) ---- */
 table {
   width: 100%;

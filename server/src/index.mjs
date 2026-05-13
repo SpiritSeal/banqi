@@ -14,8 +14,10 @@ import { leaderboardRouter } from './routes/leaderboard.mjs';
 import { friendsRouter } from './routes/friends.mjs';
 import { matchRequestsRouter } from './routes/match_requests.mjs';
 import { notificationsRouter } from './routes/notifications.mjs';
+import { pushRouter } from './routes/push.mjs';
 import { attachWebSocket } from './ws.mjs';
 import { createGameEngine } from './game_engine.mjs';
+import { configurePush } from './push.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -35,6 +37,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
                                   publicUrl = PUBLIC_URL, envOverride = env } = {}) {
   const db = await openDb(databaseUrl);
   const engine = await createGameEngine({ db });
+  configurePush({ env: envOverride });
   const app = express();
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '64kb' }));
@@ -57,6 +60,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   app.use('/api', friendsRouter({ db, serverSecret, publicUrl }));
   app.use('/api', matchRequestsRouter({ db, engine }));
   app.use('/api', notificationsRouter({ db }));
+  app.use('/api', pushRouter({ db }));
 
   // SPA-style fallback: send index.html for unknown GETs that look like
   // hash-routed pages, so deep links like /g/ROOMCODE work.

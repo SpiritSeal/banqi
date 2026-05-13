@@ -14,7 +14,7 @@
 // activate(), and the new SW reaches the page via the "Update available"
 // banner wired up in main.js.
 
-const BUILD_ID = '2026-05-13-1';
+const BUILD_ID = '2026-05-13-2';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
@@ -25,6 +25,7 @@ const APP_SHELL = [
   './relay.js',
   './ai.js',
   './replay.js',
+  './notifications.js',
   './style.css',
   './favicon.svg',
   './banqi.js',
@@ -97,5 +98,55 @@ self.addEventListener('fetch', (event) => {
     }
     const fresh = await networkFetch;
     return fresh || new Response('Not cached', { status: 504 });
+  })());
+});
+
+// ---- Web Push ----
+// Server pushes a JSON payload of the form
+//   { kind:'turn', title, body, roomCode, gameId }
+// when it's the recipient's turn and they have no open WebSocket. We surface
+// it as a single OS-level notification; the tag collapses repeat pushes for
+// the same game so a slow connection can't stack five "your turn" cards.
+
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; }
+  catch { data = { title: 'Banqi', body: event.data ? event.data.text() : '' }; }
+
+  const title = data.title || 'Your turn in Banqi';
+  const body  = data.body  || 'Tap to play your move.';
+  const tag   = data.roomCode ? `banqi-turn-${data.roomCode}` : 'banqi-turn';
+  const url   = data.roomCode ? `./#/g/${data.roomCode}` : './';
+
+  event.waitUntil(self.registration.showNotification(title, {
+    body,
+    tag,
+    renotify: true,
+    icon: './icons/icon-192.png',
+    badge: './icons/icon-192.png',
+    data: { url },
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = event.notification.data?.url || './';
+  event.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    // Prefer an existing tab on our origin — focus it and navigate.
+    for (const client of all) {
+      try {
+        const u = new URL(client.url);
+        if (u.origin === self.location.origin) {
+          await client.focus();
+          if ('navigate' in client) {
+            try { await client.navigate(new URL(target, self.location.origin).href); }
+            catch (_) { /* navigate can reject across hash-only changes — ignore */ }
+          }
+          return;
+        }
+      } catch (_) { /* ignore */ }
+    }
+    await self.clients.openWindow(target);
   })());
 });

@@ -16,6 +16,7 @@ import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
 import { Replay, renderTranscript } from './replay.js';
+import * as Notify from './notifications.js';
 
 // ---- service worker / PWA ----
 if ('serviceWorker' in navigator) {
@@ -340,13 +341,16 @@ async function openOnlineGame(roomCode) {
   conn.on('frame', (frame) => {
     if (!active?.isOnline) return;
     if (frame.type === 'snapshot') {
+      const wasMyTurnBefore = isMyTurn(active.state);
       active.state = frame.state;
       active.replay.setEvents(frame.events || []);
       active.connState = 'live';
+      maybeNotifyTurnTransition(wasMyTurnBefore);
       refreshGame();
       return;
     }
     if (frame.type === 'event') {
+      const wasMyTurnBefore = isMyTurn(active.state);
       active.state = frame.state;
       active.replay.appendEvent(frame.event);
       if (frame.event.mover !== rolePlayerIndex(active)) {
@@ -357,6 +361,7 @@ async function openOnlineGame(roomCode) {
           active.flashUntil = Date.now() + 1200;
         }
       }
+      maybeNotifyTurnTransition(wasMyTurnBefore);
       refreshGame();
       return;
     }
@@ -371,6 +376,34 @@ async function openOnlineGame(roomCode) {
 
 function rolePlayerIndex(act) {
   return act.role === 'host' ? 0 : act.role === 'join' ? 1 : -1;
+}
+
+// "It's my turn right now" for the live online game. False before the first
+// flip and once the game is over.
+function isMyTurn(state) {
+  if (!state) return false;
+  if (state.game_over) return false;
+  if (!state.first_flip_done) return false;
+  return state.side_to_move === state.my_player_index;
+}
+
+// Driven by every WS frame. Fires the in-page Notification + sound + title-bar
+// alert on the not-my-turn → my-turn edge, and clears the title alert when it
+// turns back into the opponent's turn (or the game ends).
+function maybeNotifyTurnTransition(wasMyTurnBefore) {
+  if (!active?.isOnline) return;
+  const nowMine = isMyTurn(active.state);
+  if (nowMine && !wasMyTurnBefore) {
+    const opp = active.role === 'host'
+      ? active.info?.join_name
+      : active.info?.host_name;
+    Notify.onYourTurn({
+      opponentName: opp || null,
+      roomCode: active.info?.room_code || null,
+    });
+  } else if (!nowMine && wasMyTurnBefore) {
+    Notify.clearTurnAlert();
+  }
 }
 
 // Plain-English description of an event, for the SR announcer.
@@ -966,9 +999,14 @@ function renderBoard(boardEl, state, onClick) {
 async function renderDashboard() {
   showView('dashboard');
   refreshNotificationBadge();
+  ensureNotifySettingsPanel();
   const list = $('dashboard-list');
   if (!me) { list.innerHTML = `<div>Sign in first. <a href="#/">Lobby</a></div>`; return; }
-  if (!online) { list.innerHTML = `<div class="muted">You're offline — can't load games. <a href="#/">Lobby</a></div>`; return; }
+  if (!online) {
+    list.innerHTML = `<div class="muted">You're offline — can't load games. <a href="#/">Lobby</a></div>`;
+    return;
+  }
+  renderNotifySettings();
   let games;
   try {
     const r = await fetch('/api/games');
@@ -1030,6 +1068,109 @@ async function renderDashboard() {
         toast(`Couldn't remove game: ${e.message || e}`, { kind: 'error' });
       }
     };
+  });
+}
+
+// ---- notification settings (rendered in the dashboard view) ----
+function ensureNotifySettingsPanel() {
+  if (document.getElementById('notify-settings')) return;
+  const view = views.dashboard;
+  if (!view) return;
+  const panel = document.createElement('div');
+  panel.id = 'notify-settings';
+  panel.className = 'notify-settings';
+  // Insert just above the games list so users can flip it on without scrolling.
+  const list = $('dashboard-list');
+  view.insertBefore(panel, list);
+}
+
+async function renderNotifySettings() {
+  const panel = document.getElementById('notify-settings');
+  if (!panel) return;
+  if (!me || me.is_guest) {
+    panel.innerHTML = me?.is_guest
+      ? `<div class="muted small">Sign in (not as a guest) to enable turn notifications across devices.</div>`
+      : '';
+    return;
+  }
+  const s = Notify.getSettings();
+  const pushSupported = await Notify.isPushSupported();
+  const browserPerm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+  const currentSub = pushSupported ? await Notify.currentPushSubscription() : null;
+  const pushOn = !!currentSub && s.push;
+
+  let pushStatus = '';
+  if (!pushSupported) pushStatus = 'Push not supported on this browser.';
+  else if (browserPerm === 'denied') pushStatus = 'Browser notifications are blocked — re-enable in site settings.';
+  else if (pushOn) pushStatus = 'On — you\'ll get a notification on this device when it\'s your turn.';
+  else pushStatus = 'Off — turn on to get notified when your tab is closed.';
+
+  panel.innerHTML = `
+    <details class="notify-card">
+      <summary><b>Turn notifications</b> <span class="muted small" id="notify-status"></span></summary>
+      <div class="notify-row">
+        <label><input type="checkbox" id="notify-sound" ${s.sound ? 'checked' : ''}>
+          Play a sound when it's my turn</label>
+      </div>
+      <div class="notify-row">
+        <label><input type="checkbox" id="notify-desktop" ${s.desktopAlerts ? 'checked' : ''}>
+          Show a desktop alert when this tab is hidden</label>
+      </div>
+      <div class="notify-row">
+        <div>
+          <div><b>Push notifications</b></div>
+          <div class="muted small" id="notify-push-status">${escapeHtml(pushStatus)}</div>
+        </div>
+        <button type="button" id="notify-push-toggle"
+                class="${pushOn ? 'link-btn' : 'primary'}"
+                ${(!pushSupported || browserPerm === 'denied') ? 'disabled' : ''}>
+          ${pushOn ? 'Turn off' : 'Turn on'}
+        </button>
+      </div>
+    </details>`;
+
+  const summaryStatus = $('notify-status');
+  const compactStatus = () => {
+    const bits = [];
+    if (s.sound) bits.push('sound');
+    if (s.desktopAlerts) bits.push('alerts');
+    if (pushOn) bits.push('push');
+    return bits.length ? bits.join(' · ') : 'off';
+  };
+  summaryStatus.textContent = compactStatus();
+
+  $('notify-sound').addEventListener('change', (e) => {
+    Notify.saveSettings({ sound: e.target.checked });
+    renderNotifySettings();
+  });
+  $('notify-desktop').addEventListener('change', async (e) => {
+    const want = e.target.checked;
+    if (want && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      try { await Notification.requestPermission(); } catch (_) {}
+    }
+    Notify.saveSettings({ desktopAlerts: want });
+    renderNotifySettings();
+  });
+  $('notify-push-toggle').addEventListener('click', async () => {
+    const btn = $('notify-push-toggle');
+    btn.disabled = true;
+    if (pushOn) {
+      await Notify.unsubscribePush();
+      toast('Push notifications turned off.', { kind: 'info', timeoutMs: 2500 });
+    } else {
+      const result = await Notify.requestPushPermissionAndSubscribe();
+      if (!result.ok) {
+        const msg = result.reason === 'denied'        ? 'Permission denied. Allow notifications in your browser settings.'
+                  : result.reason === 'unsupported'   ? 'Push is not supported on this browser.'
+                  : result.reason === 'server-disabled' ? 'Push isn\'t configured on this server.'
+                  : result.reason === 'guest'         ? 'Sign in (not as a guest) to enable push.'
+                  : 'Could not enable push. Try again later.';
+        toast(msg, { kind: 'warn' });
+      } else {
+        toast('Push notifications enabled.', { kind: 'success', timeoutMs: 2500 });
+      }
+    }
+    renderNotifySettings();
   });
 }
 
