@@ -1,35 +1,93 @@
-// WebSocket relay for live game traffic.
+// WebSocket gateway for live game traffic.
 //
-// Wire protocol:
-//   - Client connects to /ws/<gameId>, with the session cookie.
-//   - Server authenticates via the same Passport session.
-//   - Each frame the client sends is one newline-delimited JSON line, exactly
-//     what the C++ Game emits as `out` lines.
-//   - Server appends every frame to the messages table (so reconnecting
-//     clients can replay), then broadcasts it to the other player in the
-//     same game.
+// Wire protocol (JSON frames, one per WS message):
+//   server → client:
+//     {type:'snapshot', role, state, events}   — sent on connect / resume
+//     {type:'event',    event, state}          — sent on each accepted intent
+//     {type:'reject',   reason}                — sent only to the originator
+//   client → server:
+//     {type:'intent', kind:'flip', cell}
+//     {type:'intent', kind:'move', from, to}
+//     {type:'intent', kind:'resign'}
 //
-// Server does NOT validate game logic — clients run authoritative state.
-// Server is a persistent, authenticated dumb-pipe.
+// Server is authoritative: every intent is dispatched through the engine,
+// which validates against the rule engine. The client never runs the rule
+// engine for online games — it only renders.
 
 import { WebSocketServer } from 'ws';
-import { findGameById, appendMessage } from './db.mjs';
+import { recordEloChange, setGameWinnerUser, getUser } from './db.mjs';
+import { eloDelta } from './elo.mjs';
 
-export function attachWebSocket(server, { db, sessionParser, passport }) {
+export function attachWebSocket(server, { db, sessionParser, passport, engine }) {
   const wss = new WebSocketServer({ noServer: true });
 
-  // game id → Set of { ws, userId }
+  // gameId → Set of { ws, userId, playerIndex }
   const rooms = new Map();
 
-  function broadcast(gameId, fromUserId, payload) {
+  function viewerStateForUser(session, userId) {
+    return engine.viewerStateForUser(session, userId);
+  }
+
+  function pushTo(peer, frame) {
+    if (peer.ws.readyState === peer.ws.OPEN) {
+      peer.ws.send(JSON.stringify(frame));
+    }
+  }
+
+  async function broadcastEvent(gameId, event, session) {
     const peers = rooms.get(gameId);
     if (!peers) return;
     for (const peer of peers) {
-      if (peer.userId === fromUserId) continue;
-      if (peer.ws.readyState === peer.ws.OPEN) {
-        peer.ws.send(payload);
-      }
+      pushTo(peer, {
+        type:  'event',
+        event,
+        state: viewerStateForUser(session, peer.userId),
+      });
     }
+  }
+
+  async function applyEloOnEnd(session, gameId, winnerColor) {
+    // Pre-flip resign or draw — no Elo applied.
+    if (winnerColor !== 1 && winnerColor !== 2) return;
+    // Skip Elo if either side is a guest account (ephemeral, unrated).
+    const [host, join] = await Promise.all([
+      getUser(db, session.hostUserId),
+      session.joinUserId ? getUser(db, session.joinUserId) : null,
+    ]);
+    if (!host || !join) return;
+    if (host.provider === 'guest' || join.provider === 'guest') {
+      // Still record winner_user_id for game history, just no rating change.
+      const state = engine.viewerState(session, -1);
+      const winnerPlayerIndex =
+        state.player0_color === winnerColor ? 0 :
+        state.player1_color === winnerColor ? 1 : -1;
+      if (winnerPlayerIndex >= 0) {
+        const winnerUserId = winnerPlayerIndex === 0 ? session.hostUserId : session.joinUserId;
+        await setGameWinnerUser(db, gameId, winnerUserId);
+      }
+      return;
+    }
+    const state = engine.viewerState(session, -1);
+    const winnerPlayerIndex =
+      state.player0_color === winnerColor ? 0 :
+      state.player1_color === winnerColor ? 1 : -1;
+    if (winnerPlayerIndex < 0) return;
+    const winnerUserId = winnerPlayerIndex === 0 ? session.hostUserId : session.joinUserId;
+    await setGameWinnerUser(db, gameId, winnerUserId);
+    const winner = winnerUserId === host.id ? host : join;
+    const loser  = winnerUserId === host.id ? join : host;
+    const dW = eloDelta(winner.elo, loser.elo, 1);
+    const dL = eloDelta(loser.elo,  winner.elo, 0);
+    await Promise.all([
+      recordEloChange(db, {
+        userId: winner.id, gameId, opponentId: loser.id,
+        eloBefore: winner.elo, eloAfter: winner.elo + dW, result: 'win',
+      }),
+      recordEloChange(db, {
+        userId: loser.id, gameId, opponentId: winner.id,
+        eloBefore: loser.elo, eloAfter: loser.elo + dL, result: 'loss',
+      }),
+    ]);
   }
 
   server.on('upgrade', (req, socket, head) => {
@@ -38,63 +96,70 @@ export function attachWebSocket(server, { db, sessionParser, passport }) {
     if (!m) { socket.destroy(); return; }
     const gameId = +m[1];
 
-    // Run express-session + passport against the upgrade request to recover
-    // req.user. The same middleware chain the HTTP server uses.
     sessionParser(req, {}, () => {
       passport.initialize()(req, {}, () => {
         passport.session()(req, {}, async () => {
           if (!req.user) { socket.destroy(); return; }
-          const game = await findGameById(db, gameId);
-          if (!game) { socket.destroy(); return; }
-          if (game.host_user_id !== req.user.id && game.join_user_id !== req.user.id) {
-            socket.destroy(); return;
-          }
+          const session = await engine.getSession(gameId);
+          if (!session) { socket.destroy(); return; }
+          const pi = session.playerIndexFor(req.user.id);
+          if (pi < 0) { socket.destroy(); return; }
           wss.handleUpgrade(req, socket, head, (ws) => {
-            wss.emit('connection', ws, req, game);
+            wss.emit('connection', ws, req, session, pi);
           });
         });
       });
     });
   });
 
-  wss.on('connection', (ws, req, game) => {
+  wss.on('connection', (ws, req, session, playerIndex) => {
     const userId = req.user.id;
-    const entry = { ws, userId };
-    let peers = rooms.get(game.id);
-    if (!peers) { peers = new Set(); rooms.set(game.id, peers); }
+    const entry = { ws, userId, playerIndex };
+    let peers = rooms.get(session.gameId);
+    if (!peers) { peers = new Set(); rooms.set(session.gameId, peers); }
     peers.add(entry);
 
-    ws.send(JSON.stringify({ type: '_meta', kind: 'hello',
-                             role: game.host_user_id === userId ? 'host' : 'join' }));
+    // Initial snapshot.
+    pushTo(entry, {
+      type:   'snapshot',
+      role:   playerIndex === 0 ? 'host' : 'join',
+      state:  viewerStateForUser(session, userId),
+      events: session.events,
+    });
 
     ws.on('message', async (data) => {
-      const text = typeof data === 'string' ? data : data.toString('utf8');
-      // Each WS message may contain one or more newline-delimited JSON lines
-      // (mirroring the C++ output format).
-      for (const line of text.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          await appendMessage(db, {
-            gameId: game.id, senderUserId: userId, body: line,
-          });
-        } catch (e) {
-          ws.send(JSON.stringify({ type: '_meta', kind: 'error', error: String(e.message || e) }));
-          continue;
-        }
-        broadcast(game.id, userId, line);
+      let frame;
+      try { frame = JSON.parse(data.toString('utf8')); }
+      catch (_) {
+        pushTo(entry, { type: 'reject', reason: 'malformed JSON' });
+        return;
+      }
+      if (frame?.type !== 'intent') {
+        pushTo(entry, { type: 'reject', reason: 'unknown frame type' });
+        return;
+      }
+      const result = await engine.applyIntent(session.gameId, userId, frame);
+      if (!result.ok) {
+        pushTo(entry, { type: 'reject', reason: result.reason });
+        return;
+      }
+      await broadcastEvent(session.gameId, result.event, session);
+      if (result.endedNow) {
+        try { await applyEloOnEnd(session, session.gameId, result.event.winner); }
+        catch (e) { console.error('elo update failed:', e); }
       }
     });
 
     ws.on('close', () => {
-      const set = rooms.get(game.id);
+      const set = rooms.get(session.gameId);
       if (set) {
         set.delete(entry);
-        if (set.size === 0) rooms.delete(game.id);
+        if (set.size === 0) rooms.delete(session.gameId);
       }
     });
   });
 
-  // Heartbeat: drop dead connections every 30 s.
+  // Heartbeat: drop dead connections every 30s.
   setInterval(() => {
     for (const set of rooms.values()) {
       for (const e of set) {

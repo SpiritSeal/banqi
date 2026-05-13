@@ -1,221 +1,182 @@
 #include "game.hpp"
 
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
 #include <stdexcept>
 
 namespace banqi {
 
-Game Game::create_host(Mode mode, std::string game_id, IPrng& prng) {
-    return Game(true, mode, std::move(game_id), prng);
-}
+using json = nlohmann::json;
 
-Game Game::create_join(Mode mode, std::string game_id, IPrng& prng) {
-    return Game(false, mode, std::move(game_id), prng);
-}
-
-Game Game::create_host_with_seed(Mode mode, std::string game_id, IPrng& prng,
-                                 const std::array<uint8_t, 32>& id_seed) {
-    return Game(true, mode, std::move(game_id), prng, id_seed);
-}
-
-Game Game::create_join_with_seed(Mode mode, std::string game_id, IPrng& prng,
-                                 const std::array<uint8_t, 32>& id_seed) {
-    return Game(false, mode, std::move(game_id), prng, id_seed);
-}
-
-Game::Game(bool is_host, Mode mode, std::string game_id, IPrng& prng)
-    : is_host_(is_host),
-      mode_(mode),
-      game_id_(std::move(game_id)),
-      owned_prng_(nullptr),
-      prng_(&prng),
-      me_(Signer::generate(prng)) {
+Game::Game() {
     rules_.set_all_facedown();
-    install_protocol();
+    auto deck = initial_deck();
+    for (int i = 0; i < 32; ++i) layout_[i] = deck[i];
 }
 
-Game::Game(bool is_host, Mode mode, std::string game_id, IPrng& /*prng*/,
-           const std::array<uint8_t, 32>& id_seed)
-    : is_host_(is_host),
-      mode_(mode),
-      game_id_(std::move(game_id)),
-      owned_prng_(nullptr),
-      prng_(nullptr),
-      me_() {
-    // The seeded constructor ignores the caller's PRNG. Instead it derives:
-    //   * the local Ed25519 identity key, from SHA512("banqi-id-v1" || game_id || id_seed)
-    //   * a deterministic shuffle PRNG, from SHA512("banqi-shuffle-v1" || game_id || id_seed)
-    // Both are pure functions of (id_seed, game_id), which is what makes
-    // replay-from-transcript work: a reconnecting client constructs a Game
-    // with the same id_seed and produces identical local messages.
-    std::string id_seed_str(reinterpret_cast<const char*>(id_seed.data()), id_seed.size());
-    auto id_h      = sha512_concat({ "banqi-id-v1",      game_id_, id_seed_str });
-    auto shuffle_h = sha512_concat({ "banqi-shuffle-v1", game_id_, id_seed_str });
-    std::array<uint8_t, 32> id_key{};
-    std::copy(id_h.begin(), id_h.begin() + 32, id_key.begin());
-    me_ = Signer::from_seed(id_key);
-    owned_prng_ = std::make_unique<MockPrng>(shuffle_h);
-    prng_ = owned_prng_.get();
-    rules_.set_all_facedown();
-    install_protocol();
-}
-
-void Game::install_protocol() {
-    if (mode_ == Mode::Casual) {
-        protocol_ = std::make_unique<CasualShuffle>(*prng_, game_id_);
-    } else {
-        protocol_ = std::make_unique<MentalPokerShuffle>(*prng_, game_id_);
+Game Game::create(IPrng& prng) {
+    Game g;
+    auto deck = initial_deck();
+    for (int i = (int)deck.size() - 1; i > 0; --i) {
+        uint8_t buf[8];
+        prng.random_bytes(buf, 8);
+        uint64_t v = 0;
+        for (int b = 0; b < 8; ++b) v |= ((uint64_t)buf[b]) << (8 * b);
+        int j = (int)(v % (uint64_t)(i + 1));
+        std::swap(deck[i], deck[j]);
     }
+    for (int i = 0; i < 32; ++i) g.layout_[i] = deck[i];
+    return g;
 }
 
-void Game::emit_hello(std::vector<json>& out) {
-    out.push_back(json{
-        {"type",     "HELLO"},
-        {"mode",     mode_ == Mode::Casual ? "casual" : "crypto"},
-        {"game_id",  game_id_},
-        {"is_host",  is_host_},
-        {"pubkey",   to_hex(me_.public_key().data(), me_.public_key().size())},
-    });
+void Game::check_turn(int player_index) const {
+    if (game_over()) throw std::runtime_error("game is over");
+    if (player_index != 0 && player_index != 1) throw std::runtime_error("bad player_index");
+    if (rules_.side_to_move_player() != player_index) throw std::runtime_error("not your turn");
 }
 
-void Game::start(std::vector<json>& out) {
-    emit_hello(out);
-}
-
-void Game::handle_message(const json& msg, std::vector<json>& out) {
-    auto cat = categorize(msg);
-    switch (cat) {
-        case MessageCategory::Hello:     on_hello(msg, out); break;
-        case MessageCategory::Setup:     on_setup_message(msg, out); break;
-        case MessageCategory::Reveal:    on_reveal_message(msg, out); break;
-        case MessageCategory::MoveEntry: on_move_entry(msg, out); break;
-        case MessageCategory::Unknown:   throw std::runtime_error("unknown message type");
-    }
-}
-
-void Game::on_hello(const json& msg, std::vector<json>& out) {
-    if (peer_pk_.has_value()) return;     // ignore duplicate HELLO
-
-    if (msg.at("game_id").get<std::string>() != game_id_) {
-        throw std::runtime_error("HELLO: game_id mismatch");
-    }
-    const std::string mode_str = msg.at("mode").get<std::string>();
-    Mode peer_mode = (mode_str == "crypto") ? Mode::Crypto : Mode::Casual;
-    if (peer_mode != mode_) throw std::runtime_error("HELLO: mode mismatch");
-    if (msg.at("is_host").get<bool>() == is_host_) {
-        throw std::runtime_error("HELLO: both sides claim same role");
-    }
-    auto pk_bytes = from_hex(msg.at("pubkey").get<std::string>());
-    if (pk_bytes.size() != 32) throw std::runtime_error("HELLO: bad pubkey length");
-    PublicKey pk{};
-    std::copy(pk_bytes.begin(), pk_bytes.end(), pk.begin());
-    peer_pk_ = pk;
-
-    // Both sides have each other's pubkey now. Kick off the shuffle protocol.
-    if (!started_setup_) {
-        started_setup_ = true;
-        if (is_host_) protocol_->start_host(out);
-        else          protocol_->start_join(out);
-    }
-}
-
-void Game::on_setup_message(const json& msg, std::vector<json>& out) {
-    protocol_->on_setup_message(msg, out);
-}
-
-void Game::on_reveal_message(const json& msg, std::vector<json>& out) {
-    auto p = protocol_->on_reveal_message(msg, out);
-    if (p.has_value()) {
-        int cell = msg.at("cell").get<int>();
-        if (pending_flips_.erase(cell) > 0) {
-            rules_.apply_flip(cell, *p);
-        }
-    }
-}
-
-void Game::on_move_entry(const json& msg, std::vector<json>& out) {
-    if (!peer_pk_.has_value()) throw std::runtime_error("MOVE before HELLO");
-    auto entry = transcript_entry_from_json(msg);
-    std::vector<PublicKey> roster = { me_.public_key(), *peer_pk_ };
-    if (!transcript_.append_remote(entry, roster)) {
-        throw std::runtime_error("transcript: failed to append remote entry");
-    }
-    auto action = decode_move_action(entry.payload);
-
-    // Determine peer's player index.
-    int peer_idx = is_host_ ? 1 : 0;
-    if (action.kind == MoveAction::Kind::Flip) {
-        Move m{-1, action.to};
-        if (!rules_.is_legal(m, peer_idx)) {
-            throw std::runtime_error("peer flip is illegal");
-        }
-        // Engage the protocol on our side to fetch the piece identity. For
-        // casual mode we get it back synchronously; for crypto we emit our
-        // REVEAL_KEY and wait for peer's.
-        std::vector<json> reveal_out;
-        auto p = protocol_->request_reveal(action.to, reveal_out);
-        for (auto& m2 : reveal_out) out.push_back(std::move(m2));
-        if (p.has_value()) {
-            rules_.apply_flip(action.to, *p);
-        } else {
-            pending_flips_.insert(action.to);
-        }
-    } else if (action.kind == MoveAction::Kind::Move) {
-        Move m{action.from, action.to};
-        if (!rules_.is_legal(m, peer_idx)) {
-            throw std::runtime_error("peer move is illegal");
-        }
-        rules_.apply_move(action.from, action.to);
-    } else if (action.kind == MoveAction::Kind::Resign) {
-        // Mark the resigner as having lost.
-        // Use BanqiRules' game_over_/winner_ via a synthetic mechanism: clear
-        // the resigning player's pieces and rerun terminal check. Simpler:
-        // direct flag.
-        // For now we just set rules into terminal by emptying their pieces.
-        // (Implemented below via a helper in BanqiRules in future; for this
-        // demo we leave the no-op and let the UI announce the resign.)
-        (void)peer_idx;   // unused
-    }
-}
-
-void Game::local_flip(int cell, std::vector<json>& out) {
-    if (!setup_done()) throw std::runtime_error("local_flip: setup not done");
+Piece Game::apply_flip(int player_index, int cell) {
+    check_turn(player_index);
     Move m{-1, cell};
-    if (!rules_.is_legal(m, my_player_index())) {
-        throw std::runtime_error("local_flip: not legal");
-    }
-    // Append signed move entry.
-    MoveAction a{MoveAction::Kind::Flip, -1, cell};
-    auto entry = transcript_.append_local(me_, encode_move_action(a));
-    out.push_back(transcript_entry_to_json(entry));
-
-    // Drive reveal.
-    std::vector<json> reveal_out;
-    auto p = protocol_->request_reveal(cell, reveal_out);
-    for (auto& m2 : reveal_out) out.push_back(std::move(m2));
-    if (p.has_value()) {
-        rules_.apply_flip(cell, *p);
-    } else {
-        pending_flips_.insert(cell);
-    }
+    if (!rules_.is_legal(m, player_index)) throw std::runtime_error("illegal flip");
+    Piece p = code_to_piece(layout_[cell]);
+    rules_.apply_flip(cell, p);
+    return p;
 }
 
-void Game::local_move(int from, int to, std::vector<json>& out) {
-    if (!setup_done()) throw std::runtime_error("local_move: setup not done");
+MoveResult Game::apply_move(int player_index, int from, int to) {
+    check_turn(player_index);
     Move m{from, to};
-    if (!rules_.is_legal(m, my_player_index())) {
-        throw std::runtime_error("local_move: not legal");
-    }
-    MoveAction a{MoveAction::Kind::Move, from, to};
-    auto entry = transcript_.append_local(me_, encode_move_action(a));
-    out.push_back(transcript_entry_to_json(entry));
-
-    rules_.apply_move(from, to);
+    if (!rules_.is_legal(m, player_index)) throw std::runtime_error("illegal move");
+    return rules_.apply_move(from, to);
 }
 
-void Game::local_resign(std::vector<json>& out) {
-    MoveAction a{MoveAction::Kind::Resign, -1, -1};
-    auto entry = transcript_.append_local(me_, encode_move_action(a));
-    out.push_back(transcript_entry_to_json(entry));
+void Game::apply_resign(int player_index) {
+    if (game_over()) throw std::runtime_error("game is over");
+    if (player_index != 0 && player_index != 1) throw std::runtime_error("bad player_index");
+    resigned_ = true;
+    resign_player_ = player_index;
+    // Winner = the OTHER player's assigned color (may be None if they never
+    // got a color, e.g. resign before the first flip — in which case the
+    // game still ends but no rated outcome is meaningful).
+    Color other = rules_.color_for_player(1 - player_index);
+    resign_winner_ = other;
+}
+
+std::string Game::state_json(int viewer_player_index) const {
+    json j;
+    int viewer = (viewer_player_index == 0 || viewer_player_index == 1)
+                 ? viewer_player_index : -1;
+    j["my_player_index"] = viewer;
+    j["side_to_move"]    = rules_.side_to_move_player();
+    j["first_flip_done"] = rules_.first_flip_done();
+    j["game_over"]       = game_over();
+    j["winner"]          = (int)winner();
+
+    if (viewer >= 0) {
+        j["my_color"] = (int)rules_.color_for_player(viewer);
+    } else {
+        // OTB: surface the player whose turn it is, so the renderer can colour
+        // the banner without needing a viewer.
+        j["my_color"] = (int)rules_.color_for_player(rules_.side_to_move_player());
+    }
+    // Player colors are always exposed so the server can map winner_color
+    // back to a user id without consulting the snapshot.
+    j["player0_color"] = (int)rules_.color_for_player(0);
+    j["player1_color"] = (int)rules_.color_for_player(1);
+
+    json cells = json::array();
+    for (int i = 0; i < BanqiRules::CELLS; ++i) {
+        const Cell& c = rules_.at(i);
+        json cj;
+        switch (c.state) {
+            case Cell::State::Empty:    cj["state"] = "empty";   break;
+            case Cell::State::FaceDown: cj["state"] = "facedown"; break;
+            case Cell::State::FaceUp:
+                cj["state"] = "faceup";
+                cj["color"] = (int)c.piece.color;
+                cj["type"]  = (int)c.piece.type;
+                cj["glyph"] = piece_glyph_zh(c.piece);
+                cj["ascii"] = std::string(1, piece_glyph(c.piece));
+                break;
+        }
+        cells.push_back(cj);
+    }
+    j["cells"] = cells;
+
+    // Legal moves for the viewer (or for side-to-move when OTB).
+    int legal_for = (viewer >= 0) ? viewer : rules_.side_to_move_player();
+    auto legal = rules_.legal_moves(legal_for);
+    json lm = json::array();
+    for (const auto& m : legal) {
+        lm.push_back(json{{"from", m.from}, {"to", m.to}});
+    }
+    j["legal_moves_for_me"] = lm;
+    return j.dump();
+}
+
+std::string Game::snapshot_json() const {
+    json j;
+    json layout = json::array();
+    for (int i = 0; i < 32; ++i) layout.push_back(layout_[i]);
+    j["layout"] = layout;
+
+    json cells = json::array();
+    for (int i = 0; i < BanqiRules::CELLS; ++i) {
+        const Cell& c = rules_.at(i);
+        json cj;
+        switch (c.state) {
+            case Cell::State::Empty:    cj["state"] = "empty";    break;
+            case Cell::State::FaceDown: cj["state"] = "facedown"; break;
+            case Cell::State::FaceUp:
+                cj["state"] = "faceup";
+                cj["color"] = (int)c.piece.color;
+                cj["type"]  = (int)c.piece.type;
+                break;
+        }
+        cells.push_back(cj);
+    }
+    j["cells"]              = cells;
+    j["first_flip_done"]    = rules_.first_flip_done();
+    j["side_to_move_player"]= rules_.side_to_move_player();
+    j["player0_color"]      = (int)rules_.color_for_player(0);
+    j["player1_color"]      = (int)rules_.color_for_player(1);
+    j["resigned"]           = resigned_;
+    j["resign_player"]      = resign_player_;
+    j["resign_winner"]      = (int)resign_winner_;
+    return j.dump();
+}
+
+Game Game::from_snapshot_json(const std::string& s) {
+    Game g;
+    auto j = json::parse(s);
+    for (int i = 0; i < 32; ++i) g.layout_[i] = j.at("layout").at(i).get<int>();
+
+    g.rules_.clear();
+    const auto& cells = j.at("cells");
+    for (int i = 0; i < BanqiRules::CELLS; ++i) {
+        const auto& cj = cells.at(i);
+        const std::string st = cj.at("state").get<std::string>();
+        if (st == "empty")          g.rules_.set_empty(i);
+        else if (st == "facedown")  g.rules_.set_facedown(i);
+        else if (st == "faceup") {
+            Piece p{(Color)cj.at("color").get<int>(), (PieceType)cj.at("type").get<int>()};
+            g.rules_.set_faceup(i, p);
+        }
+    }
+
+    bool first_flip = j.at("first_flip_done").get<bool>();
+    int  stm        = j.at("side_to_move_player").get<int>();
+    Color p0c       = (Color)j.at("player0_color").get<int>();
+    g.rules_.set_initial_side(stm);
+    if (first_flip) g.rules_.force_color_assignment(stm, p0c);
+    g.rules_.recheck_terminal();
+
+    g.resigned_       = j.value("resigned", false);
+    g.resign_player_  = j.value("resign_player", -1);
+    g.resign_winner_  = (Color)j.value("resign_winner", 0);
+    return g;
 }
 
 }  // namespace banqi

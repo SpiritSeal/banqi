@@ -1,19 +1,13 @@
-// Notation, signed-transcript history, and step-through replay.
+// Notation + step-through replay.
 //
-// Used by every play mode (federated, OTB, vs-AI, classic P2P). The Replay
-// instance lives alongside an active Game and incrementally captures a
-// snapshot of cells / terminal state after each transcript entry resolves.
-// Viewing a past snapshot is read-only — no calls into the C++ Game — so
-// scrolling back during a live game cannot cause takebacks.
+// Drives off server-emitted event objects (or, in OTB / vs-AI, locally
+// produced ones with the same shape). Each event has:
+//   { seq, ts, mover, action: {kind, from?, to?}, revealed?, capture?,
+//     game_over, winner }
 //
-// Snapshot timing:
-//   * Local action       → pushPending(action, mover), call game.local*(...),
-//                          then observe(state).
-//   * Inbound message    → if it's a MOVE_ENTRY, pushPending; call
-//                          game.handleMessage(line); then observe(state).
-//   * Reveal completes   → observe(state) refreshes the latest snapshot's
-//                          cells so a mid-flip crypto-mode entry gets its
-//                          post-flip cells once both keys arrive.
+// The Replay walks events forward from an initial all-face-down board to
+// reconstruct cellsAfter for every step. This lets the transcript UI scroll
+// back through past positions without needing the WASM engine to re-execute.
 
 const COL_LABELS = 'abcdefgh';
 
@@ -24,43 +18,44 @@ export function coord(idx) {
   return COL_LABELS[col] + (row + 1);
 }
 
-// Normalize a MOVE_ENTRY payload (or parsed object) into a uniform shape.
-// The C++ side encodes flip actions with `cell` rather than `to`
-// (messages.hpp encode_move_action); we coerce to `to` so downstream
-// snapshot / notation code can treat all flips identically.
-export function normalizeAction(payloadOrObj) {
-  const a = typeof payloadOrObj === 'string'
-    ? (() => { try { return JSON.parse(payloadOrObj); } catch (_) { return null; } })()
-    : payloadOrObj;
-  if (!a || typeof a !== 'object') return null;
-  if (a.kind === 'flip') {
-    const to = a.to ?? a.cell;
-    if (to === undefined || to === null) return null;
-    return { kind: 'flip', to };
-  }
-  if (a.kind === 'move') {
-    if (a.from === undefined || a.to === undefined) return null;
-    return { kind: 'move', from: a.from, to: a.to };
-  }
-  if (a.kind === 'resign') return { kind: 'resign' };
-  return null;
+const PIECE_NAME = ['', 'Soldier', 'Cannon', 'Horse', 'Chariot', 'Elephant', 'Advisor', 'General'];
+
+function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
+
+function pieceName(cell) {
+  if (!cell || cell.state !== 'faceup') return '';
+  return `${colorWord(cell.color)} ${PIECE_NAME[cell.type] || ''}`.trim();
 }
 
-function cloneCells(cells) {
-  return cells.map((c) => ({ ...c }));
-}
-
-function inferCapture(action, beforeCells) {
-  if (!action || action.kind !== 'move') return null;
-  const dst = beforeCells?.[action.to];
-  if (!dst || dst.state === 'empty') return null;
-  if (dst.state === 'facedown') return { facedown: true };
+const ZH_GLYPH = {
+  1: { 1: '兵', 2: '炮', 3: '傌', 4: '俥', 5: '相', 6: '仕', 7: '帥' },
+  2: { 1: '卒', 2: '砲', 3: '馬', 4: '車', 5: '象', 6: '士', 7: '將' },
+};
+function pieceCell(piece) {
   return {
-    facedown: false,
-    color: dst.color,
-    type: dst.type,
-    glyph: dst.glyph,
+    state: 'faceup',
+    color: piece.color,
+    type: piece.type,
+    glyph: ZH_GLYPH[piece.color]?.[piece.type] || '?',
+    ascii: '',
   };
+}
+
+export function initialCells() {
+  return Array.from({ length: 32 }, () => ({ state: 'facedown' }));
+}
+
+// Mutates `cells` in place by applying event.action.
+export function applyEventToCells(cells, event) {
+  const a = event.action || {};
+  if (a.kind === 'flip') {
+    if (event.revealed) cells[a.to] = pieceCell(event.revealed);
+  } else if (a.kind === 'move') {
+    cells[a.to] = cells[a.from];
+    cells[a.from] = { state: 'empty' };
+  }
+  // resign: no board change
+  return cells;
 }
 
 function isCannonJump(action) {
@@ -70,63 +65,23 @@ function isCannonJump(action) {
   return dr + dc > 1;
 }
 
-const PIECE_NAME = [
-  '',
-  'Soldier',
-  'Cannon',
-  'Horse',
-  'Chariot',
-  'Elephant',
-  'Advisor',
-  'General',
-];
-
-function colorWord(c) {
-  return c === 1 ? 'Red' : c === 2 ? 'Black' : '';
-}
-
-function pieceName(cell) {
-  if (!cell || cell.state !== 'faceup') return '';
-  return `${colorWord(cell.color)} ${PIECE_NAME[cell.type] || ''}`.trim();
-}
-
-// Build the human-readable parts of a transcript row.
-//   primary : "b3 ↑ 帥"     |  "a2-a3"  |  "b3×c3"  |  "Resign"
-//   detail  : "Red General" |  ""        |  "(× 將)"  |  ""
-//   piece   : optional moving-piece glyph for move/capture rows
-//   jump    : true iff this is a cannon jump
-export function formatAction(snap, prevCells, initialCells) {
+// Human-readable parts of a transcript row.
+export function formatAction(snap, prevCells) {
   const a = snap.action || {};
-  const before = prevCells || initialCells || null;
-
   if (a.kind === 'flip') {
     const revealed = snap.cellsAfter[a.to];
     const glyph = revealed && revealed.state === 'faceup' ? revealed.glyph : '?';
-    return {
-      primary: `${coord(a.to)} ↑ ${glyph}`,
-      detail: pieceName(revealed),
-      piece: '',
-      jump: false,
-    };
+    return { primary: `${coord(a.to)} ↑ ${glyph}`, detail: pieceName(revealed), piece: '', jump: false };
   }
   if (a.kind === 'move') {
-    const captured = snap.captured;
+    const cap = snap.capture;
     const jump = isCannonJump(a);
-    const op = captured ? '×' : '–';
-    const piece = before?.[a.from];
+    const op = cap ? '×' : '–';
+    const piece = prevCells?.[a.from];
     const moverGlyph = piece && piece.state === 'faceup' ? piece.glyph : '';
     let detail = '';
-    if (captured) {
-      detail = captured.facedown
-        ? '(× ?)'
-        : `(× ${captured.glyph})`;
-    }
-    return {
-      primary: `${coord(a.from)}${op}${coord(a.to)}`,
-      detail,
-      piece: moverGlyph,
-      jump,
-    };
+    if (cap) detail = `(× ${cap.glyph || '?'})`;
+    return { primary: `${coord(a.from)}${op}${coord(a.to)}`, detail, piece: moverGlyph, jump };
   }
   if (a.kind === 'resign') {
     return { primary: 'Resign', detail: '', piece: '', jump: false };
@@ -136,77 +91,44 @@ export function formatAction(snap, prevCells, initialCells) {
 
 export class Replay {
   constructor() {
-    this.snapshots = []; // { seq, action, mover, cellsAfter, captured, gameOver, winner }
-    this.viewIndex = null; // null = live; -1 = before any move; else snapshot index
-    this._lastSeq = 0;
-    this._initialCells = null;
-    this._pending = []; // FIFO of { action, mover }
+    this.snapshots = [];      // { event, cellsAfter, gameOver, winner }
+    this.viewIndex = null;    // null = live; -1 = before any move; else snapshot index
+    this._initialCells = initialCells();
+    this._cells = initialCells();
   }
 
   reset() {
     this.snapshots = [];
     this.viewIndex = null;
-    this._lastSeq = 0;
-    this._initialCells = null;
-    this._pending = [];
+    this._initialCells = initialCells();
+    this._cells = initialCells();
   }
 
-  // Announce an action that's about to be appended to the transcript.
-  pushPending(action, mover) {
-    this._pending.push({ action, mover });
+  // Replace the full event history (used on initial snapshot + reconnect).
+  setEvents(events) {
+    this.snapshots = [];
+    this._cells = initialCells();
+    for (const e of events) this.appendEvent(e);
   }
 
-  // Cancel the most-recently-pushed pending entry (call after a failed action).
-  dropPending() {
-    this._pending.pop();
+  // Append a single event. Walks its action through the running cell state.
+  appendEvent(event) {
+    const cellsBefore = this._cells.map((c) => ({ ...c }));
+    applyEventToCells(this._cells, event);
+    this.snapshots.push({
+      event,
+      action: event.action,
+      mover: event.mover,
+      capture: event.capture || null,
+      cellsBefore,
+      cellsAfter: this._cells.map((c) => ({ ...c })),
+      gameOver: !!event.game_over,
+      winner: event.winner || 0,
+    });
   }
 
-  // Reconcile snapshots with the latest game state.
-  observe(state) {
-    if (!state || !Array.isArray(state.cells)) return;
-    if (this._initialCells === null) {
-      this._initialCells = cloneCells(state.cells);
-    }
-
-    // Catch up: each unit of seq growth consumes one pending entry.
-    while (state.transcript_seq > this._lastSeq) {
-      const pending = this._pending.shift() || {};
-      const action = pending.action || { kind: 'unknown' };
-      const mover = pending.mover ?? -1;
-      const beforeCells = this.snapshots.length === 0
-        ? this._initialCells
-        : this.snapshots[this.snapshots.length - 1].cellsAfter;
-      this.snapshots.push({
-        seq: this._lastSeq,
-        action,
-        mover,
-        cellsAfter: cloneCells(state.cells),
-        captured: inferCapture(action, beforeCells),
-        gameOver: !!state.game_over,
-        winner: state.winner || 0,
-      });
-      this._lastSeq += 1;
-    }
-
-    // Refresh the latest snapshot's cells. This is where crypto-mode reveals
-    // post-MOVE_ENTRY land — the seq is unchanged but cells have updated.
-    if (this.snapshots.length > 0) {
-      const last = this.snapshots[this.snapshots.length - 1];
-      last.cellsAfter = cloneCells(state.cells);
-      last.gameOver = !!state.game_over;
-      last.winner = state.winner || 0;
-    }
-  }
-
-  isLive() {
-    return this.viewIndex == null;
-  }
-
-  totalMoves() {
-    return this.snapshots.length;
-  }
-
-  // 0 = initial position; N = after move N (1-indexed).
+  isLive()    { return this.viewIndex == null; }
+  totalMoves(){ return this.snapshots.length; }
   currentStep() {
     if (this.viewIndex == null) return this.snapshots.length;
     if (this.viewIndex < 0) return 0;
@@ -215,7 +137,7 @@ export class Replay {
 
   cellsFor(liveCells) {
     if (this.viewIndex == null) return liveCells;
-    if (this.viewIndex < 0) return this._initialCells || liveCells;
+    if (this.viewIndex < 0) return this._initialCells;
     return this.snapshots[this.viewIndex].cellsAfter;
   }
 
@@ -228,26 +150,20 @@ export class Replay {
     return { game_over: !!s.gameOver, winner: s.winner || 0 };
   }
 
-  goLive() {
-    this.viewIndex = null;
+  lastMoveCells() {
+    if (this.snapshots.length === 0) return null;
+    const snap = this.snapshots[this.snapshots.length - 1];
+    const a = snap.action || {};
+    if (a.kind === 'move') return { from: a.from, to: a.to };
+    if (a.kind === 'flip') return { from: -1, to: a.to };
+    return null;
   }
-  goFirst() {
-    if (this.snapshots.length > 0) this.viewIndex = -1;
-  }
-  goPrev() {
-    const s = this.currentStep();
-    if (s <= 0) return;
-    this.goToStep(s - 1);
-  }
-  goNext() {
-    const s = this.currentStep();
-    const N = this.snapshots.length;
-    if (s >= N) return;
-    this.goToStep(s + 1);
-  }
-  goLast() {
-    this.goLive();
-  }
+
+  goLive()  { this.viewIndex = null; }
+  goFirst() { if (this.snapshots.length > 0) this.viewIndex = -1; }
+  goPrev()  { const s = this.currentStep(); if (s > 0) this.goToStep(s - 1); }
+  goNext()  { const s = this.currentStep(); if (s < this.snapshots.length) this.goToStep(s + 1); }
+  goLast()  { this.goLive(); }
   goToStep(step) {
     const N = this.snapshots.length;
     if (step <= 0) this.viewIndex = -1;
@@ -256,20 +172,16 @@ export class Replay {
   }
 }
 
-// Render the transcript panel + replay controls into `container`. Re-renders
-// from scratch each call; cheap relative to the C++ work.
+// Render the transcript panel + replay controls into `container`. Cheap.
 //
-//   replay        : Replay instance
-//   container     : DOM element (will be cleared & rewritten)
-//   opts.onJump   : (step:number) => void   called when user clicks a row
-//                                            or a control (0..N).
+//   replay     : Replay instance
+//   container  : DOM element (will be cleared & rewritten)
+//   opts.onJump: (step:number) => void
 export function renderTranscript(container, replay, opts = {}) {
   if (!container) return;
   const N = replay.totalMoves();
   const step = replay.currentStep();
   const live = replay.isLive();
-  const prevCells = (i) =>
-    i === 0 ? replay._initialCells : replay.snapshots[i - 1]?.cellsAfter;
 
   const header = `
     <div class="transcript-head">
@@ -288,7 +200,7 @@ export function renderTranscript(container, replay, opts = {}) {
     rows = `<div class="transcript-empty muted">No moves yet — the move list will fill in as the game progresses.</div>`;
   } else {
     const items = replay.snapshots.map((s, i) => {
-      const parts = formatAction(s, prevCells(i), replay._initialCells);
+      const parts = formatAction(s, s.cellsBefore);
       const isCurrent = !live && replay.viewIndex === i;
       const moverCls = s.mover === 0 ? 'mover-p1' : s.mover === 1 ? 'mover-p2' : '';
       const moverLbl = s.mover === 0 ? 'P1' : s.mover === 1 ? 'P2' : '?';

@@ -1,28 +1,35 @@
-// End-to-end backend test: two users (via the dev-auth backdoor), a game
-// created and joined, several messages exchanged via REST, finalization,
-// Elo computation, and reconnection by re-reading the message log.
+// End-to-end backend test for the server-authoritative engine.
+// Two users (dev auth + guest), a game, intents over WebSocket, terminal
+// state via resign + a played game, Elo applied for rated players and skipped
+// for guests, reconnection via GET /api/games/:id returning current state.
 //
 // Run with: node --test server/tests/integration.mjs
-// Requires DATABASE_URL pointing to a PostgreSQL instance, e.g.:
-//   DATABASE_URL=postgresql://localhost/banqi_test npm test
+// Requires DATABASE_URL pointing to PostgreSQL.
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildApp } from '../src/index.mjs';
+import { WebSocket } from 'ws';
 
 const PORT = 19181;
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://localhost/banqi_test';
 
 let server, db, baseUrl;
 
-async function signInAs(name) {
-  // /auth/dev sets a session cookie via redirect; we capture the cookie.
+async function signInDev(name) {
   const res = await fetch(`${baseUrl}/auth/dev?name=${encodeURIComponent(name)}`, {
     redirect: 'manual',
   });
   const setCookie = res.headers.getSetCookie?.()[0] || res.headers.get('set-cookie');
   assert.ok(setCookie, `dev auth did not return a Set-Cookie header`);
-  return setCookie.split(';')[0]; // just the name=value part
+  return setCookie.split(';')[0];
+}
+
+async function signInGuest() {
+  const res = await fetch(`${baseUrl}/auth/guest`, { redirect: 'manual' });
+  const setCookie = res.headers.getSetCookie?.()[0] || res.headers.get('set-cookie');
+  assert.ok(setCookie, `guest auth did not return a Set-Cookie header`);
+  return setCookie.split(';')[0];
 }
 
 async function authedFetch(cookie, path, init = {}) {
@@ -30,6 +37,42 @@ async function authedFetch(cookie, path, init = {}) {
     ...init,
     headers: { 'Cookie': cookie, 'Content-Type': 'application/json',
                ...(init.headers || {}) },
+  });
+}
+
+// Open a WS, wait for the snapshot frame, expose .send/.close, and capture
+// incoming event/reject frames.
+function openWs(cookie, gameId) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://localhost:${PORT}/ws/${gameId}`,
+                             { headers: { Cookie: cookie } });
+    const frames = [];
+    ws.on('message', (d) => {
+      const f = JSON.parse(d.toString('utf8'));
+      frames.push(f);
+      if (waiter) {
+        const w = waiter; waiter = null;
+        w(f);
+      }
+    });
+    ws.on('error', reject);
+    let waiter = null;
+    const waitNext = (pred = () => true, timeoutMs = 2000) => new Promise((resolveF, rejectF) => {
+      // Match any already-arrived frame first.
+      const idx = frames.findIndex(pred);
+      if (idx >= 0) { resolveF(frames[idx]); return; }
+      const t = setTimeout(() => { waiter = null; rejectF(new Error('ws frame timeout')); }, timeoutMs);
+      waiter = (f) => {
+        if (!pred(f)) return;
+        clearTimeout(t); resolveF(f);
+      };
+    });
+    ws.on('open', async () => {
+      const snap = await waitNext((f) => f.type === 'snapshot');
+      resolve({ ws, frames, snap, waitNext,
+                send: (intent) => ws.send(JSON.stringify({ type: 'intent', ...intent })),
+                close: () => ws.close() });
+    });
   });
 }
 
@@ -44,9 +87,8 @@ before(async () => {
   });
   db = built.db;
   server = built.server;
-  // Wipe all data from a previous run so tests start from a clean slate.
   await db.query(
-    'TRUNCATE finalize_claims, elo_history, messages, games, users RESTART IDENTITY CASCADE'
+    'TRUNCATE elo_history, game_events, game_state, games, users RESTART IDENTITY CASCADE'
   );
   await new Promise((r) => server.listen(PORT, r));
   baseUrl = `http://localhost:${PORT}`;
@@ -57,197 +99,169 @@ after(async () => {
   await db.end();
 });
 
-describe('banqi relay backend', () => {
-  it('signs in two users via dev auth', async () => {
-    const alice = await signInAs('Alice');
-    const bob   = await signInAs('Bob');
-    assert.ok(alice);
-    assert.ok(bob);
+describe('banqi server-authoritative backend', () => {
+  it('signs in two dev users + a guest', async () => {
+    const a = await signInDev('Alice');
+    const b = await signInDev('Bob');
+    const g = await signInGuest();
+    assert.ok(a); assert.ok(b); assert.ok(g);
+    const meG = await (await authedFetch(g, '/api/me')).json();
+    assert.equal(meG.is_guest, true);
+    assert.equal(meG.provider, 'guest');
   });
 
-  it('creates a game, second user joins, both see correct role', async () => {
-    const alice = await signInAs('Alice');
-    const bob   = await signInAs('Bob');
-
+  it('creates a game with an initial snapshot ready to play', async () => {
+    const alice = await signInDev('Alice');
     const cr = await authedFetch(alice, '/api/games', {
-      method: 'POST', body: JSON.stringify({ mode: 'casual' }),
+      method: 'POST', body: '{}',
     });
     assert.equal(cr.status, 200);
     const created = await cr.json();
     assert.ok(created.id);
     assert.ok(/^[0-9A-HJ-NP-TV-Z]{6}$/.test(created.roomCode));
 
-    const jr = await authedFetch(bob, `/api/games/${created.id}/join`, { method: 'POST' });
-    assert.equal(jr.status, 200);
-    const joined = await jr.json();
-    assert.equal(joined.ok, true);
-    assert.equal(joined.role, 'join');
-
-    // Alice sees herself as host; Bob as joiner.
-    const ag = await (await authedFetch(alice, `/api/games/${created.id}`)).json();
-    assert.equal(ag.my_role, 'host');
-    assert.equal(ag.status, 'playing');
-    const bg = await (await authedFetch(bob, `/api/games/${created.id}`)).json();
-    assert.equal(bg.my_role, 'join');
+    // GET /api/games/:id returns state + events for a player.
+    const view = await (await authedFetch(alice, `/api/games/${created.id}`)).json();
+    assert.equal(view.my_role, 'host');
+    assert.ok(view.state);
+    assert.equal(view.state.cells.length, 32);
+    assert.equal(view.state.first_flip_done, false);
+    assert.deepEqual(view.events, []);
   });
 
-  it('returns the user identity seed (32 bytes hex)', async () => {
-    const alice = await signInAs('Alice');
-    const me = await (await authedFetch(alice, '/api/me')).json();
-    assert.ok(me.identity_seed_hex);
-    assert.equal(me.identity_seed_hex.length, 64);
-    assert.match(me.identity_seed_hex, /^[0-9a-f]{64}$/);
-
-    // Same user re-signing in gets the same seed (it's deterministic).
-    const alice2 = await signInAs('Alice');
-    const me2 = await (await authedFetch(alice2, '/api/me')).json();
-    assert.equal(me2.identity_seed_hex, me.identity_seed_hex);
-  });
-
-  it('relays messages via WebSocket and persists them for replay', async () => {
-    const { WebSocket } = await import('ws');
-    const alice = await signInAs('Alice');
-    const bob   = await signInAs('Bob');
-
-    const created = await (await authedFetch(alice, '/api/games', {
-      method: 'POST', body: JSON.stringify({ mode: 'casual' }),
-    })).json();
-    await authedFetch(bob, `/api/games/${created.id}/join`, { method: 'POST' });
-
-    const wsUrl = `ws://localhost:${PORT}/ws/${created.id}`;
-    const aliceWs = new WebSocket(wsUrl, { headers: { Cookie: alice } });
-    const bobWs   = new WebSocket(wsUrl, { headers: { Cookie: bob } });
-
-    const bobMsgs = [];
-    const aliceMsgs = [];
-    bobWs.on('message',   (d) => bobMsgs.push(d.toString('utf8')));
-    aliceWs.on('message', (d) => aliceMsgs.push(d.toString('utf8')));
-
-    await Promise.all([
-      new Promise((r) => aliceWs.on('open', r)),
-      new Promise((r) => bobWs.on('open',   r)),
-    ]);
-    // Wait for the server's _meta hello to land on both sides.
-    await new Promise((r) => setTimeout(r, 100));
-
-    aliceWs.send(JSON.stringify({ type: 'HELLO', game_id: 'x', mode: 'casual',
-                                   is_host: true, pubkey: 'aa'.repeat(32) }));
-    // Wait for alice's HELLO to reach bob before bob sends his — otherwise
-    // the two sends race and bob's frame can land at seq=0, breaking the
-    // ordered-log assertion below. (Cross-socket send order isn't a TCP
-    // guarantee, only same-socket ordering is.)
-    await new Promise((resolve, reject) => {
-      const start = Date.now();
-      const t = setInterval(() => {
-        if (bobMsgs.some((m) => m.includes('"is_host":true'))) {
-          clearInterval(t); resolve();
-        } else if (Date.now() - start > 2000) {
-          clearInterval(t); reject(new Error('alice HELLO did not reach bob in time'));
-        }
-      }, 10);
-    });
-    bobWs.send(JSON.stringify({ type: 'HELLO', game_id: 'x', mode: 'casual',
-                                 is_host: false, pubkey: 'bb'.repeat(32) }));
-
-    await new Promise((r) => setTimeout(r, 100));
-    aliceWs.close(); bobWs.close();
-
-    // Each side received the OTHER side's frame plus the initial _meta line.
-    assert.ok(bobMsgs.some((m) => m.includes('"is_host":true')),
-              'bob should have received alice\'s HELLO');
-    assert.ok(aliceMsgs.some((m) => m.includes('"is_host":false')),
-              'alice should have received bob\'s HELLO');
-
-    // And both frames are persisted in order.
-    const log = await (await authedFetch(alice,
-                          `/api/games/${created.id}/messages?since=0`)).json();
-    assert.equal(log.length, 2);
-    assert.equal(JSON.parse(log[0].body).is_host, true);
-    assert.equal(JSON.parse(log[1].body).is_host, false);
-  });
-
-  it('finalize: both clients agree → Elo updates', async () => {
-    const alice = await signInAs('Alice');
-    const bob   = await signInAs('Bob');
-    const meA = await (await authedFetch(alice, '/api/me')).json();
-    const meB = await (await authedFetch(bob, '/api/me')).json();
-
-    const game = await (await authedFetch(alice, '/api/games', {
-      method: 'POST', body: JSON.stringify({ mode: 'casual' }),
+  it('intents over WS produce events + state pushes to both players', async () => {
+    const alice = await signInDev('Alice');
+    const bob   = await signInDev('Bob');
+    const game  = await (await authedFetch(alice, '/api/games', {
+      method: 'POST', body: '{}',
     })).json();
     await authedFetch(bob, `/api/games/${game.id}/join`, { method: 'POST' });
 
-    // Alice claims red won; she was the winner (i_won: true).
-    const aRes = await (await authedFetch(alice, `/api/games/${game.id}/finalize`, {
-      method: 'POST',
-      body: JSON.stringify({ winner_color: 1, tip_hash: 'abc', i_won: true }),
-    })).json();
-    assert.equal(aRes.status, 'pending');
-    // Bob agrees red won; he was the loser (i_won: false).
-    const bRes = await (await authedFetch(bob, `/api/games/${game.id}/finalize`, {
-      method: 'POST',
-      body: JSON.stringify({ winner_color: 1, tip_hash: 'abc', i_won: false }),
-    })).json();
-    assert.equal(bRes.status, 'complete');
-    assert.equal(bRes.winner_color, 1);
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+    assert.equal(a.snap.role, 'host');
+    assert.equal(b.snap.role, 'join');
 
-    // Alice's Elo went up; Bob's went down.
-    const meA2 = await (await authedFetch(alice, '/api/me')).json();
-    const meB2 = await (await authedFetch(bob, '/api/me')).json();
-    assert.ok(meA2.elo > meA.elo, `alice elo: ${meA.elo} → ${meA2.elo}`);
-    assert.ok(meB2.elo < meB.elo, `bob elo: ${meB.elo} → ${meB2.elo}`);
-    assert.equal(meA2.elo - meA.elo, meB.elo - meB2.elo);   // zero-sum
+    a.send({ kind: 'flip', cell: 0 });
+    const aEvent = await a.waitNext((f) => f.type === 'event');
+    const bEvent = await b.waitNext((f) => f.type === 'event');
+    assert.equal(aEvent.event.action.kind, 'flip');
+    assert.equal(aEvent.event.action.to, 0);
+    assert.ok(aEvent.event.revealed);
+    assert.equal(aEvent.state.cells[0].state, 'faceup');
+    assert.equal(bEvent.state.cells[0].state, 'faceup');
+
+    a.close(); b.close();
   });
 
-  it('leaderboard ranks by Elo and includes both players', async () => {
+  it('rejects an illegal intent without advancing state', async () => {
+    const alice = await signInDev('Alice');
+    const bob   = await signInDev('Bob');
+    const game  = await (await authedFetch(alice, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+    await authedFetch(bob, `/api/games/${game.id}/join`, { method: 'POST' });
+
+    const a = await openWs(alice, game.id);
+    // Out-of-turn flip from Bob — but Bob's ws isn't open yet, use Alice for an
+    // illegal move instead (move from empty cell).
+    a.send({ kind: 'move', from: 0, to: 1 });
+    const rej = await a.waitNext((f) => f.type === 'reject');
+    assert.equal(rej.type, 'reject');
+    assert.ok(rej.reason);
+
+    a.close();
+  });
+
+  it('resign ends the game; rated players get Elo, guests do not', async () => {
+    const alice = await signInDev('Alice2');
+    const bob   = await signInDev('Bob2');
+    const meA1 = await (await authedFetch(alice, '/api/me')).json();
+    const meB1 = await (await authedFetch(bob,   '/api/me')).json();
+
+    const game = await (await authedFetch(alice, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+    await authedFetch(bob, `/api/games/${game.id}/join`, { method: 'POST' });
+
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+
+    a.send({ kind: 'flip', cell: 5 });            // first flip — Alice is now coloured
+    await a.waitNext((f) => f.type === 'event');
+    await b.waitNext((f) => f.type === 'event');
+    b.send({ kind: 'resign' });                   // Bob resigns — Alice wins
+    await a.waitNext((f) => f.type === 'event' && f.event.game_over);
+    await b.waitNext((f) => f.type === 'event' && f.event.game_over);
+
+    // Allow elo update to settle.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const meA2 = await (await authedFetch(alice, '/api/me')).json();
+    const meB2 = await (await authedFetch(bob,   '/api/me')).json();
+    assert.ok(meA2.elo > meA1.elo, `alice elo: ${meA1.elo} → ${meA2.elo}`);
+    assert.ok(meB2.elo < meB1.elo, `bob elo:   ${meB1.elo} → ${meB2.elo}`);
+
+    a.close(); b.close();
+
+    // Now play a game with a guest opponent — Elo must not change for either side.
+    const guest = await signInGuest();
+    const meG1 = await (await authedFetch(guest, '/api/me')).json();
+    const meA3 = await (await authedFetch(alice, '/api/me')).json();
+
+    const game2 = await (await authedFetch(alice, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+    await authedFetch(guest, `/api/games/${game2.id}/join`, { method: 'POST' });
+
+    const a2 = await openWs(alice, game2.id);
+    const g2 = await openWs(guest, game2.id);
+    a2.send({ kind: 'flip', cell: 5 });
+    await a2.waitNext((f) => f.type === 'event');
+    await g2.waitNext((f) => f.type === 'event');
+    g2.send({ kind: 'resign' });
+    await a2.waitNext((f) => f.type === 'event' && f.event.game_over);
+    await g2.waitNext((f) => f.type === 'event' && f.event.game_over);
+    await new Promise((r) => setTimeout(r, 200));
+
+    const meA4 = await (await authedFetch(alice, '/api/me')).json();
+    const meG2 = await (await authedFetch(guest, '/api/me')).json();
+    assert.equal(meA4.elo, meA3.elo, 'alice elo must not change when opponent is a guest');
+    assert.equal(meG2.elo, meG1.elo, 'guest elo must not change');
+
+    a2.close(); g2.close();
+  });
+
+  it('reconnection: GET /api/games/:id returns current state mid-game', async () => {
+    const alice = await signInDev('Alice3');
+    const bob   = await signInDev('Bob3');
+    const game  = await (await authedFetch(alice, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+    await authedFetch(bob, `/api/games/${game.id}/join`, { method: 'POST' });
+
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+    a.send({ kind: 'flip', cell: 7 });
+    await a.waitNext((f) => f.type === 'event');
+    await b.waitNext((f) => f.type === 'event');
+    a.close(); b.close();
+
+    // Mid-game: fetch the game endpoint as Alice → she gets the current state.
+    const view = await (await authedFetch(alice, `/api/games/${game.id}`)).json();
+    assert.equal(view.state.cells[7].state, 'faceup');
+    assert.equal(view.state.first_flip_done, true);
+    assert.equal(view.events.length, 1);
+  });
+
+  it('leaderboard excludes guests', async () => {
     const board = await (await fetch(`${baseUrl}/api/leaderboard`)).json();
     assert.ok(Array.isArray(board));
-    assert.ok(board.length >= 2);
-    // Sorted descending.
-    for (let i = 1; i < board.length; ++i) {
-      assert.ok(board[i - 1].elo >= board[i].elo);
+    for (const u of board) {
+      // Guests have provider='guest' and their accounts are excluded.
+      // Names should not contain "Guest " prefix.
+      assert.ok(!u.display_name.startsWith('Guest '),
+                `guest leaked into leaderboard: ${u.display_name}`);
     }
-  });
-
-  it('reconnection: messages log replays correctly', async () => {
-    // Verify that a brand-new fetch by the host returns the messages in seq
-    // order with stable seq numbers — this is what the client uses to
-    // reconstruct game state.
-    const alice = await signInAs('Alice');
-    const games = await (await authedFetch(alice, '/api/games')).json();
-    assert.ok(games.length > 0);
-    const g = games[0];
-    const log = await (await authedFetch(alice,
-                          `/api/games/${g.id}/messages?since=0`)).json();
-    for (let i = 0; i < log.length; ++i) {
-      assert.equal(log[i].seq, i);
-    }
-  });
-
-  it('finalize: clients disagree → game marked disputed, no Elo change', async () => {
-    const carol = await signInAs('Carol');
-    const dave  = await signInAs('Dave');
-    const meC1 = await (await authedFetch(carol, '/api/me')).json();
-    const meD1 = await (await authedFetch(dave,  '/api/me')).json();
-
-    const game = await (await authedFetch(carol, '/api/games', {
-      method: 'POST', body: JSON.stringify({ mode: 'casual' }),
-    })).json();
-    await authedFetch(dave, `/api/games/${game.id}/join`, { method: 'POST' });
-
-    await authedFetch(carol, `/api/games/${game.id}/finalize`, {
-      method: 'POST',
-      body: JSON.stringify({ winner_color: 1, tip_hash: 'one', i_won: true }),
-    });
-    const res = await (await authedFetch(dave, `/api/games/${game.id}/finalize`, {
-      method: 'POST',
-      body: JSON.stringify({ winner_color: 2, tip_hash: 'two', i_won: true }),
-    })).json();
-    assert.equal(res.status, 'disputed');
-
-    const meC2 = await (await authedFetch(carol, '/api/me')).json();
-    const meD2 = await (await authedFetch(dave,  '/api/me')).json();
-    assert.equal(meC2.elo, meC1.elo);
-    assert.equal(meD2.elo, meD1.elo);
   });
 });

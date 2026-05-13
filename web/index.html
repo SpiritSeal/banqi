@@ -14,14 +14,13 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<!-- Polite screen-reader region for cross-view announcements (route changes,
-     opponent moves, connection status). Populated by main.js announce(). -->
+<!-- Polite screen-reader region for cross-view announcements. -->
 <div id="sr-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <!-- Toast stack: visible notifications. -->
 <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
 
-<!-- Modal mount point. The modal helper renders into here. -->
+<!-- Modal mount point. -->
 <div id="modal-root"></div>
 
 <div class="page">
@@ -41,22 +40,6 @@
         <span class="card-badge">Most popular</span>
         <h3>Play with a friend online</h3>
         <p class="muted">Click Start, copy the link, send it to your friend. They click it and you play — come back to the game any time, even days later.</p>
-        <details class="lobby-advanced-settings">
-          <summary>Advanced settings</summary>
-          <div class="row">
-            <label for="lobby-mode">Mode</label>
-            <select id="lobby-mode">
-              <option value="casual">Standard (fast)</option>
-              <option value="crypto">Encrypted (slower, hides hidden pieces)</option>
-            </select>
-            <button type="button" class="link-btn" id="btn-mode-explain" aria-expanded="false"
-                    aria-controls="mode-explain-box">What's the difference?</button>
-          </div>
-          <div id="mode-explain-box" class="mode-explain hidden" role="region" aria-label="Mode explanation">
-            <p><strong>Standard</strong> is fast and works for almost everyone. Both clients see the shuffled deck and exchange signed moves; the relay can't fabricate moves on your behalf.</p>
-            <p><strong>Encrypted</strong> uses SRA mental poker. Neither client (nor the relay) can see a face-down piece's identity until it's flipped. Slower per move, useful if you don't trust your peer not to peek.</p>
-          </div>
-        </details>
         <div class="row">
           <button id="btn-start-online" class="primary big">Start a game →</button>
         </div>
@@ -82,12 +65,6 @@
         </div>
       </div>
     </div>
-
-    <details class="advanced">
-      <summary>Advanced: pure peer-to-peer (no account, no rating)</summary>
-      <p class="muted small">Pure WebRTC — no relay, no Elo, no message log. You swap a peer ID with your friend manually. Useful if you'd rather not depend on a server, or for offline LAN play.</p>
-      <div><button id="btn-classic" class="link-btn">Open the classic WebRTC/PeerJS flow</button></div>
-    </details>
   </section>
 
   <!-- GAME -->
@@ -157,16 +134,9 @@
     <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="profile-body"></div>
   </section>
-
-  <!-- CLASSIC P2P -->
-  <section id="view-classic" class="panel hidden" aria-labelledby="classic-heading">
-    <h2 id="classic-heading" class="sr-only" tabindex="-1">Classic peer-to-peer</h2>
-    <div><a class="link-btn" href="#/">← Lobby</a></div>
-    <div id="classic-body"></div>
-  </section>
   </main>
 
-  <!-- Pieces & rules — collapsible crib sheet. Default open ≥700px, closed below. -->
+  <!-- Pieces & rules — collapsible crib sheet. -->
   <aside id="crib" class="panel crib-collapsible" aria-labelledby="crib-heading">
     <details id="crib-details" open>
       <summary><h2 id="crib-heading">Pieces &amp; rules</h2></summary>

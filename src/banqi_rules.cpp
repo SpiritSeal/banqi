@@ -285,6 +285,10 @@ void BanqiRules::advance_turn() {
     recompute_terminal();
 }
 
+void BanqiRules::recheck_terminal() {
+    recompute_terminal();
+}
+
 void BanqiRules::recompute_terminal() {
     if (game_over_) return;
 

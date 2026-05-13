@@ -1,5 +1,8 @@
 // Emscripten / embind bindings exposing a thin facade over Game.
-// JS layer is responsible for moving JSON message strings between peers.
+//
+// New world (post-federation): the server runs the authoritative Game; the
+// web client uses Game directly only for OTB and vs-AI. There is no message
+// routing here — the JS layer makes direct method calls.
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/bind.h>
@@ -11,165 +14,56 @@
 
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace banqi {
 
-// A single global SystemPrng used by all wrapper instances. /dev/urandom is
-// emulated by Emscripten via crypto.getRandomValues in WASM builds.
 static SystemPrng& shared_prng() {
     static SystemPrng prng;
     return prng;
 }
 
-// Thin facade: takes/returns JSON message strings. This is what JS sees.
 class GameWrapper {
 public:
-    static std::shared_ptr<GameWrapper> create(bool is_host, int mode_int, const std::string& game_id) {
-        Mode m = (mode_int == 2) ? Mode::Crypto : Mode::Casual;
-        if (is_host) {
-            return std::shared_ptr<GameWrapper>(new GameWrapper(Game::create_host(m, game_id, shared_prng())));
-        } else {
-            return std::shared_ptr<GameWrapper>(new GameWrapper(Game::create_join(m, game_id, shared_prng())));
-        }
+    static std::shared_ptr<GameWrapper> create() {
+        return std::shared_ptr<GameWrapper>(new GameWrapper(Game::create(shared_prng())));
     }
 
-    static std::shared_ptr<GameWrapper> create_host(int mode_int, const std::string& game_id) {
-        return create(true, mode_int, game_id);
-    }
-    static std::shared_ptr<GameWrapper> create_join(int mode_int, const std::string& game_id) {
-        return create(false, mode_int, game_id);
+    static std::shared_ptr<GameWrapper> fromSnapshot(const std::string& json_str) {
+        return std::shared_ptr<GameWrapper>(new GameWrapper(Game::from_snapshot_json(json_str)));
     }
 
-    // Seeded variants. `seed_hex` is a 64-char hex string (32 bytes). Used for
-    // reconnection in the federated relay flow so a fresh Game reconstructs the
-    // same Ed25519 keypair across sessions.
-    static std::shared_ptr<GameWrapper> create_host_with_seed(
-        int mode_int, const std::string& game_id, const std::string& seed_hex) {
-        return create_with_seed(true, mode_int, game_id, seed_hex);
-    }
-    static std::shared_ptr<GameWrapper> create_join_with_seed(
-        int mode_int, const std::string& game_id, const std::string& seed_hex) {
-        return create_with_seed(false, mode_int, game_id, seed_hex);
+    // Apply actions. Throws (surfaced to JS as exceptions) on illegal moves.
+    // applyFlip returns the JSON {color, type} of the revealed piece.
+    std::string applyFlip(int player_index, int cell) {
+        Piece p = game_.apply_flip(player_index, cell);
+        return std::string("{\"color\":") + std::to_string((int)p.color)
+             + ",\"type\":" + std::to_string((int)p.type) + "}";
     }
 
-    static std::shared_ptr<GameWrapper> create_with_seed(
-        bool is_host, int mode_int, const std::string& game_id,
-        const std::string& seed_hex) {
-        Mode m = (mode_int == 2) ? Mode::Crypto : Mode::Casual;
-        auto bytes = from_hex(seed_hex);
-        if (bytes.size() != 32) {
-            throw std::runtime_error("create_with_seed: seed must be 32 bytes hex");
-        }
-        std::array<uint8_t, 32> seed{};
-        std::copy(bytes.begin(), bytes.end(), seed.begin());
-        if (is_host) {
-            return std::shared_ptr<GameWrapper>(new GameWrapper(
-                Game::create_host_with_seed(m, game_id, shared_prng(), seed)));
-        } else {
-            return std::shared_ptr<GameWrapper>(new GameWrapper(
-                Game::create_join_with_seed(m, game_id, shared_prng(), seed)));
-        }
+    void applyMove(int player_index, int from, int to) {
+        game_.apply_move(player_index, from, to);
     }
 
-    // All entry points return the outbound messages produced by the call,
-    // serialized as JSON strings, joined by '\n' (one message per line).
-    std::string start() {
-        std::vector<json> out;
-        game_.start(out);
-        return join_messages(out);
-    }
-    std::string handle_message(const std::string& json_str) {
-        std::vector<json> out;
-        game_.handle_message(json::parse(json_str), out);
-        return join_messages(out);
-    }
-    std::string local_flip(int cell) {
-        std::vector<json> out;
-        game_.local_flip(cell, out);
-        return join_messages(out);
-    }
-    std::string local_move(int from, int to) {
-        std::vector<json> out;
-        game_.local_move(from, to, out);
-        return join_messages(out);
-    }
-    std::string local_resign() {
-        std::vector<json> out;
-        game_.local_resign(out);
-        return join_messages(out);
+    void applyResign(int player_index) {
+        game_.apply_resign(player_index);
     }
 
-    bool is_host() const { return game_.is_host(); }
-    bool setup_done() const { return game_.setup_done(); }
-    bool handshake_done() const { return game_.handshake_done(); }
-    bool is_my_turn() const { return game_.is_my_turn(); }
-    bool game_over() const { return game_.game_over(); }
-    int  my_player_index() const { return game_.my_player_index(); }
-    int  winner() const { return (int)game_.winner(); }      // 0=None,1=Red,2=Black
-    std::string mode_name() const {
-        return game_.mode() == Mode::Casual ? "casual" : "crypto";
-    }
-    std::string my_pubkey_hex() const {
-        return to_hex(game_.my_public_key().data(), game_.my_public_key().size());
+    // Queries
+    bool gameOver()           const { return game_.game_over(); }
+    int  winner()             const { return (int)game_.winner(); }     // 0/1/2
+    int  sideToMovePlayer()   const { return game_.side_to_move_player(); }
+    int  resignPlayerIndex()  const { return game_.resign_player_index(); }
+
+    // State JSON: -1 = full visibility (OTB), 0/1 = filter for that viewer.
+    std::string stateJson(int viewer_player_index) const {
+        return game_.state_json(viewer_player_index);
     }
 
-    // JSON snapshot of the game state, suitable for UI rendering.
-    std::string state_json() const {
-        json j;
-        j["mode"]            = mode_name();
-        j["is_host"]         = game_.is_host();
-        j["my_player_index"] = game_.my_player_index();
-        j["handshake_done"]  = game_.handshake_done();
-        j["setup_done"]      = game_.setup_done();
-        j["my_color"]        = (int)game_.rules().color_for_player(game_.my_player_index());
-        j["side_to_move"]    = game_.rules().side_to_move_player();
-        j["first_flip_done"] = game_.rules().first_flip_done();
-        j["game_over"]       = game_.game_over();
-        j["winner"]          = (int)game_.rules().winner();
-        j["transcript_seq"]  = (uint64_t)game_.transcript().size();
-        j["tip_hash"]        = to_hex(game_.transcript().tip_hash().data(),
-                                       game_.transcript().tip_hash().size());
-
-        json cells = json::array();
-        for (int i = 0; i < BanqiRules::CELLS; ++i) {
-            const Cell& c = game_.rules().at(i);
-            json cj;
-            switch (c.state) {
-                case Cell::State::Empty:    cj["state"] = "empty";   break;
-                case Cell::State::FaceDown: cj["state"] = "facedown"; break;
-                case Cell::State::FaceUp:
-                    cj["state"] = "faceup";
-                    cj["color"] = (int)c.piece.color;
-                    cj["type"]  = (int)c.piece.type;
-                    cj["glyph"] = piece_glyph_zh(c.piece);   // Traditional Chinese
-                    cj["ascii"] = std::string(1, piece_glyph(c.piece));
-                    break;
-            }
-            cells.push_back(cj);
-        }
-        j["cells"] = cells;
-
-        // Legal moves for the current side.
-        auto legal = game_.rules().legal_moves(game_.my_player_index());
-        json lm = json::array();
-        for (const auto& m : legal) {
-            lm.push_back(json{{"from", m.from}, {"to", m.to}});
-        }
-        j["legal_moves_for_me"] = lm;
-        return j.dump();
-    }
+    // Snapshot JSON: includes the hidden deck. Used by the server to persist.
+    std::string snapshotJson() const { return game_.snapshot_json(); }
 
 private:
     explicit GameWrapper(Game g) : game_(std::move(g)) {}
-    static std::string join_messages(const std::vector<json>& msgs) {
-        std::string out;
-        for (size_t i = 0; i < msgs.size(); ++i) {
-            if (i) out.push_back('\n');
-            out += msgs[i].dump();
-        }
-        return out;
-    }
     Game game_;
 };
 
@@ -181,24 +75,16 @@ EMSCRIPTEN_BINDINGS(banqi_module) {
     using namespace banqi;
     class_<GameWrapper>("Game")
         .smart_ptr<std::shared_ptr<GameWrapper>>("Game")
-        .class_function("createHost",         &GameWrapper::create_host)
-        .class_function("createJoin",         &GameWrapper::create_join)
-        .class_function("createHostWithSeed", &GameWrapper::create_host_with_seed)
-        .class_function("createJoinWithSeed", &GameWrapper::create_join_with_seed)
-        .function("start",            &GameWrapper::start)
-        .function("handleMessage",    &GameWrapper::handle_message)
-        .function("localFlip",        &GameWrapper::local_flip)
-        .function("localMove",        &GameWrapper::local_move)
-        .function("localResign",      &GameWrapper::local_resign)
-        .function("isHost",           &GameWrapper::is_host)
-        .function("setupDone",        &GameWrapper::setup_done)
-        .function("handshakeDone",    &GameWrapper::handshake_done)
-        .function("isMyTurn",         &GameWrapper::is_my_turn)
-        .function("gameOver",         &GameWrapper::game_over)
-        .function("myPlayerIndex",    &GameWrapper::my_player_index)
-        .function("winner",           &GameWrapper::winner)
-        .function("modeName",         &GameWrapper::mode_name)
-        .function("myPubkeyHex",      &GameWrapper::my_pubkey_hex)
-        .function("stateJson",        &GameWrapper::state_json);
+        .class_function("create",            &GameWrapper::create)
+        .class_function("fromSnapshot",      &GameWrapper::fromSnapshot)
+        .function("applyFlip",               &GameWrapper::applyFlip)
+        .function("applyMove",               &GameWrapper::applyMove)
+        .function("applyResign",             &GameWrapper::applyResign)
+        .function("gameOver",                &GameWrapper::gameOver)
+        .function("winner",                  &GameWrapper::winner)
+        .function("sideToMovePlayer",        &GameWrapper::sideToMovePlayer)
+        .function("resignPlayerIndex",       &GameWrapper::resignPlayerIndex)
+        .function("stateJson",               &GameWrapper::stateJson)
+        .function("snapshotJson",            &GameWrapper::snapshotJson);
 }
 #endif

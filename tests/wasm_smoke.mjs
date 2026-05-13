@@ -1,94 +1,83 @@
 // End-to-end smoke test of the WASM module under node.
-// Spins up two GameWrapper instances (host + join), pumps messages between
-// them, and runs both casual and crypto modes through ~50 moves while
-// checking board synchronization.
+//
+// Loads the Banqi WASM, drives a full game through Game.apply_flip/move/resign,
+// and asserts: state syncs through state_json, legal moves are non-empty for
+// the side to move, captures happen, snapshot round-trip preserves state.
 
 import createBanqiModule from '../web/banqi.js';
 
 const Module = await createBanqiModule();
 
-function pump(a, b, aOut, bOut) {
-  let safety = 200;
-  while ((aOut || bOut) && safety-- > 0) {
-    let nextA = '', nextB = '';
-    for (const m of (aOut ? aOut.split('\n') : [])) {
-      if (!m) continue;
-      const r = b.handleMessage(m);
-      if (r) nextB += (nextB ? '\n' : '') + r;
-    }
-    for (const m of (bOut ? bOut.split('\n') : [])) {
-      if (!m) continue;
-      const r = a.handleMessage(m);
-      if (r) nextA += (nextA ? '\n' : '') + r;
-    }
-    aOut = nextA;
-    bOut = nextB;
-  }
-  if (safety <= 0) throw new Error('pump: safety exceeded');
-}
+function state(g, viewer) { return JSON.parse(g.stateJson(viewer)); }
 
-function snapshotBoardEqual(s1, s2) {
-  for (let i = 0; i < 32; ++i) {
-    const a = s1.cells[i], b = s2.cells[i];
-    if (a.state !== b.state) return false;
-    if (a.state === 'faceup' && (a.color !== b.color || a.type !== b.type)) return false;
-  }
-  return s1.side_to_move === s2.side_to_move;
-}
-
-function play(modeInt, modeName) {
-  console.log(`-- ${modeName} mode --`);
-  const host = Module.Game.createHost(modeInt, 'wasm-smoke');
-  const join = Module.Game.createJoin(modeInt, 'wasm-smoke');
-  pump(host, join, host.start(), join.start());
-  if (!host.setupDone() || !join.setupDone()) {
-    throw new Error(`${modeName}: setup did not complete`);
-  }
-  console.log(`   setup ok (${modeName})`);
-
+function play(label) {
+  console.log(`-- ${label} --`);
+  const g = Module.Game.create();
   let captures = 0;
-  const maxSteps = modeInt === 2 ? 60 : 200;
-  for (let step = 0; step < maxSteps; ++step) {
-    const stHost = JSON.parse(host.stateJson());
-    const stJoin = JSON.parse(join.stateJson());
-    if (!snapshotBoardEqual(stHost, stJoin)) {
-      throw new Error(`${modeName}: boards diverged at step ${step}`);
-    }
-    if (stHost.game_over) break;
-
-    const stm = stHost.side_to_move;
-    const mover = stm === 0 ? host : join;
-    const other = stm === 0 ? join : host;
-    const stMover = stm === 0 ? stHost : stJoin;
-    const moves = stMover.legal_moves_for_me;
-    if (!moves.length) throw new Error(`${modeName}: no legal moves`);
+  const max = 400;
+  for (let step = 0; step < max; ++step) {
+    const s = state(g, -1);
+    if (s.game_over) break;
+    const stm = s.side_to_move;
+    const moves = state(g, stm).legal_moves_for_me;
+    if (!moves.length) throw new Error('no legal moves');
 
     let pick = moves[0];
     for (const m of moves) {
-      if (m.from >= 0 && stMover.cells[m.to].state !== 'empty') { pick = m; ++captures; break; }
+      if (m.from >= 0 && s.cells[m.to].state !== 'empty') {
+        pick = m; ++captures; break;
+      }
     }
-    if (pick === moves[0] && pick.from >= 0 && stMover.cells[pick.to].state === 'empty') {
-      // No capture found; prefer flip for progress.
-      const f = moves.find(m => m.from < 0);
+    if (pick === moves[0] && pick.from >= 0 && s.cells[pick.to].state === 'empty') {
+      const f = moves.find((m) => m.from < 0);
       if (f) pick = f;
     }
 
-    let mo;
-    if (pick.from < 0) mo = mover.localFlip(pick.to);
-    else               mo = mover.localMove(pick.from, pick.to);
-    pump(mover, other, mo, '');
+    if (pick.from < 0) g.applyFlip(stm, pick.to);
+    else               g.applyMove(stm, pick.from, pick.to);
   }
-  const stHost = JSON.parse(host.stateJson());
-  const stJoin = JSON.parse(join.stateJson());
-  if (!snapshotBoardEqual(stHost, stJoin)) {
-    throw new Error(`${modeName}: final divergence`);
-  }
-  if (stHost.transcript_seq !== stJoin.transcript_seq) {
-    throw new Error(`${modeName}: transcript seq divergence`);
-  }
-  console.log(`   ${modeName}: ${stHost.transcript_seq} entries, ${captures} captures, game_over=${stHost.game_over}`);
+  const final = state(g, -1);
+  console.log(`   ${captures} captures, game_over=${final.game_over}, winner=${final.winner}`);
 }
 
-play(1, 'casual');
-play(2, 'crypto');
+function roundtrip() {
+  console.log('-- snapshot round-trip --');
+  const a = Module.Game.create();
+  a.applyFlip(0, 0);
+  a.applyFlip(1, 31);
+  const snap = a.snapshotJson();
+  const b = Module.Game.fromSnapshot(snap);
+  if (b.sideToMovePlayer() !== a.sideToMovePlayer()) throw new Error('side mismatch');
+  const sa = state(a, -1), sb = state(b, -1);
+  for (let i = 0; i < 32; ++i) {
+    if (sa.cells[i].state !== sb.cells[i].state) throw new Error(`cell ${i} state mismatch`);
+    if (sa.cells[i].state === 'faceup' &&
+        (sa.cells[i].color !== sb.cells[i].color ||
+         sa.cells[i].type  !== sb.cells[i].type)) throw new Error(`cell ${i} piece mismatch`);
+  }
+  // The hidden deck round-trips: the next flip from either game reveals the same piece.
+  const stm = a.sideToMovePlayer();
+  let target = -1;
+  for (let i = 0; i < 32; ++i) if (sa.cells[i].state === 'facedown') { target = i; break; }
+  if (target < 0) throw new Error('no face-down cell');
+  const pa = JSON.parse(a.applyFlip(stm, target));
+  const pb = JSON.parse(b.applyFlip(stm, target));
+  if (pa.color !== pb.color || pa.type !== pb.type) {
+    throw new Error(`hidden-deck divergence at ${target}: a=${JSON.stringify(pa)} b=${JSON.stringify(pb)}`);
+  }
+  console.log(`   ok — deck round-trip verified (cell ${target} → ${JSON.stringify(pa)})`);
+}
+
+function rejects() {
+  console.log('-- illegal-action rejection --');
+  const g = Module.Game.create();
+  let threw = false;
+  try { g.applyFlip(1, 0); } catch (_) { threw = true; }
+  if (!threw) throw new Error('expected throw on out-of-turn flip');
+  console.log('   ok');
+}
+
+play('full game');
+roundtrip();
+rejects();
 console.log('OK');

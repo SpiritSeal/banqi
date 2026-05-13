@@ -1,350 +1,122 @@
 #include "doctest.h"
 #include "game.hpp"
 
-#include <iostream>
-
 using namespace banqi;
 
-namespace {
-
-// Pump messages between two Games until both queues are empty.
-void pump(Game& a, Game& b, std::vector<json>& a_out, std::vector<json>& b_out) {
-    int safety = 200;
-    while ((!a_out.empty() || !b_out.empty()) && safety-- > 0) {
-        std::vector<json> next_a, next_b;
-        for (const auto& m : a_out) b.handle_message(m, next_b);
-        for (const auto& m : b_out) a.handle_message(m, next_a);
-        a_out = std::move(next_a);
-        b_out = std::move(next_b);
+TEST_CASE("Game: fresh game starts face-down with player 0 to move") {
+    MockPrng p(1);
+    auto g = Game::create(p);
+    CHECK(g.side_to_move_player() == 0);
+    CHECK_FALSE(g.rules().first_flip_done());
+    CHECK_FALSE(g.game_over());
+    for (int i = 0; i < 32; ++i) {
+        CHECK(g.rules().at(i).state == Cell::State::FaceDown);
     }
-    REQUIRE(safety > 0);
 }
 
-void start_and_setup(Game& host, Game& join) {
-    std::vector<json> ho, jo;
-    host.start(ho);
-    join.start(jo);
-    pump(host, join, ho, jo);
-    REQUIRE(host.handshake_done());
-    REQUIRE(join.handshake_done());
-    REQUIRE(host.setup_done());
-    REQUIRE(join.setup_done());
+TEST_CASE("Game: a flip reveals a piece, assigns colors, advances turn") {
+    MockPrng p(42);
+    auto g = Game::create(p);
+    Piece revealed = g.apply_flip(0, 0);
+    CHECK(g.rules().at(0).state == Cell::State::FaceUp);
+    CHECK(g.rules().at(0).piece == revealed);
+    CHECK(g.rules().first_flip_done());
+    CHECK(g.side_to_move_player() == 1);
 }
 
-}  // namespace
-
-TEST_CASE("Game: handshake + casual setup completes both sides") {
-    MockPrng pa(1), pb(2);
-    auto host = Game::create_host(Mode::Casual, "g", pa);
-    auto join = Game::create_join(Mode::Casual, "g", pb);
-    start_and_setup(host, join);
-    CHECK(host.is_host());
-    CHECK_FALSE(join.is_host());
-    CHECK(host.my_player_index() == 0);
-    CHECK(join.my_player_index() == 1);
-    CHECK(host.is_my_turn());
-    CHECK_FALSE(join.is_my_turn());
+TEST_CASE("Game: rejects moves out of turn") {
+    MockPrng p(2);
+    auto g = Game::create(p);
+    // It's player 0's turn — player 1 cannot act.
+    CHECK_THROWS(g.apply_flip(1, 0));
 }
 
-TEST_CASE("Game: handshake + crypto setup completes both sides") {
-    MockPrng pa(11), pb(12);
-    auto host = Game::create_host(Mode::Crypto, "g", pa);
-    auto join = Game::create_join(Mode::Crypto, "g", pb);
-    start_and_setup(host, join);
+TEST_CASE("Game: rejects move when game is terminal (after resign)") {
+    MockPrng p(3);
+    auto g = Game::create(p);
+    g.apply_flip(0, 0);            // first flip
+    g.apply_resign(1);             // player 1 resigns on their turn
+    CHECK(g.game_over());
+    CHECK_THROWS(g.apply_flip(0, 1));
 }
 
-TEST_CASE("Game: HELLO with mismatched mode is rejected") {
-    MockPrng pa(21), pb(22);
-    auto host = Game::create_host(Mode::Casual, "g", pa);
-    auto join = Game::create_join(Mode::Crypto, "g", pb);     // mismatch
-    std::vector<json> ho, jo;
-    host.start(ho);
-    join.start(jo);
-    // Deliver host's hello to join — should throw.
-    CHECK_THROWS(join.handle_message(ho[0], jo));
+TEST_CASE("Game: snapshot round-trip preserves layout and state") {
+    MockPrng p(7);
+    auto g = Game::create(p);
+    g.apply_flip(0, 0);
+    g.apply_flip(1, 31);
+    auto snap = g.snapshot_json();
+    auto g2 = Game::from_snapshot_json(snap);
+    CHECK(g2.side_to_move_player() == g.side_to_move_player());
+    CHECK(g2.game_over() == g.game_over());
+    for (int i = 0; i < 32; ++i) {
+        CHECK(g2.rules().at(i).state == g.rules().at(i).state);
+        if (g2.rules().at(i).state == Cell::State::FaceUp) {
+            CHECK(g2.rules().at(i).piece == g.rules().at(i).piece);
+        }
+    }
+    // The hidden deck is preserved — a subsequent flip from the restored game
+    // reveals the same piece the original would have.
+    auto stm = g.side_to_move_player();
+    int target = -1;
+    for (int i = 0; i < 32; ++i)
+        if (g.rules().at(i).state == Cell::State::FaceDown) { target = i; break; }
+    REQUIRE(target >= 0);
+    Piece pa = g.apply_flip(stm, target);
+    Piece pb = g2.apply_flip(stm, target);
+    CHECK(pa == pb);
 }
 
-TEST_CASE("Game: casual flip — first move reveals piece on both sides") {
-    MockPrng pa(101), pb(102);
-    auto host = Game::create_host(Mode::Casual, "g", pa);
-    auto join = Game::create_join(Mode::Casual, "g", pb);
-    start_and_setup(host, join);
-
-    std::vector<json> ho, jo;
-    host.local_flip(0, ho);
-    pump(host, join, ho, jo);
-
-    // Both sides see cell 0 as face-up, with the same piece.
-    CHECK(host.rules().at(0).state == Cell::State::FaceUp);
-    CHECK(join.rules().at(0).state == Cell::State::FaceUp);
-    CHECK(host.rules().at(0).piece == join.rules().at(0).piece);
-    CHECK(host.rules().first_flip_done());
-    CHECK(host.rules().side_to_move_player() == 1);
+TEST_CASE("Game: state_json filters legal_moves per viewer") {
+    MockPrng p(8);
+    auto g = Game::create(p);
+    g.apply_flip(0, 0);                 // first flip — now player 1's turn
+    auto j0 = g.state_json(0);          // viewer = player 0 (idle side)
+    auto j1 = g.state_json(1);          // viewer = player 1 (to move)
+    CHECK(j0.find("\"legal_moves_for_me\":[]") != std::string::npos);
+    CHECK(j1.find("\"legal_moves_for_me\":[]") == std::string::npos);
 }
 
-TEST_CASE("Game: crypto flip — first move reveals piece on both sides") {
-    MockPrng pa(201), pb(202);
-    auto host = Game::create_host(Mode::Crypto, "g", pa);
-    auto join = Game::create_join(Mode::Crypto, "g", pb);
-    start_and_setup(host, join);
+TEST_CASE("Game: full game with greedy heuristic remains consistent") {
+    // Drive a game to either terminal state or a generous step cap, asserting
+    // legal_moves stays non-empty (the engine must always offer side-to-move
+    // a move) and that game_over implies a winner.
+    MockPrng p(99);
+    auto g = Game::create(p);
 
-    std::vector<json> ho, jo;
-    host.local_flip(0, ho);
-    pump(host, join, ho, jo);
-
-    CHECK(host.rules().at(0).state == Cell::State::FaceUp);
-    CHECK(join.rules().at(0).state == Cell::State::FaceUp);
-    CHECK(host.rules().at(0).piece == join.rules().at(0).piece);
-}
-
-TEST_CASE("Game: full game — both sides stay in sync across many moves") {
-    // Banqi can deadlock via positional repetition (no 50-move rule in v1),
-    // so we don't require the game to terminate naturally — only that both
-    // sides remain consistent for the duration of play, that captures/flips
-    // are legal on both sides, and that the move log is signed and chained.
-    MockPrng pa(7), pb(8);
-    auto host = Game::create_host(Mode::Casual, "g", pa);
-    auto join = Game::create_join(Mode::Casual, "g", pb);
-    start_and_setup(host, join);
-
-    int total_captures = 0;
     int max_steps = 400;
-    for (int step = 0; step < max_steps && !host.game_over(); ++step) {
-        Game& mover = host.is_my_turn() ? host : join;
-        Game& other = host.is_my_turn() ? join : host;
-        auto moves = mover.rules().legal_moves(mover.my_player_index());
+    int captures = 0;
+    for (int step = 0; step < max_steps && !g.game_over(); ++step) {
+        int stm = g.side_to_move_player();
+        auto moves = g.rules().legal_moves(stm);
         REQUIRE_FALSE(moves.empty());
 
-        // Capture > flip > move.
         Move pick = moves[0];
         bool found_capture = false;
         for (const auto& m : moves) {
             if (!m.is_flip() &&
-                mover.rules().at(m.to).state != Cell::State::Empty) {
-                pick = m; found_capture = true; break;
-            }
-        }
-        if (!found_capture) {
-            for (const auto& m : moves) {
-                if (m.is_flip()) { pick = m; break; }
-            }
-        }
-        if (found_capture) ++total_captures;
-
-        std::vector<json> mo, oo;
-        if (pick.is_flip()) mover.local_flip(pick.to, mo);
-        else                mover.local_move(pick.from, pick.to, mo);
-        pump(mover, other, mo, oo);
-
-        // Boards must stay identical on both sides at all times.
-        for (int i = 0; i < 32; ++i) {
-            REQUIRE(host.rules().at(i).state == join.rules().at(i).state);
-            if (host.rules().at(i).state == Cell::State::FaceUp) {
-                REQUIRE(host.rules().at(i).piece == join.rules().at(i).piece);
-            }
-        }
-        REQUIRE(host.rules().side_to_move_player() == join.rules().side_to_move_player());
-        REQUIRE(host.transcript().size() == join.transcript().size());
-        REQUIRE(host.transcript().tip_hash() == join.transcript().tip_hash());
-    }
-    // We expect a substantial number of captures (the game made progress).
-    CHECK(total_captures >= 8);
-}
-
-TEST_CASE("Game: crypto full game — sides remain in sync") {
-    // Same as the casual full-game test but using SRA mental-poker mode.
-    // This is slower (~thousands of modexps); keep the move budget modest.
-    MockPrng pa(91), pb(92);
-    auto host = Game::create_host(Mode::Crypto, "g", pa);
-    auto join = Game::create_join(Mode::Crypto, "g", pb);
-    start_and_setup(host, join);
-
-    int total_captures = 0;
-    int max_steps = 80;
-    for (int step = 0; step < max_steps && !host.game_over(); ++step) {
-        Game& mover = host.is_my_turn() ? host : join;
-        Game& other = host.is_my_turn() ? join : host;
-        auto moves = mover.rules().legal_moves(mover.my_player_index());
-        REQUIRE_FALSE(moves.empty());
-        Move pick = moves[0];
-        bool found_capture = false;
-        for (const auto& m : moves) {
-            if (!m.is_flip() &&
-                mover.rules().at(m.to).state != Cell::State::Empty) {
+                g.rules().at(m.to).state != Cell::State::Empty) {
                 pick = m; found_capture = true; break;
             }
         }
         if (!found_capture) {
             for (const auto& m : moves) if (m.is_flip()) { pick = m; break; }
         }
-        if (found_capture) ++total_captures;
+        if (found_capture) ++captures;
 
-        std::vector<json> mo, oo;
-        if (pick.is_flip()) mover.local_flip(pick.to, mo);
-        else                mover.local_move(pick.from, pick.to, mo);
-        pump(mover, other, mo, oo);
-
-        for (int i = 0; i < 32; ++i) {
-            REQUIRE(host.rules().at(i).state == join.rules().at(i).state);
-            if (host.rules().at(i).state == Cell::State::FaceUp) {
-                REQUIRE(host.rules().at(i).piece == join.rules().at(i).piece);
-            }
-        }
+        if (pick.is_flip()) g.apply_flip(stm, pick.to);
+        else                g.apply_move(stm, pick.from, pick.to);
     }
-    CHECK(host.transcript().tip_hash() == join.transcript().tip_hash());
+    if (g.game_over()) {
+        CHECK(g.winner() != Color::None);
+    }
+    CHECK(captures >= 4);   // any reasonable play makes progress
 }
 
-TEST_CASE("Game: seeded constructor yields stable pubkey") {
-    std::array<uint8_t, 32> seed{};
-    seed[0] = 42;
-    MockPrng pa(1), pa2(1);
-    auto g1 = Game::create_host_with_seed(Mode::Casual, "g", pa,  seed);
-    auto g2 = Game::create_host_with_seed(Mode::Casual, "g", pa2, seed);
-    CHECK(g1.my_public_key() == g2.my_public_key());
-}
-
-TEST_CASE("Game: reconnect-by-replay — fresh seeded Game reconstructs identical "
-          "tip_hash and board") {
-    // The core invariant for federated correspondence games: a client can
-    // reconstruct identical state given (1) the same identity seed and (2)
-    // the chronological log of messages the relay observed. Replay strategy:
-    //  - own MOVE_ENTRYs are re-executed locally via local_flip / local_move
-    //    so that append_local re-produces the same signed entry (signatures
-    //    are deterministic because Signer::from_seed gives the same key)
-    //  - peer messages are fed through handle_message normally
-    //  - own setup / reveal / hello messages are skipped: the fresh Game
-    //    re-produces them in response to the peer messages
-    std::array<uint8_t, 32> host_seed{}, join_seed{};
-    host_seed[0] = 0x10;  host_seed[31] = 0xAA;
-    join_seed[0] = 0x20;  join_seed[31] = 0xBB;
-
-    MockPrng dummy_a(1), dummy_b(2);
-    auto host1 = Game::create_host_with_seed(Mode::Casual, "g", dummy_a, host_seed);
-    auto join1 = Game::create_join_with_seed(Mode::Casual, "g", dummy_b, join_seed);
-
-    enum Sender { FromHost, FromJoin };
-    std::vector<std::pair<Sender, json>> log;
-
-    auto record = [&](Sender s, const std::vector<json>& msgs) {
-        for (const auto& m : msgs) log.push_back({s, m});
-    };
-    auto pump_capture = [&](std::vector<json> ho, std::vector<json> jo) {
-        record(FromHost, ho);
-        record(FromJoin, jo);
-        int safety = 200;
-        while ((!ho.empty() || !jo.empty()) && safety-- > 0) {
-            std::vector<json> next_h, next_j;
-            for (const auto& m : ho) join1.handle_message(m, next_j);
-            for (const auto& m : jo) host1.handle_message(m, next_h);
-            record(FromHost, next_h);
-            record(FromJoin, next_j);
-            ho = std::move(next_h);
-            jo = std::move(next_j);
-        }
-        REQUIRE(safety > 0);
-    };
-
-    {
-        std::vector<json> ho, jo;
-        host1.start(ho); join1.start(jo);
-        pump_capture(std::move(ho), std::move(jo));
-    }
-    REQUIRE(host1.setup_done());
-
-    // Track the actions host1 takes locally so the replay can reproduce them
-    // in the same order. (The relay's log alone is enough to derive these,
-    // but capturing them here keeps the test self-contained.)
-    std::vector<MoveAction> host_local_actions;
-
-    auto play_one = [&]() {
-        Game& mover = host1.is_my_turn() ? host1 : join1;
-        bool host_moved = host1.is_my_turn();
-        auto moves = mover.rules().legal_moves(mover.my_player_index());
-        REQUIRE_FALSE(moves.empty());
-        Move pick = moves[0];
-        for (const auto& m : moves) if (m.is_flip()) { pick = m; break; }
-        std::vector<json> mo;
-        if (pick.is_flip()) {
-            mover.local_flip(pick.to, mo);
-            if (host_moved) host_local_actions.push_back({MoveAction::Kind::Flip, -1, pick.to});
-        } else {
-            mover.local_move(pick.from, pick.to, mo);
-            if (host_moved) host_local_actions.push_back({MoveAction::Kind::Move, pick.from, pick.to});
-        }
-        if (host_moved) pump_capture(std::move(mo), {});
-        else            pump_capture({}, std::move(mo));
-    };
-    for (int i = 0; i < 6; ++i) play_one();
-
-    const auto host_tip = host1.transcript().tip_hash();
-    REQUIRE(host_tip == join1.transcript().tip_hash());
-    const std::size_t host_seq = host1.transcript().size();
-
-    // Fresh page-load: construct a new Game with the same id_seed, replay.
-    MockPrng dummy_c(99);
-    auto host_replay = Game::create_host_with_seed(Mode::Casual, "g", dummy_c, host_seed);
-    std::vector<json> trash;
-    host_replay.start(trash);   // emit own HELLO (we'll skip the logged copy)
-
-    std::size_t next_own_action = 0;
-    for (const auto& [sender, msg] : log) {
-        if (sender == FromHost) {
-            // host_replay produces these itself in response to peer input;
-            // only MOVE_ENTRYs need to be re-driven via local_*.
-            auto cat = categorize(msg);
-            if (cat == MessageCategory::MoveEntry) {
-                REQUIRE(next_own_action < host_local_actions.size());
-                const auto& a = host_local_actions[next_own_action++];
-                std::vector<json> out;
-                if (a.kind == MoveAction::Kind::Flip) host_replay.local_flip(a.to, out);
-                else if (a.kind == MoveAction::Kind::Move) host_replay.local_move(a.from, a.to, out);
-                else host_replay.local_resign(out);
-            }
-            // Skip HELLO/SETUP/REVEAL_KEY from own side — they regenerate naturally.
-        } else {
-            std::vector<json> out;
-            host_replay.handle_message(msg, out);
-        }
-    }
-
-    CHECK(host_replay.transcript().size() == host_seq);
-    CHECK(host_replay.transcript().tip_hash() == host_tip);
-    for (int i = 0; i < 32; ++i) {
-        CHECK(host_replay.rules().at(i).state == host1.rules().at(i).state);
-        if (host_replay.rules().at(i).state == Cell::State::FaceUp) {
-            CHECK(host_replay.rules().at(i).piece == host1.rules().at(i).piece);
-        }
-    }
-}
-
-TEST_CASE("Game: rejects illegal local move") {
-    MockPrng pa(301), pb(302);
-    auto host = Game::create_host(Mode::Casual, "g", pa);
-    auto join = Game::create_join(Mode::Casual, "g", pb);
-    start_and_setup(host, join);
-
-    std::vector<json> ho;
-    CHECK_THROWS(host.local_move(0, 1, ho));     // before any flip — illegal
-}
-
-TEST_CASE("Game: tampered move signature is rejected") {
-    MockPrng pa(401), pb(402);
-    auto host = Game::create_host(Mode::Casual, "g", pa);
-    auto join = Game::create_join(Mode::Casual, "g", pb);
-    start_and_setup(host, join);
-
-    std::vector<json> ho;
-    host.local_flip(0, ho);
-    // Find the MOVE_ENTRY message and tamper its signature.
-    for (auto& m : ho) {
-        if (categorize(m) == MessageCategory::MoveEntry) {
-            std::string sig_hex = m.at("sig").get<std::string>();
-            sig_hex[0] = (sig_hex[0] == '0') ? '1' : '0';
-            m["sig"] = sig_hex;
-        }
-    }
-    std::vector<json> jo;
-    CHECK_THROWS({
-        for (const auto& m : ho) join.handle_message(m, jo);
-    });
+TEST_CASE("Game: resign before first flip is allowed; no winner color") {
+    MockPrng p(13);
+    auto g = Game::create(p);
+    g.apply_resign(0);
+    CHECK(g.game_over());
+    CHECK(g.winner() == Color::None);
 }

@@ -1,41 +1,47 @@
-# Banqi relay server
+# Banqi server
 
-A small Node.js + SQLite relay so anyone can host a federation member for
-[Banqi P2P](../README.md). Each player on a relay can play any other player
-on the same relay, with persistent correspondence games and an Elo
-leaderboard. The same relay also serves the static web client.
+A small Node.js + PostgreSQL server-authoritative backend for
+[Banqi P2P](../README.md). The server owns the rule engine, validates
+every intent, runs the shuffle, decides winners, applies Elo, and serves
+the static web client.
 
 ## What it does
 
-- OAuth sign-in (GitHub, Google), or a dev-only username route for local
-  testing
+- OAuth sign-in (GitHub, Google), one-click guest sessions, plus a
+  dev-only username route for local testing
 - Creates / joins games with friendly 6-char room codes
-- WebSocket relay (`/ws/<gameId>`) for live message exchange — writes every
-  frame to SQLite so disconnected players can pick up where they left off
-- REST endpoints for game lifecycle, message replay, Elo leaderboard,
-  per-user profiles + head-to-head records
-- Derives each user's stable 32-byte identity seed from `SERVER_SECRET`,
-  so reconnecting clients reconstruct the same Ed25519 keypair (see
-  `../src/game.cpp` `create_host_with_seed`)
+- Loads the Banqi WASM in-process and keeps an authoritative `Game`
+  instance per active room, periodically snapshotted to Postgres
+- WebSocket (`/ws/<gameId>`): server pushes `snapshot` on connect, and
+  `event` on every accepted action; clients submit `intent` frames
+  (`flip` / `move` / `resign`)
+- REST endpoints for game lifecycle, leaderboard, per-user profiles
+- Applies Elo on game end (rated users only — guests are ephemeral and
+  excluded from the leaderboard)
 
-The server **does not** validate game logic. Authoritative game state runs
-in the browser via the C++ WASM `Game`. The server is a persistent,
-authenticated message bus that also computes Elo at game end.
+The browser **does not** run the rule engine for online play. It sends
+intents and renders the state pushed back by the server.
 
 ## Quick start (local dev)
 
 ```bash
 cd server
 cp .env.example .env       # then edit at least SERVER_SECRET
-# easiest local dev: enable the dev-auth backdoor
-echo 'AUTH_DEV=1' >> .env
+echo 'AUTH_DEV=1' >> .env  # enables the dev-auth backdoor
 npm install
 npm run dev
 ```
 
+The server expects a built WASM next to `web/banqi.js`. From the repo
+root:
+
+```bash
+make wasm                  # one-time; produces web/banqi.js + web/banqi.wasm
+```
+
 Open <http://localhost:8080> in two browsers (or two profiles). Pick
-"Sign in (dev)" in both, then start a game in one and follow the invite
-link in the other.
+"Sign in (dev)" in one and "Continue as guest" in the other, then start
+a game in the first and follow the invite link in the second.
 
 Run the test suite:
 
@@ -43,15 +49,18 @@ Run the test suite:
 npm test
 ```
 
+(Requires a reachable Postgres at `DATABASE_URL`. CI uses
+`postgresql://banqi:banqi@localhost:5432/banqi_test`.)
+
 ## Production deploy
 
 Required env vars:
 
 | Variable                | Notes                                                          |
 |-------------------------|----------------------------------------------------------------|
-| `SERVER_SECRET`         | Long random string. Used to sign cookies AND to derive each user's Ed25519 identity seed. **Changing it invalidates all in-flight games.** |
+| `SERVER_SECRET`         | Long random string used to sign session cookies.               |
 | `PUBLIC_URL`            | The HTTPS URL clients use, e.g. `https://banqi.example.com`. Used for OAuth callback URLs. |
-| `DATABASE_FILE`         | Path to the SQLite file. Put it on a persistent volume.        |
+| `DATABASE_URL`          | `postgresql://user:pass@host/dbname`. Schema is applied on boot. |
 | `GITHUB_CLIENT_ID` / `_SECRET` | OAuth app at <https://github.com/settings/applications/new>. Callback: `${PUBLIC_URL}/auth/callback/github` |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | OAuth app at <https://console.cloud.google.com/apis/credentials>. Callback: `${PUBLIC_URL}/auth/callback/google` |
 
@@ -61,59 +70,42 @@ set `AUTH_DEV=1` in production.
 ### Docker
 
 ```bash
-docker build -t banqi-relay -f server/Dockerfile .
+make wasm                                    # produces web/banqi.{js,wasm}
+docker build -t banqi -f server/Dockerfile .
 docker run -p 8080:8080 \
-  -v banqi-data:/data \
+  -e DATABASE_URL=postgresql://user:pass@host/dbname \
   -e SERVER_SECRET=$(openssl rand -hex 32) \
   -e PUBLIC_URL=https://your-host \
   -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
-  banqi-relay
+  banqi
 ```
-
-### Fly.io
-
-```bash
-# from repo root
-flyctl launch --no-deploy --dockerfile server/Dockerfile
-fly volumes create banqi_data --size 1
-fly secrets set SERVER_SECRET="$(openssl rand -hex 32)" \
-                PUBLIC_URL="https://<app>.fly.dev" \
-                GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=...
-fly deploy
-```
-
-`server/fly.toml` has a working example; copy it into the repo root (or use
-`--config server/fly.toml`).
 
 ## Threat model
 
-- `SERVER_SECRET` compromise: catastrophic. An attacker who learns it can
-  derive every user's signing key and forge arbitrary game history. Treat
-  it like a database master key. Rotate by re-issuing all users' seeds
-  (no automated tool yet).
-- The server sees plaintext gameplay. The "Crypto" shuffle mode preserves
-  end-to-end secrecy of unflipped pieces between the two clients, but the
-  relay still observes setup metadata and signed move entries.
-- Move signatures are still verified client-side, so a malicious relay
-  can't fabricate moves on a player's behalf.
+- The server is authoritative; clients render state and submit intents.
+  All face-down piece identities live exclusively in the server's
+  sealed-deck Game instance until a flip resolves them.
+- `SERVER_SECRET` compromise: an attacker who learns it can mint
+  session cookies for any account. Treat it like a database password.
+- Guest sessions are rate-limited per IP (5 / hour) and are excluded
+  from Elo, the leaderboard, and the `/api/users/:id` profile lookup.
 
 ## Routes
 
-| Method | Path                                       | Notes                                |
-|--------|--------------------------------------------|--------------------------------------|
-| GET    | `/api/config`                              | which OAuth providers are enabled    |
-| GET    | `/auth/github`, `/auth/google`             | OAuth start                          |
-| GET    | `/auth/callback/:provider`                 | OAuth finish                         |
-| GET    | `/auth/dev?name=...`                       | dev only (AUTH_DEV=1)                |
-| POST   | `/auth/logout`                             |                                      |
-| GET    | `/api/me`                                  | current user + identity seed         |
-| GET    | `/api/users/:id`                           | profile + head-to-head               |
-| POST   | `/api/games`                               | create new game                      |
-| GET    | `/api/games`                               | list my games                        |
-| GET    | `/api/games/:id`                           | game metadata                        |
-| GET    | `/api/games/by-room/:code`                 | look up by room code                 |
-| POST   | `/api/games/:id/join`                      | join a `waiting` game                |
-| GET    | `/api/games/:id/messages?since=N`          | replay log                           |
-| POST   | `/api/games/:id/finalize`                  | report game-over claim               |
-| GET    | `/api/leaderboard`                         | top 50 by Elo                        |
-| WS     | `/ws/:gameId`                              | live relay (auth required)           |
+| Method | Path                                | Notes                                  |
+|--------|-------------------------------------|----------------------------------------|
+| GET    | `/api/config`                       | which auth providers are enabled       |
+| GET    | `/auth/github`, `/auth/google`      | OAuth start                            |
+| GET    | `/auth/callback/:provider`          | OAuth finish                           |
+| GET    | `/auth/guest`                       | one-click guest session (rate-limited) |
+| GET    | `/auth/dev?name=...`                | dev only (AUTH_DEV=1)                  |
+| POST   | `/auth/logout`                      |                                        |
+| GET    | `/api/me`                           | current user (incl. `is_guest`)        |
+| GET    | `/api/users/:id`                    | profile + head-to-head (non-guest)     |
+| POST   | `/api/games`                        | create a new game (server shuffles)    |
+| GET    | `/api/games`                        | list my games                          |
+| GET    | `/api/games/:id`                    | metadata + current state + events      |
+| GET    | `/api/games/by-room/:code`          | look up by room code                   |
+| POST   | `/api/games/:id/join`               | join a `waiting` game                  |
+| GET    | `/api/leaderboard`                  | top 50 by Elo (excludes guests)        |
+| WS     | `/ws/:gameId`                       | snapshot + event push; client sends intents |

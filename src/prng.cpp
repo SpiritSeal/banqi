@@ -1,38 +1,12 @@
 #include "prng.hpp"
 
 #include <cerrno>
-#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <fcntl.h>
 #include <unistd.h>
 
 namespace banqi {
-
-BigInt IPrng::random_below(const BigInt& max) {
-    if (max <= BigInt::one()) throw std::invalid_argument("random_below: max <= 1");
-    int bits = max.bit_length();
-    int bytes = (bits + 7) / 8;
-    uint8_t buf[32] = {0};
-    while (true) {
-        random_bytes(buf + (32 - bytes), bytes);
-        // Mask off any high bits above `bits`.
-        int leading_bits_in_top_byte = bits % 8;
-        if (leading_bits_in_top_byte != 0) {
-            uint8_t mask = (uint8_t)((1u << leading_bits_in_top_byte) - 1);
-            buf[32 - bytes] &= mask;
-        }
-        BigInt v = BigInt::from_bytes_be(buf, 32);
-        if (!v.is_zero() && v < max) return v;
-    }
-}
-
-BigInt IPrng::random_coprime_below(const BigInt& max, const BigInt& phi) {
-    while (true) {
-        BigInt v = random_below(max);
-        if (BigInt::gcd(v, phi) == BigInt::one()) return v;
-    }
-}
 
 SystemPrng::SystemPrng() {}
 
