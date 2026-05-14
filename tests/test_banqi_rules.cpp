@@ -284,6 +284,156 @@ TEST_CASE("BanqiRules: full alternation — flips then moves end-to-end") {
     CHECK(b.side_to_move_player() == 1);
 }
 
+TEST_CASE("BanqiRules: both players flip same color — colors unchanged, turn returns to P0") {
+    BanqiRules b;
+    b.set_all_facedown();
+
+    // P0 flips Red — assigned Red; P1 assigned Black.
+    b.apply_flip(0, Piece{Color::Red, PieceType::Advisor});
+    CHECK(b.color_for_player(0) == Color::Red);
+    CHECK(b.color_for_player(1) == Color::Black);
+    CHECK(b.side_to_move_player() == 1);
+    CHECK(b.side_to_move() == Color::Black);
+
+    // P1 (Black) flips Red — same color as P0's first flip.
+    // Color assignment must NOT change: first flip already decided everything.
+    b.apply_flip(1, Piece{Color::Red, PieceType::Chariot});
+    CHECK(b.color_for_player(0) == Color::Red);   // P0 still Red
+    CHECK(b.color_for_player(1) == Color::Black);  // P1 still Black
+    CHECK(b.side_to_move_player() == 0);           // turn returns to P0
+    CHECK(b.side_to_move() == Color::Red);         // Red (P0) moves next
+    CHECK(b.first_flip_done());
+}
+
+TEST_CASE("BanqiRules: both players flip Black (same color) — colors unchanged, turn returns to P0") {
+    BanqiRules b;
+    b.set_all_facedown();
+
+    // P0 flips Black — assigned Black; P1 assigned Red.
+    b.apply_flip(0, Piece{Color::Black, PieceType::Soldier});
+    CHECK(b.color_for_player(0) == Color::Black);
+    CHECK(b.color_for_player(1) == Color::Red);
+    CHECK(b.side_to_move_player() == 1);
+    CHECK(b.side_to_move() == Color::Red);
+
+    // P1 (Red) flips Black — same color as P0's first flip.
+    b.apply_flip(1, Piece{Color::Black, PieceType::General});
+    CHECK(b.color_for_player(0) == Color::Black);  // P0 still Black
+    CHECK(b.color_for_player(1) == Color::Red);    // P1 still Red
+    CHECK(b.side_to_move_player() == 0);            // turn returns to P0
+    CHECK(b.side_to_move() == Color::Black);        // Black (P0) moves next
+}
+
+TEST_CASE("BanqiRules: after same-color flips P0 has flips available; P1 has nothing (not their turn)") {
+    BanqiRules b;
+    b.set_all_facedown();
+
+    b.apply_flip(0, Piece{Color::Red, PieceType::Advisor});   // P0 → Red
+    b.apply_flip(1, Piece{Color::Red, PieceType::Chariot});   // P1 flips same color
+
+    // It's P0's (Red's) turn. P0 has face-up Red pieces at cells 0 and 1,
+    // plus 30 remaining face-down cells to flip.
+    // On a full face-down board the adjacent cells of 0 and 1 are still face-down,
+    // so normal moves are blocked; only flip moves are available.
+    auto moves0 = b.legal_moves(0);
+    CHECK_FALSE(moves0.empty());
+
+    int flip_count = 0, move_count = 0;
+    for (const auto& m : moves0) {
+        if (m.is_flip()) ++flip_count;
+        else             ++move_count;
+    }
+    CHECK(flip_count == 30);   // 32 cells − 2 already revealed
+    CHECK(move_count == 0);    // all adjacent cells are still face-down, so no moves yet
+
+    // P1's legal_moves must be empty — it is not their turn.
+    CHECK(b.legal_moves(1).empty());
+}
+
+TEST_CASE("BanqiRules: P1 (Black) can still flip face-down cells when it has no face-up pieces") {
+    BanqiRules b;
+    b.clear();
+    b.set_facedown(0);
+    b.set_facedown(1);
+    b.set_facedown(2);
+    b.set_facedown(3);
+
+    // P0 flips Red — P1 becomes Black with no face-up pieces.
+    b.apply_flip(0, Piece{Color::Red, PieceType::General});
+    CHECK(b.side_to_move_player() == 1);
+    CHECK(b.color_for_player(1) == Color::Black);
+
+    // P1 has 3 remaining face-down cells to flip even though none are Black yet.
+    auto moves1 = b.legal_moves(1);
+    CHECK(moves1.size() == 3);
+    for (const auto& m : moves1) CHECK(m.is_flip());
+
+    // P1 also flips Red (same color as P0's first flip).
+    b.apply_flip(1, Piece{Color::Red, PieceType::Advisor});
+    CHECK(b.color_for_player(0) == Color::Red);
+    CHECK(b.color_for_player(1) == Color::Black);
+    CHECK(b.side_to_move_player() == 0);
+
+    // P0 still has 2 remaining face-down cells plus its 2 face-up Red pieces.
+    auto moves0 = b.legal_moves(0);
+    int flips = 0;
+    for (const auto& m : moves0) if (m.is_flip()) ++flips;
+    CHECK(flips == 2);
+    CHECK_FALSE(moves0.empty());
+}
+
+TEST_CASE("BanqiRules: P1 loses when both first flips are Red and no face-down cells remain") {
+    BanqiRules b;
+    b.clear();
+    // Only 2 face-down cells — both will be revealed as Red.
+    b.set_facedown(0);
+    b.set_facedown(1);
+
+    b.apply_flip(0, Piece{Color::Red, PieceType::General});
+    CHECK(b.side_to_move_player() == 1);
+    CHECK_FALSE(b.game_over());
+
+    b.apply_flip(1, Piece{Color::Red, PieceType::Soldier});
+    // Board exhausted — P0 (Red) has 2 face-up pieces; P1 (Black) has zero.
+    CHECK(b.side_to_move_player() == 0);
+    CHECK_FALSE(b.game_over());   // P0 still has legal moves
+
+    // P0 moves Red General from cell 0 to adjacent empty cell 8.
+    b.apply_move(0, 8);
+
+    // P1 (Black) now has no face-up pieces and no face-down cells → no legal moves.
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::Red);
+}
+
+TEST_CASE("BanqiRules: same-color first flip does not affect legality of subsequent moves") {
+    BanqiRules b;
+    b.clear();
+    // Sparse board: only cells 0 and 1 face-down; all others empty.
+    // This gives the revealed Red pieces room to move.
+    b.set_facedown(0);
+    b.set_facedown(1);
+
+    b.apply_flip(0, Piece{Color::Red, PieceType::Advisor});   // P0 → Red
+    b.apply_flip(1, Piece{Color::Red, PieceType::Chariot});   // P1 flips same color
+
+    // No more face-down cells; all other cells are empty.
+    // P0 (Red) can move either Red piece to an adjacent empty cell.
+    // Cell 0 neighbours: cell 1 (same-color Red, can't capture), cell 8 (empty → legal).
+    CHECK(b.is_legal(Move{0, 8}, 0));
+    // Cell 1 neighbours: cell 0 (same-color), cell 2 (empty → legal), cell 9 (empty → legal).
+    CHECK(b.is_legal(Move{1, 2}, 0));
+    CHECK(b.is_legal(Move{1, 9}, 0));
+
+    // P1 cannot act on any of those moves — it is not their turn.
+    CHECK_FALSE(b.is_legal(Move{0, 8}, 1));
+    CHECK_FALSE(b.is_legal(Move{1, 2}, 1));
+
+    // No face-down cells remain, so flip moves are not available for either player.
+    CHECK_FALSE(b.is_legal(Move{-1, 2}, 0));
+    CHECK_FALSE(b.is_legal(Move{-1, 2}, 1));
+}
+
 TEST_CASE("BanqiRules: legal_moves returns nothing if not your turn") {
     BanqiRules b;
     b.clear();
