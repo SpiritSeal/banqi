@@ -17,6 +17,7 @@ import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
 import { Replay, renderTranscript } from './replay.js';
 import { playMoveSound } from './audio.js';
+import { computeMoveHints, cellHintKind } from './board-hints.js';
 
 // ---- service worker / PWA ----
 if ('serviceWorker' in navigator) {
@@ -939,17 +940,9 @@ function renderBoard(boardEl, state, onClick) {
   attachBoardKeyNav(boardEl);
 
   const legal = state.legal_moves_for_me || [];
-  const flipTargets = new Set();
-  const moveTargetsBySrc = new Map();
-  for (const m of legal) {
-    if (m.from < 0) flipTargets.add(m.to);
-    else {
-      if (!moveTargetsBySrc.has(m.from)) moveTargetsBySrc.set(m.from, new Set());
-      moveTargetsBySrc.get(m.from).add(m.to);
-    }
-  }
+  const hints = computeMoveHints(state);
   const highlight = state.replayMoveCells || state.lastMoveCells || null;
-  const myTurnLive = state.side_to_move === state.my_player_index && !state.game_over && !state.replayViewing;
+  const myTurnLive = hints.live;
 
   let focusIdx;
   if (prevFocusIdx != null && +prevFocusIdx >= 0 && +prevFocusIdx < 32) focusIdx = +prevFocusIdx;
@@ -980,15 +973,10 @@ function renderBoard(boardEl, state, onClick) {
     }
     const isSelected = !state.replayViewing && active?.selected === i;
     if (isSelected) { btn.classList.add('selected'); opts.selected = true; }
-    if (myTurnLive) {
-      if (active?.selected != null && moveTargetsBySrc.get(active.selected)?.has(i)) {
-        btn.classList.add('legal-target'); opts.legal = 'move-target';
-      } else if (active?.selected == null && flipTargets.has(i)) {
-        btn.classList.add('legal'); opts.legal = 'flip';
-      } else if (active?.selected == null && moveTargetsBySrc.has(i)) {
-        btn.classList.add('legal'); opts.legal = 'movable';
-      }
-    }
+    const hintKind = cellHintKind(hints, active?.selected ?? null, i);
+    if (hintKind === 'move-target') { btn.classList.add('legal-target'); opts.legal = 'move-target'; }
+    else if (hintKind === 'flip')   { btn.classList.add('legal');        opts.legal = 'flip'; }
+    else if (hintKind === 'movable'){ btn.classList.add('legal');        opts.legal = 'movable'; }
     const isLastMove = highlight && (i === highlight.from || i === highlight.to);
     if (isLastMove) {
       btn.classList.add(state.replayViewing ? 'replay-highlight' : 'last-move');

@@ -14,7 +14,7 @@
 // activate(), and the new SW reaches the page via the "Update available"
 // banner wired up in main.js.
 
-const BUILD_ID = '2026-05-13-3';
+const BUILD_ID = '2026-05-14-1';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
@@ -26,6 +26,7 @@ const APP_SHELL = [
   './relay.js',
   './ai.js',
   './replay.js',
+  './board-hints.js',
   './style.css',
   './favicon.svg',
   './banqi.js',
