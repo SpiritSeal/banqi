@@ -36,7 +36,12 @@ function boardsEqual(s1, s2) {
   return s1.side_to_move === s2.side_to_move;
 }
 
-const DIFF_LABEL = { [Difficulty.EASY]: 'Easy', [Difficulty.MEDIUM]: 'Medium', [Difficulty.HARD]: 'Hard' };
+const DIFF_LABEL = {
+  [Difficulty.EASY]: 'Easy',
+  [Difficulty.MEDIUM]: 'Medium',
+  [Difficulty.HARD]: 'Hard',
+  [Difficulty.EXPERT]: 'Expert',
+};
 
 // ---- main play function ----
 // Returns { moves, winner, captures, msPerMove }
@@ -133,10 +138,12 @@ async function runSuite(label, diff0, diff1, numGames) {
   const draws = numGames - terminated;
   if (draws) console.log(`  (${draws} game(s) reached move limit — drawn/balanced)`);
 
-  // Hard vs Hard draws are expected (symmetric strength, no forced win).
-  // Easy and Medium games should terminate — allow at most 1 long-game outlier.
-  const isHardVsHard = diff0 === Difficulty.HARD && diff1 === Difficulty.HARD;
-  const maxAllowedDraws = isHardVsHard ? numGames : Math.ceil(numGames * 0.25);
+  // Mirror matches between the strong engines (Hard/Expert) often reach the
+  // move limit — symmetric strength, no forced win. Easy and Medium games
+  // should terminate — allow at most 1 long-game outlier.
+  const isStrongMirror = diff0 === diff1
+    && (diff0 === Difficulty.HARD || diff0 === Difficulty.EXPERT);
+  const maxAllowedDraws = isStrongMirror ? numGames : Math.ceil(numGames * 0.25);
   if (draws > maxAllowedDraws) {
     console.error(`  FAIL: ${draws} draw(s) exceeds tolerance of ${maxAllowedDraws}`);
     failed++;
@@ -144,12 +151,14 @@ async function runSuite(label, diff0, diff1, numGames) {
     passed++;
   }
 
-  // For Hard vs Easy, Hard should win more often (Hard plays as player 1 = Black)
-  if (diff0 === Difficulty.EASY && diff1 === Difficulty.HARD && numGames >= 5) {
+  // When a stronger engine plays Black against Easy (Red), it should win more.
+  const strongerVsEasy = diff0 === Difficulty.EASY
+    && (diff1 === Difficulty.HARD || diff1 === Difficulty.EXPERT);
+  if (strongerVsEasy && numGames >= 5) {
     if (blackWins <= redWins) {
-      console.warn(`  WARN: Hard (Black) did not outperform Easy (Red): ${blackWins} vs ${redWins}`);
+      console.warn(`  WARN: ${DIFF_LABEL[diff1]} (Black) did not outperform Easy (Red): ${blackWins} vs ${redWins}`);
     } else {
-      console.log(`  Hard outperforms Easy ✓`);
+      console.log(`  ${DIFF_LABEL[diff1]} outperforms Easy ✓`);
     }
   }
 
@@ -173,7 +182,7 @@ function checkMoveQuality() {
   // The turn has now advanced to player-1 (join). Use the join game's state
   // so legal_moves_for_me is non-empty, then check each difficulty.
   let ok = true;
-  for (const diff of [Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD]) {
+  for (const diff of [Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD, Difficulty.EXPERT]) {
     // Get state from whichever game is to-move
     const stHost = JSON.parse(host.stateJson());
     const stJoin = JSON.parse(join.stateJson());
@@ -202,10 +211,14 @@ await runSuite('Easy vs Easy',   Difficulty.EASY,   Difficulty.EASY,   10);
 await runSuite('Medium vs Easy', Difficulty.MEDIUM, Difficulty.EASY,   5);
 await runSuite('Hard vs Easy',   Difficulty.EASY,   Difficulty.HARD,   5);
 
-// Timing checks — fewer games since Hard AI is slower
+// Timing checks — fewer games since the lookahead engines are slower
 await runSuite('Medium vs Medium', Difficulty.MEDIUM, Difficulty.MEDIUM, 3);
 await runSuite('Hard vs Hard',     Difficulty.HARD,   Difficulty.HARD,   2);
 await runSuite('Hard vs Medium',   Difficulty.HARD,   Difficulty.MEDIUM, 3);
+
+// Expert checks — slowest engine, so keep the game counts low
+await runSuite('Expert vs Easy',   Difficulty.EASY,   Difficulty.EXPERT, 5);
+await runSuite('Expert vs Expert', Difficulty.EXPERT, Difficulty.EXPERT, 1);
 
 // Summary
 console.log(`\n=================`);
