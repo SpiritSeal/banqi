@@ -644,7 +644,8 @@ function refreshOTB() {
   } else {
     const turnIdx = liveState.side_to_move;
     const sideName = turnIdx === 0 ? 'Player 1' : 'Player 2';
-    banner = `${sideName}'s turn (${colorWord(liveState.player0_color === liveState.side_to_move ? liveState.player0_color : liveState.player1_color)})`;
+    const movingColor = turnIdx === 0 ? liveState.player0_color : liveState.player1_color;
+    banner = `${sideName}'s turn (${colorWord(movingColor)})`;
   }
   $('otb-banner').textContent = banner;
   $('otb-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
