@@ -457,24 +457,47 @@ function chooseMoveHard(state, legal, playerIndex) {
 }
 
 // ---------------------------------------------------------------------------
-// Expert: deeper alpha-beta with quiescence search and piece-safety evaluation
+// Expert: deeper alpha-beta with quiescence, transposition table, and a
+// safety- and mobility-aware evaluation.
 //
 // Improvements over Hard:
-//   - Deeper search (up to depth 6 vs 4), reduced when most of the board is
-//     still hidden, and bounded by a node budget so a pathological branching
-//     factor can't hang the search (or the UI).
+//   - Deeper search (up to depth 6 vs Hard's 4), with a per-determinisation
+//     node budget that acts as a safety cap, not the primary throttle.
+//   - Transposition table (per determinisation): caches subtree scores keyed
+//     by board state, with the best move used as a strong ordering hint. Cuts
+//     the cost of reaching depth 6 dramatically.
 //   - Quiescence search: at the depth horizon, capture sequences are played
-//     out before the position is scored. This removes the horizon effect that
+//     out so the position is scored at rest. Removes the horizon effect that
 //     lets Hard grab a piece it cannot actually keep.
-//   - Safety-aware evaluation: hanging pieces (attacked and undefended) are
-//     penalised and enemy hanging pieces rewarded, replacing Hard's cruder
-//     adjacency "threat" bonus.
+//   - Safety-aware evaluation: hanging pieces (attacked and undefended,
+//     including cannon-jump threats) are penalised; enemy hanging pieces are
+//     rewarded.
+//   - Mobility differential: rewards positions where we have more legal moves
+//     than the opponent, steering the search toward Banqi's actual win
+//     condition (opponent has no legal moves).
 // ---------------------------------------------------------------------------
-const EXPERT_MAX_DEPTH = 6;
-const EXPERT_DETERMINISATIONS = 3;
-const EXPERT_DET_BUDGET = 6000;     // total interior nodes per determinisation
-const EXPERT_MIN_MOVE_BUDGET = 400; // floor on each root move's slice
-const EXPERT_QUIESCE_DEPTH = 1;
+const EXPERT_DEEP_DEPTH    = 5;
+const EXPERT_SHALLOW_DEPTH = 4;     // used while most of the board is hidden
+const EXPERT_DETERMINISATIONS = 4;
+const EXPERT_NODE_BUDGET   = 120000; // safety cap on interior nodes per determinisation
+const EXPERT_QUIESCE_DEPTH = 2;
+
+const TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2;
+
+// Compact key for the transposition table. Within a single determinisation
+// face-down cells never move and never change identity (flipping converts
+// them to face-up), so encoding "facedown" with one symbol is enough — the
+// determinisation fixes `hp` positionally.
+function boardKey(board) {
+  let s = '';
+  for (let i = 0; i < CELLS; i++) {
+    const c = board.cells[i];
+    if (!c) s += '_';
+    else if (c.fd) s += 'F';
+    else s += String.fromCharCode(65 + c.color * 8 + c.type);
+  }
+  return s + board.sidePlayer;
+}
 
 // Can any face-up `byColor` piece capture the face-up piece at `cell`?
 function isAttacked(board, cell, byColor) {
@@ -522,7 +545,48 @@ function isDefended(board, cell, byColor) {
   return false;
 }
 
-// Material + progress + piece-safety heuristic for `forColor`.
+// Count piece moves (excluding flips, which are colour-neutral) for `color`.
+// Mirrors the move-generation in Board.legalMoves but only counts; used for
+// the mobility differential in the evaluation.
+function countPieceMoves(board, color) {
+  let n = 0;
+  for (let from = 0; from < CELLS; from++) {
+    const src = board.cells[from];
+    if (!src || src.fd || src.color !== color) continue;
+    const r = rowOf(from), co = colOf(from);
+    if (src.type === CANNON) {
+      for (let d = 0; d < 4; d++) {
+        const nr = r + DR[d], nc = co + DC[d];
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        if (!board.cells[rcIdx(nr, nc)]) n++;
+      }
+      for (let d = 0; d < 4; d++) {
+        let nr = r + DR[d], nc = co + DC[d], screens = 0;
+        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+          const tc = board.cells[rcIdx(nr, nc)];
+          if (tc) {
+            if (++screens === 2) {
+              if (!tc.fd && tc.color !== color) n++;
+              break;
+            }
+          }
+          nr += DR[d]; nc += DC[d];
+        }
+      }
+    } else {
+      for (let d = 0; d < 4; d++) {
+        const nr = r + DR[d], nc = co + DC[d];
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        const dst = board.cells[rcIdx(nr, nc)];
+        if (!dst) n++;
+        else if (!dst.fd && canCapture(src, dst)) n++;
+      }
+    }
+  }
+  return n;
+}
+
+// Material + progress + piece-safety + mobility heuristic for `forColor`.
 function evaluateExpert(board, forColor) {
   if (board.over) {
     if (board.winner === forColor) return 1_000_000;
@@ -560,6 +624,10 @@ function evaluateExpert(board, forColor) {
       }
     }
   }
+  // Mobility differential. Banqi's win condition is "opponent has no legal
+  // moves", so reducing the opponent's mobility (and keeping ours) is the
+  // direct path to a stalemate win — a strategic axis Hard ignores entirely.
+  score += (countPieceMoves(board, forColor) - countPieceMoves(board, oppColor)) * 6;
   return score;
 }
 
@@ -605,23 +673,43 @@ function quiesce(board, forColor, alpha, beta, qdepth) {
 
 function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
   if (board.over) return evaluateExpert(board, forColor);
-  if (depth === 0) return quiesce(board, forColor, alpha, beta, EXPERT_QUIESCE_DEPTH);
-  // Node budget: bail out to a static score so a pathological branching factor
-  // can't make the search (and the UI) hang.
+  if (depth <= 0) return quiesce(board, forColor, alpha, beta, EXPERT_QUIESCE_DEPTH);
+  // Safety cap: in a pathological position fall back to a static score so the
+  // search can't run away. With the TT this almost never triggers.
   if (++ctx.nodes > ctx.budget) return evaluateExpert(board, forColor);
+
+  const key = boardKey(board);
+  const cached = ctx.tt.get(key);
+  let ttMove = null;
+  if (cached) {
+    ttMove = cached.move;
+    if (cached.depth >= depth) {
+      if (cached.flag === TT_EXACT) return cached.score;
+      if (cached.flag === TT_LOWER) { if (cached.score > alpha) alpha = cached.score; }
+      else                          { if (cached.score < beta)  beta  = cached.score; }
+      if (alpha >= beta) return cached.score;
+    }
+  }
 
   const moves = board.legalMoves(board.sidePlayer);
   if (!moves.length) return evaluateExpert(board, forColor);
 
   const myTurn = board.playerColors[board.sidePlayer] === forColor;
 
-  // Order captures first, highest-value victim first — improves pruning.
+  // Move ordering: TT-best first (huge pruning win), then captures by victim
+  // value, then everything else.
   moves.sort((a, b) => {
-    const aCapture = a.from >= 0 && board.cells[a.to] && !board.cells[a.to].fd;
-    const bCapture = b.from >= 0 && board.cells[b.to] && !board.cells[b.to].fd;
-    if (aCapture && !bCapture) return -1;
-    if (!aCapture && bCapture) return 1;
-    if (aCapture && bCapture) {
+    if (ttMove) {
+      const aTT = a.from === ttMove.from && a.to === ttMove.to;
+      const bTT = b.from === ttMove.from && b.to === ttMove.to;
+      if (aTT && !bTT) return -1;
+      if (!aTT && bTT) return 1;
+    }
+    const aCap = a.from >= 0 && board.cells[a.to] && !board.cells[a.to].fd;
+    const bCap = b.from >= 0 && board.cells[b.to] && !board.cells[b.to].fd;
+    if (aCap && !bCap) return -1;
+    if (!aCap && bCap) return 1;
+    if (aCap && bCap) {
       const aVal = PIECE_VALUE[board.cells[a.to]?.type] || 0;
       const bVal = PIECE_VALUE[board.cells[b.to]?.type] || 0;
       return bVal - aVal;
@@ -629,31 +717,39 @@ function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
     return 0;
   });
 
+  const alphaOrig = alpha, betaOrig = beta;
+  let bestVal, bestMove = moves[0];
   if (myTurn) {
-    let best = -Infinity;
+    bestVal = -Infinity;
     for (const m of moves) {
       const nb = board.clone();
       if (m.from < 0) nb.applyFlipKnown(m.to);
       else            nb.applyMove(m.from, m.to);
       const score = alphaBetaExpert(nb, forColor, depth - 1, alpha, beta, ctx);
-      if (score > best) best = score;
-      if (best > alpha) alpha = best;
+      if (score > bestVal) { bestVal = score; bestMove = m; }
+      if (bestVal > alpha) alpha = bestVal;
       if (alpha >= beta) break;
     }
-    return best;
   } else {
-    let best = Infinity;
+    bestVal = Infinity;
     for (const m of moves) {
       const nb = board.clone();
       if (m.from < 0) nb.applyFlipKnown(m.to);
       else            nb.applyMove(m.from, m.to);
       const score = alphaBetaExpert(nb, forColor, depth - 1, alpha, beta, ctx);
-      if (score < best) best = score;
-      if (best < beta) beta = best;
+      if (score < bestVal) { bestVal = score; bestMove = m; }
+      if (bestVal < beta) beta = bestVal;
       if (alpha >= beta) break;
     }
-    return best;
   }
+
+  // Fail-soft bound classification.
+  let flag;
+  if (bestVal <= alphaOrig)      flag = TT_UPPER;
+  else if (bestVal >= betaOrig)  flag = TT_LOWER;
+  else                           flag = TT_EXACT;
+  ctx.tt.set(key, { depth, score: bestVal, flag, move: bestMove });
+  return bestVal;
 }
 
 // ---- Expert: determinisation + deep alpha-beta with quiescence ----
@@ -665,16 +761,11 @@ function chooseMoveExpert(state, legal, playerIndex) {
   const baseBoard = Board.fromState(state);
 
   // Adapt search depth to how much of the board is still hidden: deep search
-  // through randomly determinised pieces is low-value, so spend the budget on
-  // depth only once enough is revealed to make the lookahead meaningful.
+  // through randomly determinised pieces is low-value, so save the budget for
+  // when enough is revealed to make the lookahead meaningful.
   let facedown = 0;
   for (const c of state.cells) if (c.state === 'facedown') facedown++;
-  const depth = facedown > 16 ? 4 : facedown > 8 ? 5 : EXPERT_MAX_DEPTH;
-
-  // Split a fixed per-determinisation budget evenly across the root moves so
-  // the search cost stays bounded regardless of how many moves are available.
-  const moveBudget = Math.max(EXPERT_MIN_MOVE_BUDGET,
-                              (EXPERT_DET_BUDGET / legal.length) | 0);
+  const depth = facedown > 20 ? EXPERT_SHALLOW_DEPTH : EXPERT_DEEP_DEPTH;
 
   const moveKey = m => `${m.from},${m.to}`;
   const scores = new Map();
@@ -682,11 +773,14 @@ function chooseMoveExpert(state, legal, playerIndex) {
 
   for (let d = 0; d < EXPERT_DETERMINISATIONS; d++) {
     const det = determinise(baseBoard, state);
+    // One context (and TT) per determinisation, shared across all root moves.
+    // The TT pays off doubly here: sibling root moves transpose constantly,
+    // and the TT-best-move hint makes the next root's search prune harder.
+    const ctx = { nodes: 0, budget: EXPERT_NODE_BUDGET, tt: new Map() };
     for (const m of legal) {
       const nb = det.clone();
       if (m.from < 0) nb.applyFlipKnown(m.to);
       else            nb.applyMove(m.from, m.to);
-      const ctx = { nodes: 0, budget: moveBudget };
       const score = alphaBetaExpert(nb, myColor, depth - 1, -Infinity, Infinity, ctx);
       scores.set(moveKey(m), scores.get(moveKey(m)) + score);
     }
