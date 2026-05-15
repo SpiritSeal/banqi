@@ -97,6 +97,7 @@ $(WASM_BUILD_DIR)/%.o: $(THIRD_PARTY)/%.c
 wasm-test: wasm
 	node tests/wasm_smoke.mjs
 	node tests/replay_smoke.mjs
+	node tests/board_hints_smoke.mjs
 
 # PWA validation. The manifest check is fast and dependency-free. The smoke
 # test boots a static server + Chromium and exercises the service worker, so

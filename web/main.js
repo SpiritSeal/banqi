@@ -17,6 +17,8 @@ import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
 import { Replay, renderTranscript } from './replay.js';
 import * as Notify from './notifications.js';
+import { playMoveSound } from './audio.js';
+import { computeMoveHints, cellHintKind } from './board-hints.js';
 
 // ---- service worker / PWA ----
 if ('serviceWorker' in navigator) {
@@ -353,6 +355,7 @@ async function openOnlineGame(roomCode) {
       const wasMyTurnBefore = isMyTurn(active.state);
       active.state = frame.state;
       active.replay.appendEvent(frame.event);
+      playMoveSound(frame.event);
       if (frame.event.mover !== rolePlayerIndex(active)) {
         announce(`Opponent: ${describeAction(frame.event)}`);
         const to = frame.event.action?.to;
@@ -483,6 +486,7 @@ function refreshGame() {
          <button id="btn-retry-conn" type="button">Retry now</button>
        </div>`
     : '';
+  const counts = pieceCounts(view.cells, active.replay);
   $('game-header').innerHTML = `
     ${disconnectBanner}
     <div class="meta game-meta">
@@ -507,6 +511,9 @@ function refreshGame() {
         <span><span class="meta-label">Move</span> ${active.replay.totalMoves()}</span>
         <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info)}</span></span>
         <span><span class="meta-label">Turn</span> <span id="game-turn">${turnLabel(liveState)}</span></span>
+      </div>
+      <div class="meta-row meta-row-counts">
+        ${renderPieceCountsHtml(counts)}
       </div>
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
@@ -647,6 +654,7 @@ function localApply(intent) {
   event.game_over = game.gameOver();
   event.winner = game.winner();
   active.replay.appendEvent(event);
+  playMoveSound(event);
   return event;
 }
 
@@ -669,9 +677,11 @@ function refreshOTB() {
   } else {
     const turnIdx = liveState.side_to_move;
     const sideName = turnIdx === 0 ? 'Player 1' : 'Player 2';
-    banner = `${sideName}'s turn (${colorWord(liveState.player0_color === liveState.side_to_move ? liveState.player0_color : liveState.player1_color)})`;
+    const movingColor = turnIdx === 0 ? liveState.player0_color : liveState.player1_color;
+    banner = `${sideName}'s turn (${colorWord(movingColor)})`;
   }
   $('otb-banner').textContent = banner;
+  $('otb-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
   $('otb-resign').disabled = !liveState.first_flip_done || liveState.game_over || view.replayViewing;
   $('otb-resign').onclick = async () => {
     if (view.replayViewing) return;
@@ -810,6 +820,7 @@ function refreshAI() {
     banner = active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(view.my_color === 1 ? 2 : 1)})`;
   }
   $('ai-banner').textContent = banner;
+  $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
   const nextDiff = { easy: 'medium', medium: 'hard', hard: 'easy' }[active.difficulty] || 'medium';
   $('ai-meta').innerHTML = `
     <span class="meta-label">Difficulty</span>
@@ -866,6 +877,42 @@ function scheduleAIMove() {
 
 // ---- shared rendering ----
 const PIECE_NAMES = ['', 'Soldier', 'Cannon', 'Horse', 'Chariot', 'Elephant', 'Advisor', 'General'];
+
+function pieceCounts(cells, replay) {
+  let shown_red = 0, shown_black = 0;
+  for (const c of cells) {
+    if (c.state === 'faceup') {
+      if (c.color === 1) shown_red++;
+      else if (c.color === 2) shown_black++;
+    }
+  }
+  let captured_red = 0, captured_black = 0;
+  if (replay) {
+    const upTo = replay.isLive()
+      ? replay.snapshots.length
+      : (replay.viewIndex >= 0 ? replay.viewIndex + 1 : 0);
+    for (let i = 0; i < upTo; i++) {
+      const cap = replay.snapshots[i]?.capture;
+      if (cap?.color === 1) captured_red++;
+      else if (cap?.color === 2) captured_black++;
+    }
+  }
+  return {
+    red:   { shown: shown_red,   hidden: 16 - shown_red   - captured_red,   captured: captured_red   },
+    black: { shown: shown_black, hidden: 16 - shown_black - captured_black, captured: captured_black },
+  };
+}
+
+function renderPieceCountsHtml(counts) {
+  const row = (label, cls, c) =>
+    `<div class="pc-row">
+      <span class="pc-side ${cls}">${label}</span>
+      <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}</span>
+      <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}</span>
+      <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}</span>
+    </div>`;
+  return `<div class="piece-counts">${row('Red', 'red', counts.red)}${row('Black', 'black', counts.black)}</div>`;
+}
 
 function cellAriaLabel(idx, cell, opts = {}) {
   const col = 'abcdefgh'[idx % 8];
@@ -927,17 +974,9 @@ function renderBoard(boardEl, state, onClick) {
   attachBoardKeyNav(boardEl);
 
   const legal = state.legal_moves_for_me || [];
-  const flipTargets = new Set();
-  const moveTargetsBySrc = new Map();
-  for (const m of legal) {
-    if (m.from < 0) flipTargets.add(m.to);
-    else {
-      if (!moveTargetsBySrc.has(m.from)) moveTargetsBySrc.set(m.from, new Set());
-      moveTargetsBySrc.get(m.from).add(m.to);
-    }
-  }
+  const hints = computeMoveHints(state);
   const highlight = state.replayMoveCells || state.lastMoveCells || null;
-  const myTurnLive = state.side_to_move === state.my_player_index && !state.game_over && !state.replayViewing;
+  const myTurnLive = hints.live;
 
   let focusIdx;
   if (prevFocusIdx != null && +prevFocusIdx >= 0 && +prevFocusIdx < 32) focusIdx = +prevFocusIdx;
@@ -956,19 +995,22 @@ function renderBoard(boardEl, state, onClick) {
     let opts = {};
     if (c.state === 'faceup') {
       btn.classList.add(c.color === 1 ? 'red' : 'black');
-      btn.textContent = c.glyph;
+      const glyphSpan = document.createElement('span');
+      glyphSpan.className = 'cell-glyph';
+      glyphSpan.textContent = c.glyph;
+      btn.appendChild(glyphSpan);
+      const valueSpan = document.createElement('span');
+      valueSpan.className = 'cell-value';
+      valueSpan.textContent = String(c.type);
+      valueSpan.setAttribute('aria-hidden', 'true');
+      btn.appendChild(valueSpan);
     }
     const isSelected = !state.replayViewing && active?.selected === i;
     if (isSelected) { btn.classList.add('selected'); opts.selected = true; }
-    if (myTurnLive) {
-      if (active?.selected != null && moveTargetsBySrc.get(active.selected)?.has(i)) {
-        btn.classList.add('legal-target'); opts.legal = 'move-target';
-      } else if (active?.selected == null && flipTargets.has(i)) {
-        btn.classList.add('legal'); opts.legal = 'flip';
-      } else if (active?.selected == null && moveTargetsBySrc.has(i)) {
-        btn.classList.add('legal'); opts.legal = 'movable';
-      }
-    }
+    const hintKind = cellHintKind(hints, active?.selected ?? null, i);
+    if (hintKind === 'move-target') { btn.classList.add('legal-target'); opts.legal = 'move-target'; }
+    else if (hintKind === 'flip')   { btn.classList.add('legal');        opts.legal = 'flip'; }
+    else if (hintKind === 'movable'){ btn.classList.add('legal');        opts.legal = 'movable'; }
     const isLastMove = highlight && (i === highlight.from || i === highlight.to);
     if (isLastMove) {
       btn.classList.add(state.replayViewing ? 'replay-highlight' : 'last-move');

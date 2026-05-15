@@ -114,5 +114,8 @@ jobs:
       - name: Replay-layer smoke
         run: node tests/replay_smoke.mjs
 
+      - name: Board hints smoke
+        run: node tests/board_hints_smoke.mjs
+
       - name: PWA manifest check
         run: node tests/pwa_manifest.mjs

@@ -14,7 +14,7 @@
 // activate(), and the new SW reaches the page via the "Update available"
 // banner wired up in main.js.
 
-const BUILD_ID = '2026-05-13-2';
+const BUILD_ID = '2026-05-15-1';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
@@ -22,10 +22,12 @@ const APP_SHELL = [
   './',
   './index.html',
   './main.js',
+  './audio.js',
   './relay.js',
   './ai.js',
   './replay.js',
   './notifications.js',
+  './board-hints.js',
   './style.css',
   './favicon.svg',
   './banqi.js',
@@ -37,6 +39,7 @@ const APP_SHELL = [
   './icons/icon-maskable-192.png',
   './icons/icon-maskable-512.png',
   './icons/apple-touch-icon-180.png',
+  './sounds/move.mp3',
 ];
 
 self.addEventListener('install', (event) => {
