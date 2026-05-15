@@ -10,8 +10,11 @@
 //   HARD   – alpha-beta minimax (depth 4) over N determinisations of unknown pieces
 //   EXPERT – deeper alpha-beta (depth 6) with quiescence search and a
 //            safety-aware evaluation, over N determinisations
+//   MASTER – iterative-deepening alpha-beta up to depth 7 with deeper
+//            quiescence and more determinisations; the iterative-deepening
+//            TT ordering makes the deeper search affordable
 
-export const Difficulty = { EASY: 'easy', MEDIUM: 'medium', HARD: 'hard', EXPERT: 'expert' };
+export const Difficulty = { EASY: 'easy', MEDIUM: 'medium', HARD: 'hard', EXPERT: 'expert', MASTER: 'master' };
 
 // Piece type constants (match C++ PieceType enum values)
 const SOLDIER=1, CANNON=2, HORSE=3, CHARIOT=4, ELEPHANT=5, ADVISOR=6, GENERAL=7;
@@ -355,6 +358,7 @@ export function chooseMove(state, playerIndex, difficulty) {
     case Difficulty.MEDIUM: return chooseMoveMedium(state, legal, playerIndex);
     case Difficulty.HARD:   return chooseMoveHard(state, legal, playerIndex);
     case Difficulty.EXPERT: return chooseMoveExpert(state, legal, playerIndex);
+    case Difficulty.MASTER: return chooseMoveMaster(state, legal, playerIndex);
     default:                return chooseMoveEasy(state, legal);
   }
 }
@@ -673,7 +677,7 @@ function quiesce(board, forColor, alpha, beta, qdepth) {
 
 function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
   if (board.over) return evaluateExpert(board, forColor);
-  if (depth <= 0) return quiesce(board, forColor, alpha, beta, EXPERT_QUIESCE_DEPTH);
+  if (depth <= 0) return quiesce(board, forColor, alpha, beta, ctx.qdepth ?? EXPERT_QUIESCE_DEPTH);
   // Safety cap: in a pathological position fall back to a static score so the
   // search can't run away. With the TT this almost never triggers.
   if (++ctx.nodes > ctx.budget) return evaluateExpert(board, forColor);
@@ -783,6 +787,78 @@ function chooseMoveExpert(state, legal, playerIndex) {
       else            nb.applyMove(m.from, m.to);
       const score = alphaBetaExpert(nb, myColor, depth - 1, -Infinity, Infinity, ctx);
       scores.set(moveKey(m), scores.get(moveKey(m)) + score);
+    }
+  }
+
+  let bestMove = legal[0], bestScore = -Infinity;
+  for (const m of legal) {
+    const s = scores.get(moveKey(m));
+    if (s > bestScore) { bestScore = s; bestMove = m; }
+  }
+  return bestMove;
+}
+
+// ---------------------------------------------------------------------------
+// Master: iterative-deepening alpha-beta, deeper than Expert, with a deeper
+// quiescence and more determinisations.
+//
+// The key trick is iterative deepening with a shared TT: searching at depths
+// 2, 3, …, N in sequence means every iteration's best-move entries supply
+// near-perfect move ordering for the next, which makes reaching depth 7
+// affordable. We also keep the deepest fully-completed iteration's scores,
+// so if the node budget is hit partway through a depth, Master still has a
+// solid answer from the previous depth.
+// ---------------------------------------------------------------------------
+const MASTER_DEEP_DEPTH       = 6;
+const MASTER_SHALLOW_DEPTH    = 5;     // used while most of the board is hidden
+const MASTER_DETERMINISATIONS = 4;
+const MASTER_NODE_BUDGET      = 100000; // safety cap on interior nodes per determinisation
+const MASTER_QUIESCE_DEPTH    = 3;
+
+function chooseMoveMaster(state, legal, playerIndex) {
+  const myColor = state.my_color;
+  // Before the first flip the AI doesn't know its colour — fall back to Expert.
+  if (!state.first_flip_done || !myColor) return chooseMoveExpert(state, legal, playerIndex);
+
+  const baseBoard = Board.fromState(state);
+
+  let facedown = 0;
+  for (const c of state.cells) if (c.state === 'facedown') facedown++;
+  const maxDepth = facedown > 20 ? MASTER_SHALLOW_DEPTH : MASTER_DEEP_DEPTH;
+
+  const moveKey = m => `${m.from},${m.to}`;
+  const scores = new Map();
+  for (const m of legal) scores.set(moveKey(m), 0);
+
+  for (let d = 0; d < MASTER_DETERMINISATIONS; d++) {
+    const det = determinise(baseBoard, state);
+    const ctx = {
+      nodes: 0,
+      budget: MASTER_NODE_BUDGET,
+      tt: new Map(),
+      qdepth: MASTER_QUIESCE_DEPTH,
+    };
+
+    // Iterative deepening with shared TT across iterations. The deepest
+    // fully-completed iteration's scores are what we commit; a partial
+    // deeper iteration is discarded so we never decide on incomplete data.
+    let lastCompleted = null;
+    for (let depth = 2; depth <= maxDepth; depth++) {
+      if (ctx.nodes >= ctx.budget) break;
+      const iter = new Map();
+      let aborted = false;
+      for (const m of legal) {
+        if (ctx.nodes >= ctx.budget) { aborted = true; break; }
+        const nb = det.clone();
+        if (m.from < 0) nb.applyFlipKnown(m.to);
+        else            nb.applyMove(m.from, m.to);
+        iter.set(moveKey(m),
+                 alphaBetaExpert(nb, myColor, depth - 1, -Infinity, Infinity, ctx));
+      }
+      if (!aborted) lastCompleted = iter;
+    }
+    if (lastCompleted) {
+      for (const [k, s] of lastCompleted) scores.set(k, scores.get(k) + s);
     }
   }
 

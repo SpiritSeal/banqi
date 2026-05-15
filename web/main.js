@@ -770,7 +770,7 @@ function refreshAI() {
     onLocalCellClick(idx, view, 'ai');
   });
 
-  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert' }[active.difficulty] || '';
+  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
   let banner;
   if (view.replayViewing) {
     banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}`;
@@ -788,7 +788,7 @@ function refreshAI() {
   }
   $('ai-banner').textContent = banner;
   $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
-  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'easy' }[active.difficulty] || 'medium';
+  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'master', master: 'easy' }[active.difficulty] || 'medium';
   $('ai-meta').innerHTML = `
     <span class="meta-label">Difficulty</span>
     <button id="ai-diff-chip" class="diff-chip" type="button"
@@ -798,7 +798,7 @@ function refreshAI() {
     active.difficulty = nextDiff;
     const sel = $('lobby-ai-difficulty');
     if (sel) sel.value = nextDiff;
-    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert'})[nextDiff]} on the next new game.`,
+    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert', master:'Master'})[nextDiff]} on the next new game.`,
           { kind: 'info', timeoutMs: 3000 });
     refreshAI();
   };
