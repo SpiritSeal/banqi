@@ -591,7 +591,9 @@ function countPieceMoves(board, color) {
 }
 
 // Material + progress + piece-safety + mobility heuristic for `forColor`.
-function evaluateExpert(board, forColor) {
+// `ctx.mobilityWeight` overrides the default mobility coefficient — Master
+// uses a higher weight to push more aggressively toward stalemate wins.
+function evaluateExpert(board, forColor, ctx) {
   if (board.over) {
     if (board.winner === forColor) return 1_000_000;
     if (board.winner)              return -1_000_000;
@@ -631,14 +633,15 @@ function evaluateExpert(board, forColor) {
   // Mobility differential. Banqi's win condition is "opponent has no legal
   // moves", so reducing the opponent's mobility (and keeping ours) is the
   // direct path to a stalemate win — a strategic axis Hard ignores entirely.
-  score += (countPieceMoves(board, forColor) - countPieceMoves(board, oppColor)) * 6;
+  const mobilityWeight = ctx?.mobilityWeight ?? 6;
+  score += (countPieceMoves(board, forColor) - countPieceMoves(board, oppColor)) * mobilityWeight;
   return score;
 }
 
 // Quiescence search: at the horizon, play out only capture moves so the
 // position is scored at rest rather than mid-exchange.
-function quiesce(board, forColor, alpha, beta, qdepth) {
-  const standPat = evaluateExpert(board, forColor);
+function quiesce(board, forColor, alpha, beta, qdepth, ctx) {
+  const standPat = evaluateExpert(board, forColor, ctx);
   if (board.over || qdepth <= 0) return standPat;
 
   const caps = board.legalMoves(board.sidePlayer)
@@ -653,7 +656,7 @@ function quiesce(board, forColor, alpha, beta, qdepth) {
     for (const m of caps) {
       const nb = board.clone();
       nb.applyMove(m.from, m.to);
-      const s = quiesce(nb, forColor, alpha, beta, qdepth - 1);
+      const s = quiesce(nb, forColor, alpha, beta, qdepth - 1, ctx);
       if (s > best) best = s;
       if (best > alpha) alpha = best;
       if (alpha >= beta) break;
@@ -666,7 +669,7 @@ function quiesce(board, forColor, alpha, beta, qdepth) {
     for (const m of caps) {
       const nb = board.clone();
       nb.applyMove(m.from, m.to);
-      const s = quiesce(nb, forColor, alpha, beta, qdepth - 1);
+      const s = quiesce(nb, forColor, alpha, beta, qdepth - 1, ctx);
       if (s < best) best = s;
       if (best < beta) beta = best;
       if (alpha >= beta) break;
@@ -676,11 +679,11 @@ function quiesce(board, forColor, alpha, beta, qdepth) {
 }
 
 function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
-  if (board.over) return evaluateExpert(board, forColor);
-  if (depth <= 0) return quiesce(board, forColor, alpha, beta, ctx.qdepth ?? EXPERT_QUIESCE_DEPTH);
+  if (board.over) return evaluateExpert(board, forColor, ctx);
+  if (depth <= 0) return quiesce(board, forColor, alpha, beta, ctx.qdepth ?? EXPERT_QUIESCE_DEPTH, ctx);
   // Safety cap: in a pathological position fall back to a static score so the
   // search can't run away. With the TT this almost never triggers.
-  if (++ctx.nodes > ctx.budget) return evaluateExpert(board, forColor);
+  if (++ctx.nodes > ctx.budget) return evaluateExpert(board, forColor, ctx);
 
   const key = boardKey(board);
   const cached = ctx.tt.get(key);
@@ -696,7 +699,7 @@ function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
   }
 
   const moves = board.legalMoves(board.sidePlayer);
-  if (!moves.length) return evaluateExpert(board, forColor);
+  if (!moves.length) return evaluateExpert(board, forColor, ctx);
 
   const myTurn = board.playerColors[board.sidePlayer] === forColor;
 
@@ -811,9 +814,11 @@ function chooseMoveExpert(state, legal, playerIndex) {
 // ---------------------------------------------------------------------------
 const MASTER_DEEP_DEPTH       = 6;
 const MASTER_SHALLOW_DEPTH    = 5;     // used while most of the board is hidden
-const MASTER_DETERMINISATIONS = 4;
-const MASTER_NODE_BUDGET      = 100000; // safety cap on interior nodes per determinisation
+const MASTER_DETERMINISATIONS = 6;
+const MASTER_NODE_BUDGET      = 120000; // safety cap on interior nodes per determinisation
 const MASTER_QUIESCE_DEPTH    = 3;
+const MASTER_MOBILITY_WEIGHT  = 14;    // vs Expert's default of 6 — pushes harder
+                                       // toward Banqi's stalemate win condition
 
 function chooseMoveMaster(state, legal, playerIndex) {
   const myColor = state.my_color;
@@ -837,6 +842,7 @@ function chooseMoveMaster(state, legal, playerIndex) {
       budget: MASTER_NODE_BUDGET,
       tt: new Map(),
       qdepth: MASTER_QUIESCE_DEPTH,
+      mobilityWeight: MASTER_MOBILITY_WEIGHT,
     };
 
     // Iterative deepening with shared TT across iterations. The deepest
