@@ -41,6 +41,7 @@ const DIFF_LABEL = {
   [Difficulty.MEDIUM]: 'Medium',
   [Difficulty.HARD]: 'Hard',
   [Difficulty.EXPERT]: 'Expert',
+  [Difficulty.MASTER]: 'Master',
 };
 
 // ---- main play function ----
@@ -138,11 +139,11 @@ async function runSuite(label, diff0, diff1, numGames) {
   const draws = numGames - terminated;
   if (draws) console.log(`  (${draws} game(s) reached move limit — drawn/balanced)`);
 
-  // Mirror matches between the strong engines (Hard/Expert) often reach the
-  // move limit — symmetric strength, no forced win. Easy and Medium games
-  // should terminate — allow at most 1 long-game outlier.
+  // Mirror matches between the strong engines (Hard/Expert/Master) often
+  // reach the move limit — symmetric strength, no forced win. Easy and
+  // Medium games should terminate — allow at most 1 long-game outlier.
   const isStrongMirror = diff0 === diff1
-    && (diff0 === Difficulty.HARD || diff0 === Difficulty.EXPERT);
+    && (diff0 === Difficulty.HARD || diff0 === Difficulty.EXPERT || diff0 === Difficulty.MASTER);
   const maxAllowedDraws = isStrongMirror ? numGames : Math.ceil(numGames * 0.25);
   if (draws > maxAllowedDraws) {
     console.error(`  FAIL: ${draws} draw(s) exceeds tolerance of ${maxAllowedDraws}`);
@@ -153,7 +154,7 @@ async function runSuite(label, diff0, diff1, numGames) {
 
   // When a stronger engine plays Black against Easy (Red), it should win more.
   const strongerVsEasy = diff0 === Difficulty.EASY
-    && (diff1 === Difficulty.HARD || diff1 === Difficulty.EXPERT);
+    && (diff1 === Difficulty.HARD || diff1 === Difficulty.EXPERT || diff1 === Difficulty.MASTER);
   if (strongerVsEasy && numGames >= 5) {
     if (blackWins <= redWins) {
       console.warn(`  WARN: ${DIFF_LABEL[diff1]} (Black) did not outperform Easy (Red): ${blackWins} vs ${redWins}`);
@@ -182,7 +183,7 @@ function checkMoveQuality() {
   // The turn has now advanced to player-1 (join). Use the join game's state
   // so legal_moves_for_me is non-empty, then check each difficulty.
   let ok = true;
-  for (const diff of [Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD, Difficulty.EXPERT]) {
+  for (const diff of [Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD, Difficulty.EXPERT, Difficulty.MASTER]) {
     // Get state from whichever game is to-move
     const stHost = JSON.parse(host.stateJson());
     const stJoin = JSON.parse(join.stateJson());
@@ -219,6 +220,12 @@ await runSuite('Hard vs Medium',   Difficulty.HARD,   Difficulty.MEDIUM, 3);
 // Expert checks — slowest engine, so keep the game counts low
 await runSuite('Expert vs Easy',   Difficulty.EASY,   Difficulty.EXPERT, 5);
 await runSuite('Expert vs Expert', Difficulty.EXPERT, Difficulty.EXPERT, 1);
+
+// Master checks — slowest of all, smallest counts. The single Master
+// vs Easy game is a sanity check; the mirror confirms the engine doesn't
+// crash or run away in a deep symmetric position.
+await runSuite('Master vs Easy',   Difficulty.EASY,   Difficulty.MASTER, 3);
+await runSuite('Master vs Master', Difficulty.MASTER, Difficulty.MASTER, 1);
 
 // Summary
 console.log(`\n=================`);
