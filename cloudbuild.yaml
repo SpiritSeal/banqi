@@ -8,16 +8,19 @@
 # root — so we drive `docker build -f server/Dockerfile` through a config
 # file instead.
 #
-# Override the image tag if needed:
-#   gcloud builds submit --config cloudbuild.yaml \
-#     --substitutions=_IMAGE=gcr.io/PROJECT/banqi-relay:sometag .
-
-substitutions:
-  _IMAGE: 'gcr.io/${PROJECT_ID}/banqi-relay:vapid'
+# ${PROJECT_ID} is a built-in Cloud Build substitution and expands to the
+# project the build runs in. Edit the tag below if you want something other
+# than ":vapid".
 
 steps:
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-f', 'server/Dockerfile', '-t', '${_IMAGE}', '.']
+    args:
+      - 'build'
+      - '-f'
+      - 'server/Dockerfile'
+      - '-t'
+      - 'gcr.io/${PROJECT_ID}/banqi-relay:vapid'
+      - '.'
 
 images:
-  - '${_IMAGE}'
+  - 'gcr.io/${PROJECT_ID}/banqi-relay:vapid'
