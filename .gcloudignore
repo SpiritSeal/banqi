@@ -1,0 +1,23 @@
+# Controls what `gcloud builds submit` uploads as the build context.
+#
+# gcloud falls back to .gitignore when this file is absent — but .gitignore
+# excludes web/banqi.{js,wasm} (they're build artifacts, produced by
+# `make wasm`). The Docker build COPYs web/ wholesale and the server crashes
+# at startup without the compiled engine, so this file deliberately KEEPS
+# those two files and only strips what the image build genuinely doesn't need.
+
+.git/
+.github/
+.gitignore
+.gcloudignore
+node_modules/
+build/
+emsdk/
+*.o
+*.d
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+tests/run_tests
+server/.env

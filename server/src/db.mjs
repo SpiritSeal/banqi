@@ -459,6 +459,41 @@ export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode
   }
 }
 
+// ---------- Push subscriptions ----------
+
+export async function savePushSubscription(db, { userId, endpoint, p256dh, auth }) {
+  const now = Date.now();
+  await db.query(`
+    INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (user_id, endpoint) DO UPDATE SET
+      p256dh = EXCLUDED.p256dh,
+      auth   = EXCLUDED.auth
+  `, [userId, endpoint, p256dh, auth, now]);
+}
+
+export async function deletePushSubscriptionByEndpoint(db, userId, endpoint) {
+  await db.query(
+    'DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2',
+    [userId, endpoint]
+  );
+}
+
+// Called when the push service tells us an endpoint is permanently gone
+// (404/410). The user_id is not required to look it up; endpoints are unique
+// enough in practice and we want to drop the row even if it doesn't match.
+export async function deletePushSubscriptionByEndpointAnyUser(db, endpoint) {
+  await db.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [endpoint]);
+}
+
+export async function listPushSubscriptionsForUser(db, userId) {
+  const { rows } = await db.query(
+    'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
+    [userId]
+  );
+  return rows;
+}
+
 export async function notificationCounts(db, userId) {
   const now = Date.now();
   const { rows } = await db.query(`

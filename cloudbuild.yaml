@@ -1,0 +1,26 @@
+# Manual Cloud Build → Cloud Run deploy config.
+#
+#   gcloud builds submit --config cloudbuild.yaml .
+#
+# The container image is defined in server/Dockerfile but needs the *repo
+# root* as its build context (it COPYs both web/ and server/). `gcloud builds
+# submit --tag` can't express that — it requires a Dockerfile at the source
+# root — so we drive `docker build -f server/Dockerfile` through a config
+# file instead.
+#
+# ${PROJECT_ID} is a built-in Cloud Build substitution and expands to the
+# project the build runs in. Edit the tag below if you want something other
+# than ":vapid".
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'server/Dockerfile'
+      - '-t'
+      - 'gcr.io/${PROJECT_ID}/banqi-relay:vapid'
+      - '.'
+
+images:
+  - 'gcr.io/${PROJECT_ID}/banqi-relay:vapid'
