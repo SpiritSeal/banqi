@@ -187,6 +187,7 @@ export async function appendGameEvent(db, gameId, event) {
     capture: event.capture,
     game_over: event.game_over,
     winner: event.winner,
+    draw_offered: event.draw_offered || false,
   });
   await db.query(`
     INSERT INTO game_events (game_id, seq, ts, mover, payload_json)

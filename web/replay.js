@@ -218,6 +218,9 @@ export function formatAction(snap, prevCells) {
   if (a.kind === 'resign') {
     return { primary: 'Resign', detail: '', piece: '', jump: false };
   }
+  if (a.kind === 'accept_draw') {
+    return { primary: 'Draw', detail: 'agreed', piece: '', jump: false };
+  }
   return { primary: '(unknown)', detail: '', piece: '', jump: false };
 }
 
