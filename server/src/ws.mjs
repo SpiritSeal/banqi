@@ -142,6 +142,17 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     ]);
   }
 
+  // Subscribe to engine events. The engine fires this for both human-driven
+  // intents (via applyIntent) and server-initiated AI follow-up moves, so
+  // both paths funnel through the same broadcast + Elo logic.
+  engine.onEvent(async ({ gameId, event, session, endedNow, isDraw }) => {
+    await broadcastEvent(gameId, event, session);
+    if (endedNow) {
+      try { await applyEloOnEnd(session, gameId, event.winner, isDraw); }
+      catch (e) { console.error('elo update failed:', e); }
+    }
+  });
+
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://x');
     const m = url.pathname.match(/^\/ws\/(\d+)$/);
@@ -195,12 +206,7 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
         pushTo(entry, { type: 'reject', reason: result.reason });
         return;
       }
-      await broadcastEvent(session.gameId, result.event, session);
-      if (result.endedNow) {
-        const isDraw = result.event.action?.kind === 'accept_draw';
-        try { await applyEloOnEnd(session, session.gameId, result.event.winner, isDraw); }
-        catch (e) { console.error('elo update failed:', e); }
-      }
+      // Broadcast + Elo handled by the engine.onEvent subscriber above.
     });
 
     ws.on('close', () => {

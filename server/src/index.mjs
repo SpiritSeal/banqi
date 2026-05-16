@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import 'dotenv/config';
 
-import { openDb } from './db.mjs';
+import { openDb, ensureAiUsers } from './db.mjs';
 import { configureAuth, authProviders } from './auth.mjs';
 import { gamesRouter } from './routes/games.mjs';
 import { usersRouter } from './routes/users.mjs';
@@ -36,6 +36,7 @@ if (SERVER_SECRET === 'dev-insecure-secret-change-me' && env.NODE_ENV === 'produ
 export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERVER_SECRET,
                                   publicUrl = PUBLIC_URL, envOverride = env } = {}) {
   const db = await openDb(databaseUrl);
+  await ensureAiUsers(db);
   const engine = await createGameEngine({ db });
   configurePush({ env: envOverride });
   const app = express();

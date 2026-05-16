@@ -42,6 +42,11 @@ export function matchRequestsRouter({ db, engine }) {
     }
     const other = await getUser(db, toUserId);
     if (!other) return res.status(404).json({ error: 'user not found' });
+    if (other.provider === 'ai') {
+      return res.status(400).json({
+        error: 'AI opponents are started from the lobby, not via challenge',
+      });
+    }
     if (!await isMatchEligible(db, req.user.id, toUserId)) {
       return res.status(403).json({
         error: 'not eligible — add this player as a friend first, or play them once',
