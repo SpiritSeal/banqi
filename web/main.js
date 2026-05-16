@@ -19,6 +19,12 @@ import { Replay, renderTranscript, exportPgn } from './replay.js';
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
+import { initSettings, openSettingsDrawer, openRulesDrawer } from './settings.js';
+import { captureCellRect, playEventAnimation } from './animations.js';
+
+// Initialise settings (applies theme / animation toggles to <body>) before
+// anything paints, so the first render uses the chosen palette.
+initSettings();
 
 // ---- service worker / PWA ----
 if ('serviceWorker' in navigator) {
@@ -166,6 +172,8 @@ async function refreshSession() {
 // ---- routing ----
 async function route() {
   const hash = location.hash || '#/';
+  updateNavActive(hash);
+  applyNavAuthState();
   const m = hash.match(/^#\/g\/([0-9A-Za-z]+)$/);
   if (m) { announce(`Game room ${m[1]}`); return openOnlineGame(m[1].toUpperCase()); }
 
@@ -185,6 +193,41 @@ async function route() {
   }
 }
 window.addEventListener('hashchange', route);
+
+function updateNavActive(hash) {
+  const nav = document.getElementById('app-nav');
+  if (!nav) return;
+  // Match by data-route prefix so #/g/CODE highlights nothing (we're inside a
+  // game, not on a top-level nav destination).
+  for (const a of nav.querySelectorAll('a[data-route]')) {
+    a.classList.toggle('active', a.dataset.route === hash || (a.dataset.route === '#/' && (hash === '' || hash === '#/' || hash === '#')));
+  }
+}
+
+function applyNavAuthState() {
+  const nav = document.getElementById('app-nav');
+  if (!nav) return;
+  const signedIn = !!me;
+  const isGuest = !!me?.is_guest;
+  // Compute visibility per-item so an item with both attributes (e.g.
+  // Friends) doesn't get un-hidden by the second pass.
+  for (const el of nav.querySelectorAll('a[data-route]')) {
+    const requiresAuth = el.hasAttribute('data-requires-auth');
+    const notGuest = el.hasAttribute('data-not-guest');
+    let hidden = false;
+    if (requiresAuth && !signedIn) hidden = true;
+    if (notGuest && isGuest) hidden = true;
+    el.classList.toggle('hidden', hidden);
+  }
+}
+
+// Wire static nav buttons once on boot.
+(function wireNav() {
+  const settingsBtn = document.getElementById('btn-open-settings');
+  const rulesBtn = document.getElementById('btn-open-rules');
+  if (settingsBtn) settingsBtn.addEventListener('click', openSettingsDrawer);
+  if (rulesBtn) rulesBtn.addEventListener('click', openRulesDrawer);
+})();
 
 // ---- sign-in ----
 function renderSignInButtons(container, nextHash, { includeGuest = true } = {}) {
@@ -224,20 +267,17 @@ function renderSignInButtons(container, nextHash, { includeGuest = true } = {}) 
 // ---- lobby ----
 function renderLobby() {
   showView('lobby');
+  applyNavAuthState();
   const meBox = $('lobby-me');
   if (me) {
     const guestBadge = me.is_guest ? ' <span class="muted small">(guest — not rated)</span>' : '';
-    const links = me.is_guest
-      ? `· <a href="#/dashboard">my games</a>`
-      : `· <a href="#/dashboard">my games</a>
-         · <a href="#/leaderboard">leaderboard</a>
-         · <a href="#/friends">friends<span id="nav-notif-badge" class="badge hidden"></span></a>
-         · <a href="#/profile/${me.id}">profile</a>`;
+    const profileLink = me.is_guest
+      ? ''
+      : ` · <a href="#/profile/${me.id}">profile</a>`;
     meBox.innerHTML = `
       <div class="me-row">
         <div><b>Hi, ${escapeHtml(me.display_name)}</b>${guestBadge}
-          ${me.is_guest ? '' : `· Elo ${me.elo}`}
-          ${links}
+          ${me.is_guest ? '' : `· Elo ${me.elo}`}${profileLink}
         </div>
         <button id="btn-signout" class="link-btn">Sign out</button>
       </div>`;
@@ -352,13 +392,28 @@ async function openOnlineGame(roomCode) {
       return;
     }
     if (frame.type === 'event') {
+      // Capture the source cell rect + moved piece info BEFORE applying the
+      // new state. For animations to play smoothly we need both: the rect
+      // because the source cell may not exist post-render, and the piece
+      // info (glyph + color) because the dst cell will hold the captured
+      // piece for capture animations.
+      const boardEl = $('game-board');
+      const ev = frame.event;
+      let srcRect = null, piece = null;
+      if (ev?.action?.kind === 'move' && active.state?.cells) {
+        srcRect = captureCellRect(boardEl, ev.action.from);
+        const srcCell = active.state.cells[ev.action.from];
+        if (srcCell?.state === 'faceup') {
+          piece = { color: srcCell.color, glyph: srcCell.glyph };
+        }
+      }
       const wasMyTurnBefore = isMyTurn(active.state);
       active.state = frame.state;
-      active.replay.appendEvent(frame.event);
-      playMoveSound(frame.event);
-      if (frame.event.mover !== rolePlayerIndex(active)) {
-        announce(`Opponent: ${describeAction(frame.event)}`);
-        const to = frame.event.action?.to;
+      active.replay.appendEvent(ev);
+      playMoveSound(ev);
+      if (ev.mover !== rolePlayerIndex(active)) {
+        announce(`Opponent: ${describeAction(ev)}`);
+        const to = ev.action?.to;
         if (typeof to === 'number') {
           active.flashCellIdx = to;
           active.flashUntil = Date.now() + 1200;
@@ -366,6 +421,8 @@ async function openOnlineGame(roomCode) {
       }
       maybeNotifyTurnTransition(wasMyTurnBefore);
       refreshGame();
+      // Fire and forget — animations are pure decoration over the new state.
+      playEventAnimation(boardEl, ev, { srcRect, piece });
       return;
     }
     if (frame.type === 'reject') {
@@ -481,8 +538,8 @@ function refreshGame() {
   const disconnectBanner = connState !== 'live' && connState !== 'connecting'
     ? `<div class="disconnect-banner" role="alert">
          <span>${connState === 'offline'
-            ? 'Connection lost. Trying to reconnect…'
-            : 'Reconnecting to the server…'}</span>
+            ? "Connection lost — your moves are saved. We'll reconnect when you're back online."
+            : "Reconnecting — your moves are saved."}</span>
          <button id="btn-retry-conn" type="button">Retry now</button>
        </div>`
     : '';
@@ -499,18 +556,17 @@ function refreshGame() {
         </div>
         <div class="meta-row-right">
           <span class="conn-state conn-${connState}" aria-live="polite" aria-atomic="true">${connLabel}</span>
-          <a class="link-btn" href="#/dashboard">My games</a>
         </div>
       </div>
       <div class="meta-row">
-        <div><span class="meta-label">You vs</span> <strong>${escapeHtml(opp || '(waiting for opponent)')}</strong> ${colorChip}</div>
+        ${turnPillHtml(liveState, 'online')}
+        <div><span class="meta-label">vs</span> <strong>${escapeHtml(opp || '(waiting for opponent)')}</strong> ${colorChip}</div>
         <button id="btn-resign" class="btn-danger-inline" type="button"
           ${liveState.first_flip_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
       </div>
       <div class="meta-row meta-row-status">
         <span><span class="meta-label">Move</span> ${active.replay.totalMoves()}</span>
         <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info)}</span></span>
-        <span><span class="meta-label">Turn</span> <span id="game-turn">${turnLabel(liveState)}</span></span>
       </div>
       <div class="meta-row meta-row-counts">
         ${renderPieceCountsHtml(counts)}
@@ -543,6 +599,8 @@ function refreshGame() {
       downloadPgn(pgn, `banqi-${active.info.room_code || 'online'}.pgn`);
     },
   });
+  maybeShowTutorialTip($('game-board'));
+  maybeShowGameOver(view);
 }
 
 function downloadPgn(text, filename) {
@@ -570,6 +628,36 @@ function turnLabel(state) {
   if (!state.first_flip_done) return 'waiting for first flip';
   if (state.game_over) return 'finished';
   return state.side_to_move === state.my_player_index ? 'your turn' : 'opponent\'s turn';
+}
+
+// HTML for the prominent turn-indicator pill shown in game HUDs.
+// mode: 'online' | 'otb' | 'ai'
+function turnPillHtml(state, mode) {
+  if (!state.first_flip_done) {
+    return `<span class="turn-pill" role="status">
+              <span class="turn-dot"></span>Awaiting first flip
+            </span>`;
+  }
+  if (state.game_over) {
+    return `<span class="turn-pill finished" role="status">
+              <span class="turn-dot"></span>Finished
+            </span>`;
+  }
+  let yours, label;
+  if (mode === 'online') {
+    yours = state.side_to_move === state.my_player_index;
+    label = yours ? 'Your turn' : "Opponent's turn";
+  } else if (mode === 'ai') {
+    yours = state.side_to_move === 0;
+    label = yours ? 'Your turn' : 'AI thinking…';
+  } else {
+    // OTB — both players are local; highlight whoever is to move.
+    yours = true;
+    label = state.side_to_move === 0 ? "Player 1's turn" : "Player 2's turn";
+  }
+  return `<span class="turn-pill ${yours ? 'your-turn' : 'opp-turn'}" role="status" aria-live="polite">
+            <span class="turn-dot"></span>${label}
+          </span>`;
 }
 function statusLabel(state, info) {
   if (state.game_over) {
@@ -730,6 +818,8 @@ function refreshOTB() {
       downloadPgn(pgn, `banqi-otb-${pgnFileStamp()}.pgn`);
     },
   });
+  maybeShowTutorialTip($('otb-board'));
+  maybeShowGameOver(view);
 }
 function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
 
@@ -739,6 +829,7 @@ function onLocalCellClick(idx, state, mode) {
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me || [];
   const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
+  const boardEl = $(mode === 'otb' ? 'otb-board' : 'ai-board');
   const sideToMove = state.side_to_move;
   if (mode === 'ai' && sideToMove !== state.my_player_index) return;
   if (mode === 'ai' && active.aiThinking) return;
@@ -749,10 +840,12 @@ function onLocalCellClick(idx, state, mode) {
 
   if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
-      try { localApply({ kind: 'flip', cell: idx }); }
+      let event = null;
+      try { event = localApply({ kind: 'flip', cell: idx }); }
       catch (e) { console.warn(e); }
       if (mode === 'ai') scheduleAIMove();
       refresh();
+      if (event) playEventAnimation(boardEl, event, {});
       return;
     }
     if (c.state === 'faceup' && c.color === myColorForClick &&
@@ -765,10 +858,19 @@ function onLocalCellClick(idx, state, mode) {
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
     active.selected = null;
-    try { localApply({ kind: 'move', from, to: idx }); }
+    // Snapshot the source rect + piece before state changes for the move
+    // animation overlay.
+    const srcRect = captureCellRect(boardEl, from);
+    const srcCell = state.cells[from];
+    const piece = srcCell?.state === 'faceup'
+      ? { color: srcCell.color, glyph: srcCell.glyph }
+      : null;
+    let event = null;
+    try { event = localApply({ kind: 'move', from, to: idx }); }
     catch (e) { console.warn(e); }
     if (mode === 'ai') scheduleAIMove();
     refresh();
+    if (event) playEventAnimation(boardEl, event, { srcRect, piece });
     return;
   }
   if (idx === active.selected) { active.selected = null; refresh(); return; }
@@ -831,7 +933,7 @@ function refreshAI() {
     onLocalCellClick(idx, view, 'ai');
   });
 
-  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }[active.difficulty] || '';
+  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
   let banner;
   if (view.replayViewing) {
     banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}`;
@@ -849,7 +951,7 @@ function refreshAI() {
   }
   $('ai-banner').textContent = banner;
   $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
-  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'easy' }[active.difficulty] || 'medium';
+  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'master', master: 'easy' }[active.difficulty] || 'medium';
   $('ai-meta').innerHTML = `
     <span class="meta-label">Difficulty</span>
     <button id="ai-diff-chip" class="diff-chip" type="button"
@@ -859,7 +961,7 @@ function refreshAI() {
     active.difficulty = nextDiff;
     const sel = $('lobby-ai-difficulty');
     if (sel) sel.value = nextDiff;
-    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard'})[nextDiff]} on the next new game.`,
+    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert', master:'Master'})[nextDiff]} on the next new game.`,
           { kind: 'info', timeoutMs: 3000 });
     refreshAI();
   };
@@ -871,7 +973,7 @@ function refreshAI() {
   renderTranscript($('ai-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshAI(); },
     onExport: (replay) => {
-      const diff = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }[active.difficulty] || '';
+      const diff = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
       const pgn = exportPgn(replay, {
         players: ['You', `AI (${diff || active.difficulty})`],
         event:   'Banqi (vs AI)',
@@ -879,6 +981,8 @@ function refreshAI() {
       downloadPgn(pgn, `banqi-ai-${pgnFileStamp()}.pgn`);
     },
   });
+  maybeShowTutorialTip($('ai-board'));
+  maybeShowGameOver(view);
 }
 
 function pgnFileStamp() {
@@ -903,17 +1007,33 @@ function scheduleAIMove() {
     if (fresh.game_over || fresh.side_to_move !== 1) {
       active.aiThinking = false; refreshAI(); return;
     }
+    let event = null;
+    let animCtx = {};
     try {
       const move = chooseMove(fresh, 1, active.difficulty);
       if (move) {
         const intent = move.from < 0
           ? { kind: 'flip', cell: move.to }
           : { kind: 'move', from: move.from, to: move.to };
-        localApply(intent);
+        const boardEl = $('ai-board');
+        if (intent.kind === 'move') {
+          // Capture source from the human's POV state — that's what the
+          // board element currently reflects.
+          const humanPov = JSON.parse(active.game.stateJson(0));
+          const srcCell = humanPov.cells[intent.from];
+          animCtx = {
+            srcRect: captureCellRect(boardEl, intent.from),
+            piece: srcCell?.state === 'faceup'
+              ? { color: srcCell.color, glyph: srcCell.glyph }
+              : null,
+          };
+        }
+        event = localApply(intent);
       }
     } catch (e) { console.warn('AI move error:', e); }
     active.aiThinking = false;
     refreshAI();
+    if (event) playEventAnimation($('ai-board'), event, animCtx);
   }, AI_THINK_DELAY_MS);
 }
 
@@ -977,14 +1097,16 @@ function renderPieceCountsHtml(counts) {
       ? `<span class="pc-breakdown" aria-hidden="false">${parts.join('')}</span>`
       : '';
   };
-  const row = (label, cls, colorVal, c) =>
+  const row = (label, sideGlyph, cls, colorVal, c) =>
     `<div class="pc-row pc-row-${cls}">
-      <span class="pc-side ${cls}">${label}</span>
+      <span class="pc-side ${cls}" aria-label="${label}">
+        <span class="pc-glyph" aria-hidden="true">${sideGlyph}</span>${label}
+      </span>
       <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}${breakdown(colorVal, c.byType, 'shown')}</span>
       <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}${breakdown(colorVal, c.byType, 'hidden')}</span>
       <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}${breakdown(colorVal, c.byType, 'captured')}</span>
     </div>`;
-  return `<div class="piece-counts">${row('Red', 'red', 1, counts.red)}${row('Black', 'black', 2, counts.black)}</div>`;
+  return `<div class="piece-counts">${row('Red', '帥', 'red', 1, counts.red)}${row('Black', '將', 'black', 2, counts.black)}</div>`;
 }
 
 function cellAriaLabel(idx, cell, opts = {}) {
@@ -1672,6 +1794,167 @@ function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel'
   });
 }
 
+// ---- game-over celebration modal ----
+// outcome: 'win' | 'loss' | 'draw'
+// actions: array of { label, onClick, primary, danger }
+function showGameOverModal({ outcome, title, subtitle, actions = [] }) {
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  const previouslyFocused = document.activeElement;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+
+  const glyph = outcome === 'win' ? '勝' : outcome === 'loss' ? '敗' : '和';
+  const glyphCls = outcome === 'win' ? 'win' : outcome === 'loss' ? 'loss' : 'draw';
+
+  overlay.innerHTML = `
+    <div class="modal game-over-modal" role="dialog" aria-modal="true"
+         aria-labelledby="go-title" tabindex="-1">
+      ${outcome === 'win' ? '<div class="confetti" aria-hidden="true"></div>' : ''}
+      <div class="go-glyph ${glyphCls}" aria-hidden="true">${glyph}</div>
+      <h2 id="go-title">${escapeHtml(title)}</h2>
+      ${subtitle ? `<p class="go-sub">${escapeHtml(subtitle)}</p>` : ''}
+      <div class="modal-actions"></div>
+    </div>`;
+
+  const actionsEl = overlay.querySelector('.modal-actions');
+  for (const a of actions) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = a.label;
+    if (a.primary) btn.className = 'primary';
+    else if (a.danger) btn.className = 'btn-danger';
+    btn.addEventListener('click', () => {
+      try { a.onClick?.(); } finally { close(); }
+    });
+    actionsEl.appendChild(btn);
+  }
+
+  if (outcome === 'win') seedConfetti(overlay.querySelector('.confetti'));
+
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey, true);
+    try { previouslyFocused?.focus?.(); } catch (_) {}
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); }
+  };
+  document.addEventListener('keydown', onKey, true);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  root.appendChild(overlay);
+  overlay.querySelector('.modal').focus();
+}
+
+function seedConfetti(container) {
+  if (!container) return;
+  const colors = ['#ffb43a', '#ffc868', '#d24343', '#6ec96e', '#6ea4ff', '#e0e0e0'];
+  for (let i = 0; i < 28; i++) {
+    const s = document.createElement('span');
+    s.style.left = `${Math.random() * 100}%`;
+    s.style.background = colors[i % colors.length];
+    s.style.animationDelay = `${Math.random() * 0.4}s`;
+    s.style.borderRadius = Math.random() < 0.5 ? '50%' : '2px';
+    s.style.transform = `rotate(${Math.random() * 360}deg)`;
+    container.appendChild(s);
+  }
+}
+
+// Decides what to show in the game-over modal for the current active session
+// and triggers it (idempotent — calls itself only once per game).
+function maybeShowGameOver(view) {
+  if (!view?.game_over) return;
+  if (!active || active._gameOverShown) return;
+  active._gameOverShown = true;
+
+  const winner = view.winner;
+  // Online: my_color is the side YOU play. If winner === my_color, you won.
+  // OTB: nobody is "you"; use a generic banner.
+  // AI: my_color === 1 for player 0 (human).
+  let outcome, title, subtitle;
+  if (active.isOnline) {
+    const myColor = view.my_color;
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
+    else if (winner === myColor) { outcome = 'win'; title = 'You win!'; subtitle = 'Nicely played.'; }
+    else { outcome = 'loss'; title = 'You lost'; subtitle = 'Good game — review the moves to learn.'; }
+  } else if (active.isAI) {
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
+    else if (winner === view.my_color) { outcome = 'win'; title = 'You beat the AI!'; subtitle = 'Try a harder difficulty.'; }
+    else { outcome = 'loss'; title = 'The AI wins'; subtitle = "Try again — the AI doesn't get tired."; }
+  } else {
+    // OTB
+    const name = winner === 1 ? 'Red' : winner === 2 ? 'Black' : null;
+    outcome = name ? 'win' : 'draw';
+    title = name ? `${name} wins!` : "It's a draw";
+    subtitle = name ? 'Good game.' : null;
+  }
+
+  const actions = [];
+  if (active.isAI) {
+    actions.push({ label: 'New game', primary: true, onClick: () => {
+      const diff = active?.difficulty || Difficulty.MEDIUM;
+      _startAIGame(diff);
+    }});
+    actions.push({ label: 'Review moves', onClick: () => {} });
+  } else if (active.isOTB) {
+    actions.push({ label: 'New game', primary: true, onClick: () => { openOTB(); }});
+    actions.push({ label: 'Lobby', onClick: () => { location.hash = '#/'; }});
+  } else {
+    actions.push({ label: 'Lobby', primary: true, onClick: () => { location.hash = '#/'; }});
+    actions.push({ label: 'Review moves', onClick: () => {} });
+  }
+
+  showGameOverModal({ outcome, title, subtitle, actions });
+}
+
+// ---- contextual tutorial tooltip (first-time players) ----
+function maybeShowTutorialTip(boardEl) {
+  try {
+    if (localStorage.getItem('banqi.tutorial-seen') === '1') return;
+  } catch (_) { return; }
+  // Only show on the very first board view (a fresh game with all cells
+  // face-down).
+  const facedown = boardEl.querySelectorAll('.cell.facedown');
+  if (facedown.length < 30) return;  // not a fresh game
+  if (document.querySelector('.tutorial-tip')) return;  // already showing
+
+  // Anchor near a face-down piece in the middle of the board.
+  const anchor = boardEl.querySelector('[data-cell-index="10"]') || facedown[0];
+  if (!anchor) return;
+  const r = anchor.getBoundingClientRect();
+
+  const tip = document.createElement('div');
+  tip.className = 'tutorial-tip';
+  tip.setAttribute('role', 'note');
+  tip.innerHTML = `
+    <div><strong>Click any face-down piece to start.</strong></div>
+    <div style="margin-top:4px;font-weight:400;font-size:12px;">
+      The piece you reveal sets your color for the game.
+    </div>
+    <button type="button" class="tip-dismiss">Got it</button>`;
+  document.body.appendChild(tip);
+  // Position below the anchor, clamped to viewport.
+  const tipRect = tip.getBoundingClientRect();
+  let left = r.left + r.width / 2 - tipRect.width / 2;
+  let top = r.bottom + 10;
+  left = Math.max(8, Math.min(left, window.innerWidth - tipRect.width - 8));
+  if (top + tipRect.height > window.innerHeight - 8) {
+    top = r.top - tipRect.height - 10;
+  }
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+
+  const dismiss = () => {
+    try { localStorage.setItem('banqi.tutorial-seen', '1'); } catch (_) {}
+    tip.remove();
+  };
+  tip.querySelector('.tip-dismiss').addEventListener('click', dismiss);
+  // Auto-dismiss on first click of any cell.
+  const onAnyClick = () => { dismiss(); boardEl.removeEventListener('click', onAnyClick, true); };
+  boardEl.addEventListener('click', onAnyClick, true);
+}
+
 // ---- utils ----
 function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, (c) =>
@@ -1679,13 +1962,6 @@ function escapeHtml(s) {
 }
 
 // ---- boot ----
-function initCribDefault() {
-  const details = document.getElementById('crib-details');
-  if (!details) return;
-  const small = window.matchMedia('(max-width: 700px)');
-  details.open = !small.matches;
-}
-initCribDefault();
-
 await refreshSession();
+applyNavAuthState();
 route();
