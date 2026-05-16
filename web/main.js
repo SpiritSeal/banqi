@@ -301,12 +301,21 @@ async function signOut() {
   route();
 }
 
+// Whitelist of game-mode strings. Matches server-side normalizeMode so the
+// client can't be tricked into displaying something the server won't honour.
+const GAME_MODES = ['standard', 'capture_general'];
+function normMode(m) { return GAME_MODES.includes(m) ? m : 'standard'; }
+function modeLabel(m) {
+  return m === 'capture_general' ? 'Capture the General' : 'Standard';
+}
+
 async function startOnlineGame() {
   if (!me) return;
+  const mode = normMode($('lobby-online-mode')?.value);
   const res = await fetch('/api/games', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify({ mode }),
   });
   if (!res.ok) { toast('Could not create game. Try again.', { kind: 'error' }); return; }
   const g = await res.json();
@@ -552,6 +561,7 @@ function refreshGame() {
         <div class="meta-room">
           <span class="meta-label">Room</span>
           <code>${escapeHtml(active.info.room_code)}</code>
+          <span class="mode-chip" aria-label="Win condition: ${escapeHtml(modeLabel(active.info.mode || liveState.mode))}">${escapeHtml(modeLabel(active.info.mode || liveState.mode))}</span>
           <button id="btn-copy-link" class="link-btn" type="button" aria-label="Copy invite link">Copy invite link</button>
         </div>
         <div class="meta-row-right">
@@ -733,10 +743,14 @@ function flashCopied(label = 'Copied!') {
 async function openOTB() {
   showView('otb');
   await _moduleReady;
-  const game = Module.Game.create();
+  const mode = normMode($('lobby-otb-mode')?.value);
+  const game = mode === 'capture_general'
+    ? Module.Game.createWithMode('capture_general')
+    : Module.Game.create();
   active = {
     isOTB: true,
     game,
+    mode,
     selected: null,
     replay: new Replay(),
   };
@@ -778,19 +792,22 @@ function refreshOTB() {
     if (view.replayViewing) return;
     onLocalCellClick(idx, view, 'otb');
   });
+  const modeBadge = (active.mode && active.mode !== 'standard')
+    ? ` · ${modeLabel(active.mode)}`
+    : '';
   let banner;
   if (view.replayViewing) {
-    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}`;
+    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}`;
+    banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}${modeBadge}`;
   } else if (!view.first_flip_done) {
     banner = `Player 1 — flip a piece (your color is decided by your first flip)`;
   } else {
     const turnIdx = liveState.side_to_move;
     const sideName = turnIdx === 0 ? 'Player 1' : 'Player 2';
     const movingColor = turnIdx === 0 ? liveState.player0_color : liveState.player1_color;
-    banner = `${sideName}'s turn (${colorWord(movingColor)})`;
+    banner = `${sideName}'s turn (${colorWord(movingColor)})${modeBadge}`;
   }
   $('otb-banner').textContent = banner;
   $('otb-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
@@ -883,17 +900,21 @@ const AI_THINK_DELAY_MS = 350;
 
 async function openAIGame() {
   const difficulty = $('lobby-ai-difficulty')?.value || Difficulty.MEDIUM;
+  const mode = normMode($('lobby-ai-mode')?.value);
   await _moduleReady;
-  _startAIGame(difficulty);
+  _startAIGame(difficulty, mode);
 }
 
-function _startAIGame(difficulty) {
+function _startAIGame(difficulty, mode = 'standard') {
   showView('ai');
-  const game = Module.Game.create();
+  const game = mode === 'capture_general'
+    ? Module.Game.createWithMode('capture_general')
+    : Module.Game.create();
   active = {
     isAI: true,
     game,
     difficulty,
+    mode,
     selected: null,
     aiThinking: false,
     replay: new Replay(),
@@ -918,7 +939,8 @@ function _startAIGame(difficulty) {
   };
   $('ai-new-game').onclick = () => {
     const diff = active?.difficulty || Difficulty.MEDIUM;
-    _startAIGame(diff);
+    const m = active?.mode || 'standard';
+    _startAIGame(diff, m);
   };
   refreshAI();
 }
@@ -934,20 +956,23 @@ function refreshAI() {
   });
 
   const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
+  const modeBadge = (active.mode && active.mode !== 'standard')
+    ? ` · ${modeLabel(active.mode)}`
+    : '';
   let banner;
   if (view.replayViewing) {
-    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}`;
+    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    if (w === view.my_color) banner = `You win! 🎉`;
-    else if (w !== 0)         banner = `AI wins. Better luck next time.`;
-    else                      banner = `Game over`;
+    if (w === view.my_color) banner = `You win! 🎉${modeBadge}`;
+    else if (w !== 0)         banner = `AI wins. Better luck next time.${modeBadge}`;
+    else                      banner = `Game over${modeBadge}`;
   } else if (!view.first_flip_done) {
-    banner = `Your turn — flip a piece to begin`;
+    banner = `Your turn — flip a piece to begin${modeBadge}`;
   } else if (view.side_to_move === 0) {
-    banner = `Your turn (${colorWord(view.my_color)})`;
+    banner = `Your turn (${colorWord(view.my_color)})${modeBadge}`;
   } else {
-    banner = active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(view.my_color === 1 ? 2 : 1)})`;
+    banner = (active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(view.my_color === 1 ? 2 : 1)})`) + modeBadge;
   }
   $('ai-banner').textContent = banner;
   $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
@@ -1273,11 +1298,14 @@ async function renderDashboard() {
     const tag = g.status === 'complete'  ? 'complete'
               : g.status === 'waiting'   ? 'awaiting opponent'
               : 'in progress';
+    const modeBit = (g.mode && g.mode !== 'standard')
+      ? ` · ${escapeHtml(modeLabel(g.mode))}`
+      : '';
     return `<div class="game-row" data-game-id="${g.id}" data-room="${escapeHtml(g.room_code)}">
               <a class="game-row-link" href="#/g/${g.room_code}">
                 <div class="g-opp">vs ${escapeHtml(opp)}</div>
                 <div class="g-status">${tag}</div>
-                <div class="g-meta muted">${ts} · room ${g.room_code}</div>
+                <div class="g-meta muted">${ts} · room ${g.room_code}${modeBit}</div>
               </a>
               <button class="game-row-delete" type="button"
                       title="Remove from my games"
@@ -1487,7 +1515,11 @@ async function renderProfile(userId) {
       <p class="muted">Deleting your account anonymizes your past games and removes your sign-in. This cannot be undone.</p>
       <button id="btn-delete-account" class="link-btn" style="color:#d24343">Delete my account…</button>` : ''}`;
   if (challengeBlock) {
-    $('btn-challenge').onclick = () => challengePlayer(p.id);
+    $('btn-challenge').onclick = async () => {
+      const mode = await pickChallengeMode();
+      if (mode == null) return;
+      challengePlayer(p.id, mode);
+    };
   }
   if (isSelf) {
     $('btn-delete-account').onclick = async () => {
@@ -1504,12 +1536,12 @@ async function renderProfile(userId) {
 
 // ---- friends + match requests ----
 
-async function challengePlayer(toUserId) {
+async function challengePlayer(toUserId, mode = 'standard') {
   if (!me) return;
   const res = await fetch('/api/match-requests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to_user_id: toUserId }),
+    body: JSON.stringify({ to_user_id: toUserId, mode: normMode(mode) }),
   });
   const body = await res.json().catch(() => ({}));
   if (res.status === 403) {
@@ -1520,7 +1552,53 @@ async function challengePlayer(toUserId) {
     toast(body.error || 'Could not send challenge.', { kind: 'error' });
     return;
   }
-  toast('Challenge sent.', { kind: 'success' });
+  toast(`Challenge sent (${modeLabel(normMode(mode))}).`, { kind: 'success' });
+}
+
+// Pop a small modal asking the challenger to pick a win condition.
+// Resolves to the chosen mode string, or null if cancelled.
+function pickChallengeMode() {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(null); return; }
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cm-title" tabindex="-1">
+        <h2 id="cm-title">Send challenge</h2>
+        <p class="modal-body">Pick the win condition for this match.</p>
+        <div class="row" style="margin:8px 0 16px">
+          <label for="cm-mode">Win condition</label>
+          <select id="cm-mode">
+            <option value="standard" selected>Standard (no legal moves)</option>
+            <option value="capture_general">Capture the General</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel">Cancel</button>
+          <button type="button" class="btn-confirm primary">Send</button>
+        </div>
+      </div>`;
+    const close = (result) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+    };
+    overlay.querySelector('.btn-cancel').addEventListener('click', () => close(null));
+    overlay.querySelector('.btn-confirm').addEventListener('click', () => {
+      const v = overlay.querySelector('#cm-mode').value;
+      close(normMode(v));
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    overlay.querySelector('.btn-confirm').focus();
+  });
 }
 
 async function addFriendByToken(combined) {
@@ -1619,7 +1697,8 @@ async function renderFriends() {
     ${incoming.length === 0 ? `<div class="muted">No pending requests.</div>` :
       `<ul class="friends-req-list">${incoming.map(r => `
         <li data-req="${r.id}">
-          <span><b>${escapeHtml(r.from_name || '')}</b> wants to play</span>
+          <span><b>${escapeHtml(r.from_name || '')}</b> wants to play
+            <span class="mode-chip small">${escapeHtml(modeLabel(normMode(r.mode)))}</span></span>
           <span class="row">
             <button class="primary" data-action="accept" data-req="${r.id}">Accept</button>
             <button class="link-btn" data-action="decline" data-req="${r.id}">Decline</button>
@@ -1632,7 +1711,8 @@ async function renderFriends() {
     ${outgoing.length === 0 ? `<div class="muted">No outgoing requests.</div>` :
       `<ul class="friends-req-list">${outgoing.map(r => `
         <li data-req="${r.id}">
-          <span>Sent to <b>${escapeHtml(r.to_name || '')}</b></span>
+          <span>Sent to <b>${escapeHtml(r.to_name || '')}</b>
+            <span class="mode-chip small">${escapeHtml(modeLabel(normMode(r.mode)))}</span></span>
           <button class="link-btn" data-action="cancel" data-req="${r.id}">Cancel</button>
         </li>`).join('')}</ul>`}`;
 
@@ -1674,7 +1754,9 @@ async function renderFriends() {
         if (!res.ok) toast('Could not cancel.', { kind: 'error' });
         renderFriends();
       } else if (action === 'challenge' && friendId) {
-        await challengePlayer(friendId);
+        const mode = await pickChallengeMode();
+        if (mode == null) return;
+        await challengePlayer(friendId, mode);
         renderFriends();
       } else if (action === 'remove' && friendId) {
         const ok = await confirmModal({
@@ -1894,7 +1976,8 @@ function maybeShowGameOver(view) {
   if (active.isAI) {
     actions.push({ label: 'New game', primary: true, onClick: () => {
       const diff = active?.difficulty || Difficulty.MEDIUM;
-      _startAIGame(diff);
+      const m = active?.mode || 'standard';
+      _startAIGame(diff, m);
     }});
     actions.push({ label: 'Review moves', onClick: () => {} });
   } else if (active.isOTB) {

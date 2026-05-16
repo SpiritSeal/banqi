@@ -23,8 +23,8 @@ namespace banqi {
 
 class Game {
 public:
-    // Create a fresh game with a freshly shuffled deck.
-    static Game create(IPrng& prng);
+    // Create a fresh game with a freshly shuffled deck and the given mode.
+    static Game create(IPrng& prng, GameMode mode = GameMode::Standard);
 
     // Apply a flip on `cell` for `player_index`. Returns the revealed piece.
     Piece apply_flip(int player_index, int cell);

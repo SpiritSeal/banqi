@@ -67,6 +67,13 @@
         <h3>Play with a friend online</h3>
         <p class="muted">Click Start, copy the link, send it to your friend. They click it and you play — come back to the game any time, even days later.</p>
         <div class="row">
+          <label for="lobby-online-mode">Win condition</label>
+          <select id="lobby-online-mode">
+            <option value="standard" selected>Standard (no legal moves)</option>
+            <option value="capture_general">Capture the General</option>
+          </select>
+        </div>
+        <div class="row">
           <button id="btn-start-online" class="primary big">Start a game →</button>
         </div>
         <span class="card-deco" aria-hidden="true">將</span>
@@ -75,6 +82,13 @@
       <div class="lobby-card">
         <h3>Play on this device</h3>
         <p class="muted">No internet, no sign-in. Two players take turns on the same screen.</p>
+        <div class="row" style="margin-bottom:8px">
+          <label for="lobby-otb-mode">Win condition</label>
+          <select id="lobby-otb-mode">
+            <option value="standard" selected>Standard</option>
+            <option value="capture_general">Capture the General</option>
+          </select>
+        </div>
         <div class="row">
           <button id="btn-otb" class="primary big">Hot-seat →</button>
         </div>
@@ -92,6 +106,13 @@
             <option value="hard">Hard</option>
             <option value="expert">Expert</option>
             <option value="master">Master</option>
+          </select>
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <label for="lobby-ai-mode">Win condition</label>
+          <select id="lobby-ai-mode">
+            <option value="standard" selected>Standard</option>
+            <option value="capture_general">Capture the General</option>
           </select>
         </div>
         <div class="row">
