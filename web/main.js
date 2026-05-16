@@ -76,6 +76,7 @@ const views = {
   leaderboard: $('view-leaderboard'),
   profile:     $('view-profile'),
   friends:     $('view-friends'),
+  challenge:   $('view-challenge'),
 };
 function showView(name) {
   for (const v of Object.values(views)) v?.classList.add('hidden');
@@ -179,6 +180,9 @@ async function route() {
 
   const mp = hash.match(/^#\/profile\/(\d+)$/);
   if (mp) { announce('Profile'); return renderProfile(+mp[1]); }
+
+  const mc = hash.match(/^#\/challenge\/(\d+)$/);
+  if (mc) { announce('Challenge details'); return renderChallengeDetails(+mc[1]); }
 
   const ma = hash.match(/^#\/add-friend\/(\d+-[0-9a-f]{16})$/);
   if (ma) { announce('Add friend'); return addFriendByToken(ma[1]); }
@@ -501,6 +505,7 @@ function describeAction(event) {
   }
   if (a.kind === 'resign') return 'resigned';
   if (a.kind === "accept_draw") return "accepted the draw offer";
+  if (a.kind === 'timeout') return 'ran out of time';
   return 'made a move';
 }
 
@@ -585,6 +590,9 @@ function refreshGame() {
          <input type="checkbox" id="chk-offer-draw"${active.offerDraw ? " checked" : ""}> Offer draw
        </label>`
     : "";
+  const clocksRow = (liveState.time_limit_ms != null && liveState.clocks)
+    ? renderClocksRowHtml(liveState, myPlayerIdx, opp || 'Opponent', me?.display_name || 'You', active)
+    : '';
   const isAiGame = !!active.info.opponent_is_ai;
   const aiDifficulty = active.info.ai_difficulty || '';
   // Replay-on-AI affordance: after a vs-AI game ends, drop a "play another"
@@ -606,6 +614,7 @@ function refreshGame() {
           <span class="meta-label">Room</span>
           <code>${escapeHtml(active.info.room_code)}</code>
           <span class="mode-chip" aria-label="Win condition: ${escapeHtml(modeLabel(active.info.mode || liveState.mode))}">${escapeHtml(modeLabel(active.info.mode || liveState.mode))}</span>
+          ${active.info.time_limit_ms != null ? `<span class="mode-chip" aria-label="Time control: ${escapeHtml(timeControlLabel(active.info.time_limit_ms, active.info.increment_ms || 0))}">${escapeHtml(timeControlLabel(active.info.time_limit_ms, active.info.increment_ms || 0))}</span>` : ''}
           <button id="btn-copy-link" class="link-btn" type="button" aria-label="Copy invite link">Copy invite link</button>
         </div>
         <div class="meta-row-right">
@@ -621,6 +630,7 @@ function refreshGame() {
             ${liveState.first_flip_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
         </div>
       </div>
+      ${clocksRow}
       ${drawOfferRow}
       ${playAnotherRow}
       <div class="meta-row meta-row-status">
@@ -650,6 +660,19 @@ function refreshGame() {
   };
   const retryBtn = $('btn-retry-conn');
   if (retryBtn) retryBtn.onclick = () => { active.conn?.reconnect?.(); };
+  const claimBtn = $('btn-claim-timeout');
+  if (claimBtn) claimBtn.onclick = async () => {
+    claimBtn.disabled = true;
+    await claimTimeout(active.info.id);
+    // The terminal event arrives over WS and refreshGame() repaints.
+  };
+  // Kick the local clock-decrement loop when this game has a TC; cheap no-op
+  // when the loop is already running.
+  if (liveState.time_limit_ms != null && !liveState.game_over) {
+    startClockTicker();
+  } else {
+    stopClockTicker();
+  }
   const playAnotherBtn = $('btn-play-another-ai');
   if (playAnotherBtn) {
     playAnotherBtn.onclick = async () => {
@@ -719,8 +742,17 @@ function turnLabel(state) {
 // mode: 'online' | 'otb' | 'ai'
 function turnPillHtml(state, mode, opts = {}) {
   if (!state.first_flip_done) {
-    return `<span class="turn-pill" role="status">
-              <span class="turn-dot"></span>Awaiting first flip
+    // If the game was created from a directed challenge with a fixed first
+    // mover, surface whose move it is so the locked-out side knows to wait.
+    let label = 'Awaiting first flip';
+    let yours = null;
+    if (mode === 'online' && (state.first_mover_index === 0 || state.first_mover_index === 1)) {
+      yours = state.first_mover_index === state.my_player_index;
+      label = yours ? 'Your move — flip first' : 'Opponent flips first';
+    }
+    const cls = yours === true ? 'your-turn' : yours === false ? 'opp-turn' : '';
+    return `<span class="turn-pill ${cls}" role="status" aria-live="polite">
+              <span class="turn-dot"></span>${label}
             </span>`;
   }
   if (state.game_over) {
@@ -745,6 +777,108 @@ function turnPillHtml(state, mode, opts = {}) {
             <span class="turn-dot"></span>${label}
           </span>`;
 }
+
+// Format a remaining-time value for a chess-style clock display.
+// >= 1m  → 'M:SS'.   <10s  → 'S.t' (one decimal).   Otherwise 'M:SS'.
+function formatClockMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) ms = 0;
+  if (ms < 10_000) {
+    return (ms / 1000).toFixed(1) + 's';
+  }
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Render the two-clock strip + optional "Claim time" button. The data-clock-pi
+// attribute lets the local decrement loop update the right cell without a
+// full refreshGame().
+function renderClocksRowHtml(state, myPlayerIdx, oppName, myName, active) {
+  const c0 = state.clocks?.[0] ?? 0;
+  const c1 = state.clocks?.[1] ?? 0;
+  const myMs   = myPlayerIdx === 0 ? c0 : c1;
+  const oppMs  = myPlayerIdx === 0 ? c1 : c0;
+  const myActive  = state.clock_active_index === myPlayerIdx;
+  const oppActive = state.clock_active_index === (1 - myPlayerIdx);
+  const lowMine  = myActive  && myMs  < 30_000;
+  const lowOpp   = oppActive && oppMs < 30_000;
+  // Claim-timeout: opponent is the active side and their clock is at 0.
+  const canClaim = !state.game_over
+    && state.clock_active_index === (1 - myPlayerIdx)
+    && oppMs <= 0
+    && !active.replayViewing;
+  return `
+    <div class="meta-row clocks-row">
+      <div class="clock opp-clock ${oppActive ? 'active' : ''} ${lowOpp ? 'low' : ''}"
+           aria-label="${escapeHtml(oppName)} clock">
+        <span class="clock-name">${escapeHtml(oppName)}</span>
+        <span class="clock-time" data-clock-pi="${1 - myPlayerIdx}">${formatClockMs(oppMs)}</span>
+      </div>
+      <div class="clock my-clock ${myActive ? 'active' : ''} ${lowMine ? 'low' : ''}"
+           aria-label="${escapeHtml(myName)} clock">
+        <span class="clock-name">${escapeHtml(myName)}</span>
+        <span class="clock-time" data-clock-pi="${myPlayerIdx}">${formatClockMs(myMs)}</span>
+      </div>
+      ${canClaim ? `<button id="btn-claim-timeout" class="primary" type="button">Claim win on time</button>` : ''}
+    </div>`;
+}
+
+// Run a single requestAnimationFrame loop while an online game is active and
+// has clocks enabled. Updates only the active-side cell to avoid layout
+// thrash. Re-anchors from state.clocks + clock_server_ts every frame so it
+// stays in sync with the most-recently-received server snapshot/event.
+let _clockRafHandle = null;
+function startClockTicker() {
+  if (_clockRafHandle != null) return;
+  const tick = () => {
+    _clockRafHandle = null;
+    if (!active?.isOnline || !active.state || active.state.game_over) return;
+    const s = active.state;
+    if (!s.clocks || s.clock_active_index !== 0 && s.clock_active_index !== 1) {
+      _clockRafHandle = requestAnimationFrame(tick);
+      return;
+    }
+    const elapsed = Math.max(0, Date.now() - (s.clock_server_ts || Date.now()));
+    const activePi = s.clock_active_index;
+    const liveMs = Math.max(0, s.clocks[activePi] - elapsed);
+    const el = document.querySelector(`#game-header .clock-time[data-clock-pi="${activePi}"]`);
+    if (el) {
+      const newText = formatClockMs(liveMs);
+      if (el.textContent !== newText) el.textContent = newText;
+      // Add a "low" class to the clock container when under 30s.
+      const wrap = el.closest('.clock');
+      if (wrap) wrap.classList.toggle('low', liveMs < 30_000);
+      // If we just crossed zero and we're not the active side, surface the
+      // claim button by triggering a full refresh.
+      if (liveMs === 0 && activePi !== rolePlayerIndex(active)) {
+        const existing = document.getElementById('btn-claim-timeout');
+        if (!existing) refreshGame();
+      }
+    }
+    _clockRafHandle = requestAnimationFrame(tick);
+  };
+  _clockRafHandle = requestAnimationFrame(tick);
+}
+function stopClockTicker() {
+  if (_clockRafHandle != null) {
+    cancelAnimationFrame(_clockRafHandle);
+    _clockRafHandle = null;
+  }
+}
+
+async function claimTimeout(gameId) {
+  try {
+    const r = await fetch(`/api/games/${gameId}/claim-timeout`, { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      toast(body.error || 'Could not claim timeout.', { kind: 'warn' });
+      return;
+    }
+  } catch (_) {
+    toast('Network error — could not claim timeout.', { kind: 'error' });
+  }
+}
 function statusLabel(state, info, replay) {
   if (state.game_over) {
     const w = state.winner;
@@ -761,6 +895,11 @@ function onOnlineCellClick(idx, state) {
   if (state.game_over) return;
   if (state.replayViewing) return;
   if (state.side_to_move !== state.my_player_index) return;
+  // Pre-first-flip lock from a directed challenge: only the chosen first-mover
+  // may make the opening flip. Server rejects either way; we just avoid round-trips.
+  if (!state.first_flip_done
+      && (state.first_mover_index === 0 || state.first_mover_index === 1)
+      && state.first_mover_index !== state.my_player_index) return;
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me || [];
   if (active.selected == null) {
@@ -1626,10 +1765,8 @@ async function renderProfile(userId) {
       <p class="muted">Deleting your account anonymizes your past games and removes your sign-in. This cannot be undone.</p>
       <button id="btn-delete-account" class="link-btn" style="color:#d24343">Delete my account…</button>` : ''}`;
   if (challengeBlock && !isAi) {
-    $('btn-challenge').onclick = async () => {
-      const mode = await pickChallengeMode();
-      if (mode == null) return;
-      challengePlayer(p.id, mode);
+    $('btn-challenge').onclick = () => {
+      location.hash = `#/challenge/${p.id}`;
     };
   }
   if (isAi && $('btn-play-ai-from-profile')) {
@@ -1665,27 +1802,100 @@ async function renderProfile(userId) {
 
 // ---- friends + match requests ----
 
-async function challengePlayer(toUserId, mode = 'standard') {
-  if (!me) return;
+async function challengePlayer(toUserId, opts = {}) {
+  if (!me) return null;
+  const mode = normMode(opts.mode);
+  const firstMoverPref = normFirstMoverPref(opts.first_mover_pref);
+  const message = (typeof opts.message === 'string') ? opts.message.trim() : '';
+  const body = {
+    to_user_id: toUserId,
+    mode,
+    first_mover_pref: firstMoverPref,
+  };
+  if (message) body.message = message;
+  if (Number.isInteger(opts.time_limit_ms)) body.time_limit_ms = opts.time_limit_ms;
+  if (Number.isInteger(opts.increment_ms) && opts.increment_ms > 0) {
+    body.increment_ms = opts.increment_ms;
+  }
   const res = await fetch('/api/match-requests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to_user_id: toUserId, mode: normMode(mode) }),
+    body: JSON.stringify(body),
   });
-  const body = await res.json().catch(() => ({}));
+  const responseBody = await res.json().catch(() => ({}));
   if (res.status === 403) {
-    toast(body.error || 'Become friends first to challenge each other.', { kind: 'warn' });
-    return;
+    toast(responseBody.error || 'Become friends first to challenge each other.', { kind: 'warn' });
+    return null;
   }
   if (!res.ok) {
-    toast(body.error || 'Could not send challenge.', { kind: 'error' });
-    return;
+    toast(responseBody.error || 'Could not send challenge.', { kind: 'error' });
+    return null;
   }
-  toast(`Challenge sent (${modeLabel(normMode(mode))}).`, { kind: 'success' });
+  const tcChip = body.time_limit_ms ? ` · ${timeControlLabel(body.time_limit_ms, body.increment_ms || 0)}` : '';
+  toast(`Challenge sent (${modeLabel(mode)}${tcChip}).`, { kind: 'success' });
+  return responseBody;
 }
 
-// Pop a small modal asking the challenger to pick a win condition.
-// Resolves to the chosen mode string, or null if cancelled.
+const FIRST_MOVER_PREFS = ['challenger', 'opponent', 'random'];
+function normFirstMoverPref(p) {
+  return FIRST_MOVER_PREFS.includes(p) ? p : 'random';
+}
+
+// Time-control presets surfaced in the challenge picker. value === '' is
+// the special "unlimited" sentinel; 'custom' opens the inline number inputs.
+// Each preset is { base_min, inc_sec } in human units.
+const TIME_CONTROL_PRESETS = [
+  { value: '',         label: 'Unlimited' },
+  { value: '1+0',      label: '1 + 0',   base_min: 1,  inc_sec: 0  },
+  { value: '3+0',      label: '3 + 0',   base_min: 3,  inc_sec: 0  },
+  { value: '3+2',      label: '3 + 2',   base_min: 3,  inc_sec: 2  },
+  { value: '5+0',      label: '5 + 0',   base_min: 5,  inc_sec: 0  },
+  { value: '5+3',      label: '5 + 3',   base_min: 5,  inc_sec: 3  },
+  { value: '10+0',     label: '10 + 0',  base_min: 10, inc_sec: 0  },
+  { value: '10+5',     label: '10 + 5',  base_min: 10, inc_sec: 5  },
+  { value: '15+10',    label: '15 + 10', base_min: 15, inc_sec: 10 },
+  { value: '30+0',     label: '30 + 0',  base_min: 30, inc_sec: 0  },
+  { value: 'custom',   label: 'Custom…' },
+];
+
+// Render a human label for a (time_limit_ms, increment_ms) pair. Returns
+// 'Unlimited' when there's no clock, otherwise 'minutes+seconds'.
+function timeControlLabel(timeLimitMs, incrementMs = 0) {
+  if (timeLimitMs == null) return 'Unlimited';
+  const baseMin = Math.round(timeLimitMs / 60000);
+  const incSec  = Math.round((incrementMs || 0) / 1000);
+  return `${baseMin}+${incSec}`;
+}
+
+// Per-perspective chip text. Outgoing = the viewer is the challenger;
+// incoming = the viewer is the recipient. 'random' renders no chip (it's
+// the default, no need to clutter the row).
+function firstMoverChipText(pref, perspective) {
+  if (pref === 'random' || !pref) return null;
+  if (perspective === 'outgoing') {
+    return pref === 'challenger' ? 'You flip first' : 'They flip first';
+  }
+  return pref === 'challenger' ? 'They flip first' : 'You flip first';
+}
+
+function matchRequestChips(req, perspective) {
+  const parts = [
+    `<span class="mode-chip small">${escapeHtml(modeLabel(normMode(req.mode)))}</span>`,
+  ];
+  const fm = firstMoverChipText(req.first_mover_pref, perspective);
+  if (fm) parts.push(`<span class="mode-chip small">${escapeHtml(fm)}</span>`);
+  // Only show a TC chip when there's actually a clock; "Unlimited" is the
+  // default and would clutter every row.
+  if (req.time_limit_ms != null) {
+    parts.push(`<span class="mode-chip small">${escapeHtml(timeControlLabel(req.time_limit_ms, req.increment_ms || 0))}</span>`);
+  }
+  return parts.join(' ');
+}
+
+// Minimal mode-only modal used by the AI profile button ("Play Banqi AI · X").
+// AI games are created via POST /api/games and don't carry first-mover / TC /
+// message; the full challenge-details screen is reserved for human directed
+// challenges. Resolves to the chosen mode string, or null if cancelled.
 function pickChallengeMode() {
   return new Promise((resolve) => {
     const root = document.getElementById('modal-root');
@@ -1695,7 +1905,7 @@ function pickChallengeMode() {
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cm-title" tabindex="-1">
-        <h2 id="cm-title">Send challenge</h2>
+        <h2 id="cm-title">Start game</h2>
         <p class="modal-body">Pick the win condition for this match.</p>
         <div class="row" style="margin:8px 0 16px">
           <label for="cm-mode">Win condition</label>
@@ -1706,7 +1916,7 @@ function pickChallengeMode() {
         </div>
         <div class="modal-actions">
           <button type="button" class="btn-cancel">Cancel</button>
-          <button type="button" class="btn-confirm primary">Send</button>
+          <button type="button" class="btn-confirm primary">Start</button>
         </div>
       </div>`;
     const close = (result) => {
@@ -1727,6 +1937,167 @@ function pickChallengeMode() {
     document.addEventListener('keydown', onKey, true);
     root.appendChild(overlay);
     overlay.querySelector('.btn-confirm').focus();
+  });
+}
+
+// Full-screen view the challenger lands on after clicking "Challenge". Lets
+// them pick the win condition, who flips first, and an optional message,
+// then sends the match request via challengePlayer().
+async function renderChallengeDetails(targetUserId) {
+  showView('challenge');
+  const body = $('challenge-body');
+  if (!me) {
+    body.innerHTML = `<div class="muted">Sign in to send a challenge. <a href="#/">Lobby</a></div>`;
+    return;
+  }
+  if (me.id === targetUserId) {
+    body.innerHTML = `<div class="err">You can't challenge yourself. <a href="#/friends">Friends</a></div>`;
+    return;
+  }
+  if (!online) {
+    body.innerHTML = `<div class="muted">You're offline — can't send a challenge right now. <a href="#/">Lobby</a></div>`;
+    return;
+  }
+  body.innerHTML = `<div class="muted">Loading…</div>`;
+  let opponent;
+  try {
+    const r = await fetch(`/api/users/${targetUserId}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    opponent = await r.json();
+  } catch (_) {
+    body.innerHTML = `<div class="err">Couldn't load that player. <a href="#/friends">Friends</a></div>`;
+    return;
+  }
+  body.innerHTML = `
+    <div class="challenge-details">
+      <p class="muted">Sending a challenge to <b>${escapeHtml(opponent.display_name)}</b>
+         <span class="muted small">(Elo ${opponent.elo})</span>.
+         They'll see this request in their Friends page and can accept, decline, or ignore it.</p>
+
+      <fieldset class="challenge-section">
+        <legend>Win condition</legend>
+        <label class="radio-row">
+          <input type="radio" name="cd-mode" value="standard" checked>
+          <span><b>Standard</b> <span class="muted small">— you lose if you have no legal move.</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-mode" value="capture_general">
+          <span><b>Capture the General</b> <span class="muted small">— win by capturing the opposing General.</span></span>
+        </label>
+      </fieldset>
+
+      <fieldset class="challenge-section">
+        <legend>Who flips first</legend>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="random" checked>
+          <span><b>Random</b> <span class="muted small">— decided when they accept.</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="challenger">
+          <span><b>I flip first</b> <span class="muted small">— I'll make the opening flip (claiming that color).</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="opponent">
+          <span><b>${escapeHtml(opponent.display_name)} flips first</b> <span class="muted small">— they make the opening flip.</span></span>
+        </label>
+      </fieldset>
+
+      <fieldset class="challenge-section">
+        <legend>Time control</legend>
+        <div class="row">
+          <label for="cd-tc-preset">Pace</label>
+          <select id="cd-tc-preset">
+            ${TIME_CONTROL_PRESETS.map(p =>
+              `<option value="${escapeHtml(p.value)}"${p.value === '' ? ' selected' : ''}>${escapeHtml(p.label)}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div id="cd-tc-custom" class="row hidden" style="margin-top:8px">
+          <label for="cd-tc-base">Base minutes</label>
+          <input id="cd-tc-base" type="number" min="1" max="180" step="1" value="5" inputmode="numeric">
+          <label for="cd-tc-inc">Increment seconds</label>
+          <input id="cd-tc-inc"  type="number" min="0" max="60"  step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="muted small" id="cd-tc-help">No clock — players take as long as they want.</div>
+      </fieldset>
+
+      <fieldset class="challenge-section">
+        <legend>Message <span class="muted small">(optional)</span></legend>
+        <textarea id="cd-message" maxlength="280" rows="3"
+                  placeholder="Add a note for your opponent — they'll see it on their incoming request."></textarea>
+        <div class="muted small"><span id="cd-message-count">0</span> / 280</div>
+      </fieldset>
+
+      <div class="row challenge-actions">
+        <button type="button" id="cd-cancel" class="link-btn">Cancel</button>
+        <button type="button" id="cd-send" class="primary">Send challenge</button>
+      </div>
+    </div>`;
+
+  const messageEl = $('cd-message');
+  const countEl = $('cd-message-count');
+  messageEl.addEventListener('input', () => {
+    countEl.textContent = String(messageEl.value.length);
+  });
+
+  const tcPresetEl = $('cd-tc-preset');
+  const tcCustomEl = $('cd-tc-custom');
+  const tcBaseEl   = $('cd-tc-base');
+  const tcIncEl    = $('cd-tc-inc');
+  const tcHelpEl   = $('cd-tc-help');
+  const refreshTcUI = () => {
+    const v = tcPresetEl.value;
+    tcCustomEl.classList.toggle('hidden', v !== 'custom');
+    const tc = readTcFromPicker();
+    if (tc.time_limit_ms == null) {
+      tcHelpEl.textContent = 'No clock — players take as long as they want.';
+    } else {
+      const baseMin = Math.round(tc.time_limit_ms / 60000);
+      const incSec  = Math.round(tc.increment_ms / 1000);
+      tcHelpEl.textContent = `${baseMin} minute${baseMin === 1 ? '' : 's'} per side, +${incSec}s per move.`;
+    }
+  };
+  function readTcFromPicker() {
+    const v = tcPresetEl.value;
+    if (v === '') return { time_limit_ms: null, increment_ms: 0 };
+    if (v === 'custom') {
+      const baseMin = Math.max(1, Math.min(180, parseInt(tcBaseEl.value, 10) || 0));
+      const incSec  = Math.max(0, Math.min(60,  parseInt(tcIncEl.value,  10) || 0));
+      return { time_limit_ms: baseMin * 60000, increment_ms: incSec * 1000 };
+    }
+    const preset = TIME_CONTROL_PRESETS.find(p => p.value === v);
+    if (!preset) return { time_limit_ms: null, increment_ms: 0 };
+    return {
+      time_limit_ms: preset.base_min * 60000,
+      increment_ms:  preset.inc_sec  * 1000,
+    };
+  }
+  tcPresetEl.addEventListener('change', refreshTcUI);
+  tcBaseEl.addEventListener('input', refreshTcUI);
+  tcIncEl.addEventListener('input', refreshTcUI);
+  refreshTcUI();
+
+  $('cd-cancel').addEventListener('click', () => {
+    if (history.length > 1) history.back();
+    else location.hash = `#/profile/${targetUserId}`;
+  });
+
+  $('cd-send').addEventListener('click', async (e) => {
+    const sendBtn = e.currentTarget;
+    sendBtn.disabled = true;
+    const mode = body.querySelector('input[name="cd-mode"]:checked')?.value || 'standard';
+    const firstMoverPref = body.querySelector('input[name="cd-first"]:checked')?.value || 'random';
+    const message = messageEl.value || '';
+    const tc = readTcFromPicker();
+    const result = await challengePlayer(targetUserId, {
+      mode, first_mover_pref: firstMoverPref, message,
+      time_limit_ms: tc.time_limit_ms, increment_ms: tc.increment_ms,
+    });
+    if (!result) {
+      sendBtn.disabled = false;
+      return;
+    }
+    location.hash = '#/friends';
   });
 }
 
@@ -1826,12 +2197,15 @@ async function renderFriends() {
     ${incoming.length === 0 ? `<div class="muted">No pending requests.</div>` :
       `<ul class="friends-req-list">${incoming.map(r => `
         <li data-req="${r.id}">
-          <span><b>${escapeHtml(r.from_name || '')}</b> wants to play
-            <span class="mode-chip small">${escapeHtml(modeLabel(normMode(r.mode)))}</span></span>
-          <span class="row">
-            <button class="primary" data-action="accept" data-req="${r.id}">Accept</button>
-            <button class="link-btn" data-action="decline" data-req="${r.id}">Decline</button>
-          </span>
+          <div class="req-summary">
+            <span><b>${escapeHtml(r.from_name || '')}</b> wants to play
+              ${matchRequestChips(r, 'incoming')}</span>
+            <span class="row">
+              <button class="primary" data-action="accept" data-req="${r.id}">Accept</button>
+              <button class="link-btn" data-action="decline" data-req="${r.id}">Decline</button>
+            </span>
+          </div>
+          ${r.message ? `<div class="req-message">“${escapeHtml(r.message)}”</div>` : ''}
         </li>`).join('')}</ul>`}`;
 
   const outgoing = requests?.outgoing || [];
@@ -1840,9 +2214,12 @@ async function renderFriends() {
     ${outgoing.length === 0 ? `<div class="muted">No outgoing requests.</div>` :
       `<ul class="friends-req-list">${outgoing.map(r => `
         <li data-req="${r.id}">
-          <span>Sent to <b>${escapeHtml(r.to_name || '')}</b>
-            <span class="mode-chip small">${escapeHtml(modeLabel(normMode(r.mode)))}</span></span>
-          <button class="link-btn" data-action="cancel" data-req="${r.id}">Cancel</button>
+          <div class="req-summary">
+            <span>Sent to <b>${escapeHtml(r.to_name || '')}</b>
+              ${matchRequestChips(r, 'outgoing')}</span>
+            <button class="link-btn" data-action="cancel" data-req="${r.id}">Cancel</button>
+          </div>
+          ${r.message ? `<div class="req-message">“${escapeHtml(r.message)}”</div>` : ''}
         </li>`).join('')}</ul>`}`;
 
   // Friends list + per-friend Challenge + Remove.
@@ -1883,10 +2260,7 @@ async function renderFriends() {
         if (!res.ok) toast('Could not cancel.', { kind: 'error' });
         renderFriends();
       } else if (action === 'challenge' && friendId) {
-        const mode = await pickChallengeMode();
-        if (mode == null) return;
-        await challengePlayer(friendId, mode);
-        renderFriends();
+        location.hash = `#/challenge/${friendId}`;
       } else if (action === 'remove' && friendId) {
         const ok = await confirmModal({
           title: 'Remove this friend?',

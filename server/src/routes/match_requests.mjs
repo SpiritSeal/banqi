@@ -15,11 +15,27 @@ import {
   createMatchRequest, listIncomingMatchRequests, listOutgoingMatchRequests,
   cancelMatchRequest, declineMatchRequest, acceptMatchRequest,
   isMatchEligible, getMatchRequest, getUser, normalizeMode,
+  normalizeFirstMoverPref, normalizeTimeControl,
+  TIME_LIMIT_MIN_MS, TIME_LIMIT_MAX_MS, INCREMENT_MAX_MS,
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 import { newRoomCode } from '../rooms.mjs';
 
 const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+
+// Trim + length-cap the optional challenger note. Empty string collapses to
+// null so the DB column stays neat. Strings over the cap return a sentinel
+// so the route handler can 400 instead of silently truncating.
+const MESSAGE_MAX = 280;
+const BAD_MESSAGE = Symbol('message-too-long');
+function normalizeMessage(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > MESSAGE_MAX) return BAD_MESSAGE;
+  return trimmed;
+}
 
 export function matchRequestsRouter({ db, engine }) {
   const r = express.Router();
@@ -53,8 +69,36 @@ export function matchRequestsRouter({ db, engine }) {
       });
     }
     const mode = normalizeMode(req.body?.mode);
+    const firstMoverPref = normalizeFirstMoverPref(req.body?.first_mover_pref);
+    const message = normalizeMessage(req.body?.message);
+    if (message === BAD_MESSAGE) {
+      return res.status(400).json({ error: 'message too long (max 280 chars)' });
+    }
+    // Time control: validate strictly so the challenger gets a clear error
+    // rather than a silently-dropped value. null/missing → unlimited.
+    const rawT = req.body?.time_limit_ms;
+    const rawInc = req.body?.increment_ms;
+    if (rawT != null) {
+      if (!Number.isInteger(rawT) || rawT < TIME_LIMIT_MIN_MS || rawT > TIME_LIMIT_MAX_MS) {
+        return res.status(400).json({
+          error: `time_limit_ms must be an integer in [${TIME_LIMIT_MIN_MS}, ${TIME_LIMIT_MAX_MS}] or null`,
+        });
+      }
+    }
+    if (rawInc != null) {
+      if (!Number.isInteger(rawInc) || rawInc < 0 || rawInc > INCREMENT_MAX_MS) {
+        return res.status(400).json({
+          error: `increment_ms must be an integer in [0, ${INCREMENT_MAX_MS}]`,
+        });
+      }
+    }
+    const tc = normalizeTimeControl({
+      timeLimitMs: rawT ?? null,
+      incrementMs: rawInc ?? 0,
+    });
     const created = await createMatchRequest(db, {
-      fromUserId: req.user.id, toUserId, mode,
+      fromUserId: req.user.id, toUserId, mode, firstMoverPref, message,
+      timeLimitMs: tc.timeLimitMs, incrementMs: tc.incrementMs,
     });
     res.json(created);
   }));
@@ -75,7 +119,14 @@ export function matchRequestsRouter({ db, engine }) {
     }
     // Seed the in-memory engine session for the just-created game. The host
     // is the request sender; the acceptor is already auto-joined in SQL.
-    await engine.createGame(result.game.id, result.game.host_user_id, result.game.mode);
+    // first_mover_index pins the opening flip; time_limit_ms / increment_ms
+    // (null = unlimited) configure the chess clocks.
+    await engine.createGame(
+      result.game.id, result.game.host_user_id, result.game.mode,
+      result.game.first_mover_index,
+      result.game.time_limit_ms ?? null,
+      result.game.increment_ms  ?? 0,
+    );
     await engine.attachJoin(result.game.id, req.user.id);
     res.json({
       game_id:   result.game.id,

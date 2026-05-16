@@ -100,6 +100,20 @@ export function gamesRouter({ db, engine }) {
     res.json({ ok: true, result });
   }));
 
+  // Lazy timeout claim: when the active side has run their clock to zero
+  // but isn't around to make a move, the opponent calls this to end the
+  // game on time. The engine fires the terminal event via onEvent, so WS
+  // broadcasts + Elo updates flow through the same path as in-game intents.
+  r.post('/games/:id/claim-timeout', requireAuth, asyncRoute(async (req, res) => {
+    const id = +req.params.id;
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'invalid id' });
+    }
+    const result = await engine.claimTimeout(id, req.user.id);
+    if (!result.ok) return res.status(409).json({ error: result.reason });
+    res.json({ ok: true, event: result.event });
+  }));
+
   r.post('/games/:id/join', requireAuth, asyncRoute(async (req, res) => {
     const g = await findGameById(db, +req.params.id);
     if (!g) return res.status(404).json({ error: 'not found' });
@@ -155,24 +169,27 @@ function decorate(myUserId) {
       aiDifficulty = g.host_provider_id;
     }
     return {
-      id:             g.id,
-      room_code:      g.room_code,
-      status:         g.status,
-      mode:           g.mode || 'standard',
-      host_user_id:   g.host_user_id,
-      join_user_id:   g.join_user_id,
-      host_name:      g.host_name,
-      join_name:      g.join_name,
-      host_provider:  g.host_provider,
-      join_provider:  g.join_provider,
-      winner_color:   g.winner_color,
-      winner_user_id: g.winner_user_id,
-      created_at:     g.created_at,
-      last_move_at:   g.last_move_at,
-      ended_at:       g.ended_at,
-      my_role:        myRole,
-      opponent_is_ai: opponentIsAi,
-      ai_difficulty:  aiDifficulty,
+      id:                g.id,
+      room_code:         g.room_code,
+      status:            g.status,
+      mode:              g.mode || 'standard',
+      first_mover_index: g.first_mover_index ?? null,
+      time_limit_ms:     g.time_limit_ms ?? null,
+      increment_ms:      g.increment_ms ?? 0,
+      host_user_id:      g.host_user_id,
+      join_user_id:      g.join_user_id,
+      host_name:         g.host_name,
+      join_name:         g.join_name,
+      host_provider:     g.host_provider,
+      join_provider:     g.join_provider,
+      winner_color:      g.winner_color,
+      winner_user_id:    g.winner_user_id,
+      created_at:        g.created_at,
+      last_move_at:      g.last_move_at,
+      ended_at:          g.ended_at,
+      my_role:           myRole,
+      opponent_is_ai:    opponentIsAi,
+      ai_difficulty:     aiDifficulty,
     };
   };
 }

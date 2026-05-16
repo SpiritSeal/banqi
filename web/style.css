@@ -1816,6 +1816,26 @@ body.is-offline #btn-start-online { opacity: 0.55; }
   border-radius: var(--radius-md);
   transition: border-color var(--dur-fast), transform var(--dur-fast);
 }
+/* Requests with a message stack the summary above the message. */
+.friends-req-list li:has(.req-message) { flex-direction: column; align-items: stretch; }
+.friends-req-list .req-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.friends-req-list .req-message {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-style: italic;
+  color: var(--text-2, var(--muted));
+  background: var(--surface-2, transparent);
+  border-left: 3px solid var(--surface-border-strong, var(--surface-border));
+  border-radius: var(--radius-sm, 4px);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .friends-req-list li:hover,
 .friends-list li:hover {
   border-color: var(--surface-border-strong);
@@ -1932,6 +1952,75 @@ body.is-offline #btn-start-online { opacity: 0.55; }
 }
 .notify-row:first-of-type { border-top: none; margin-top: 8px; }
 .notify-row label { cursor: pointer; user-select: none; }
+
+/* ---- chess clocks ---------------------------- */
+.clocks-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.clock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 6px 12px;
+  min-width: 110px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  transition: background var(--dur-fast), border-color var(--dur-fast);
+}
+.clock-name {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.clock-time {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.clock.active {
+  background: var(--surface-2, var(--surface-1));
+  border-color: var(--surface-border-strong);
+}
+.clock.active .clock-time { color: var(--text-1, inherit); }
+.clock.low.active .clock-time { color: #d24343; }
+.clock.low.active { border-color: #d24343; }
+
+/* ---- challenge details screen --------------- */
+.challenge-details { display: flex; flex-direction: column; gap: 16px; max-width: 560px; }
+.challenge-section {
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin: 0;
+  background: var(--surface-1);
+}
+.challenge-section legend { padding: 0 6px; font-weight: 600; }
+.challenge-section .radio-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.challenge-section .radio-row input[type="radio"] { margin-top: 3px; }
+.challenge-section textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  padding: 8px;
+  background: var(--surface-2, var(--surface-1));
+  color: inherit;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm, 4px);
+}
+.challenge-actions { justify-content: flex-end; }
 
 /* ---- subtle scroll-bar polish for transcript --------------- */
 .transcript-list {

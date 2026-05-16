@@ -65,7 +65,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
 
   // SPA-style fallback: send index.html for unknown GETs that look like
   // hash-routed pages, so deep links like /g/ROOMCODE work.
-  app.get(/^\/(g|dashboard|leaderboard|profile|friends|add-friend)\b/, (_req, res) => {
+  app.get(/^\/(g|dashboard|leaderboard|profile|friends|add-friend|challenge)\b/, (_req, res) => {
     res.sendFile(join(WEB_DIR, 'index.html'));
   });
 

@@ -81,7 +81,7 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     });
   }
 
-  async function applyEloOnEnd(session, gameId, winnerColor, isDraw) {
+  async function applyEloOnEnd(session, gameId, winnerColor, isDraw, lossReason = null) {
     // Pre-flip resign — no Elo applied.
     if (!isDraw && winnerColor !== 1 && winnerColor !== 2) return;
     // Skip Elo if either side is a guest account (ephemeral, unrated).
@@ -138,17 +138,20 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
       recordEloChange(db, {
         userId: loser.id, gameId, opponentId: winner.id,
         eloBefore: loser.elo, eloAfter: loser.elo + dL, result: 'loss',
+        lossReason,
       }),
     ]);
   }
 
-  // Subscribe to engine events. The engine fires this for both human-driven
-  // intents (via applyIntent) and server-initiated AI follow-up moves, so
-  // both paths funnel through the same broadcast + Elo logic.
+  // Subscribe to engine events. The engine fires this for human-driven
+  // intents (via applyIntent), server-initiated AI follow-up moves, and
+  // out-of-band terminal events like claim-timeout, so all paths funnel
+  // through the same broadcast + Elo logic.
   engine.onEvent(async ({ gameId, event, session, endedNow, isDraw }) => {
     await broadcastEvent(gameId, event, session);
     if (endedNow) {
-      try { await applyEloOnEnd(session, gameId, event.winner, isDraw); }
+      const lossReason = event.action?.kind === 'timeout' ? 'timeout' : null;
+      try { await applyEloOnEnd(session, gameId, event.winner, isDraw, lossReason); }
       catch (e) { console.error('elo update failed:', e); }
     }
   });
