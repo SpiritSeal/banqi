@@ -131,6 +131,7 @@ bool BanqiRules::is_legal_cannon_jump(int from, int to, Color side_color) const 
 }
 
 bool BanqiRules::is_legal(const Move& m, int player_index) const {
+    if (player_index != 0 && player_index != 1) return false;
     if (game_over_) return false;
     if (m.is_flip()) {
         // Flips are legal regardless of color, by either player on their turn.
@@ -152,6 +153,7 @@ bool BanqiRules::is_legal(const Move& m, int player_index) const {
 
 std::vector<Move> BanqiRules::legal_moves(int player_index) const {
     std::vector<Move> out;
+    if (player_index != 0 && player_index != 1) return out;
     if (game_over_) return out;
     if (player_index != side_to_move_player_) return out;
 
@@ -231,8 +233,14 @@ std::vector<Move> BanqiRules::legal_moves(int player_index) const {
 }
 
 void BanqiRules::apply_flip(int cell, Piece revealed) {
+    if (cell < 0 || cell >= CELLS) {
+        throw std::runtime_error("apply_flip: cell out of range");
+    }
     if (cells_[cell].state != Cell::State::FaceDown) {
         throw std::runtime_error("apply_flip: cell is not face-down");
+    }
+    if (revealed.color == Color::None || revealed.type == PieceType::None) {
+        throw std::runtime_error("apply_flip: revealed piece has no identity");
     }
     cells_[cell].state = Cell::State::FaceUp;
     cells_[cell].piece = revealed;
@@ -249,9 +257,15 @@ void BanqiRules::apply_flip(int cell, Piece revealed) {
 }
 
 MoveResult BanqiRules::apply_move(int from, int to) {
-    MoveResult r;
+    if (from < 0 || from >= CELLS || to < 0 || to >= CELLS || from == to) {
+        throw std::runtime_error("apply_move: cells out of range");
+    }
     Cell& src = cells_[from];
     Cell& dst = cells_[to];
+    if (src.state != Cell::State::FaceUp) {
+        throw std::runtime_error("apply_move: source is not face-up");
+    }
+    MoveResult r;
     if (dst.state == Cell::State::FaceUp) {
         r.captured = true;
         r.captured_cell = to;
@@ -287,6 +301,11 @@ void BanqiRules::advance_turn() {
 
 void BanqiRules::recheck_terminal() {
     recompute_terminal();
+}
+
+void BanqiRules::set_terminal(Color winner) {
+    game_over_ = true;
+    winner_ = winner;
 }
 
 void BanqiRules::recompute_terminal() {

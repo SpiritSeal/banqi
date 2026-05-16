@@ -443,3 +443,51 @@ TEST_CASE("BanqiRules: legal_moves returns nothing if not your turn") {
     CHECK(!b.legal_moves(0).empty());
     CHECK(b.legal_moves(1).empty());
 }
+
+TEST_CASE("BanqiRules: apply_flip rejects out-of-range cells") {
+    BanqiRules b;
+    b.set_all_facedown();
+    CHECK_THROWS(b.apply_flip(-1, Piece{Color::Red, PieceType::Advisor}));
+    CHECK_THROWS(b.apply_flip(BanqiRules::CELLS, Piece{Color::Red, PieceType::Advisor}));
+}
+
+TEST_CASE("BanqiRules: apply_flip rejects an empty / colorless piece") {
+    // Used to silently corrupt player color assignment: revealed.color == None
+    // → player_color_ = {None, None}, leaving the engine in an unplayable state.
+    BanqiRules b;
+    b.set_all_facedown();
+    CHECK_THROWS(b.apply_flip(0, Piece{}));
+    CHECK_THROWS(b.apply_flip(0, Piece{Color::None, PieceType::General}));
+    CHECK_THROWS(b.apply_flip(0, Piece{Color::Red,  PieceType::None}));
+    CHECK_FALSE(b.first_flip_done());
+}
+
+TEST_CASE("BanqiRules: queries with out-of-range player_index are safe") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red, PieceType::General});
+    // color_for_player used to read past the 2-slot player_color_ array.
+    CHECK(b.color_for_player(2)  == Color::None);
+    CHECK(b.color_for_player(-1) == Color::None);
+    CHECK(b.color_for_player(99) == Color::None);
+    // is_legal used to read player_color_[player_index] before validating.
+    CHECK_FALSE(b.is_legal(Move{0, 1},  2));
+    CHECK_FALSE(b.is_legal(Move{0, 1}, -1));
+    CHECK_FALSE(b.is_legal(Move{-1, 0}, 2));   // flip path
+    CHECK(b.legal_moves(2).empty());
+    CHECK(b.legal_moves(-1).empty());
+}
+
+TEST_CASE("BanqiRules: set_terminal forces game over and clears legal moves") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red, PieceType::General});
+    REQUIRE_FALSE(b.legal_moves(0).empty());
+    b.set_terminal(Color::Black);
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::Black);
+    CHECK(b.legal_moves(0).empty());
+    CHECK(b.legal_moves(1).empty());
+}

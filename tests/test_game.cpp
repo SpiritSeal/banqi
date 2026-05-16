@@ -120,3 +120,84 @@ TEST_CASE("Game: resign before first flip is allowed; no winner color") {
     CHECK(g.game_over());
     CHECK(g.winner() == Color::None);
 }
+
+TEST_CASE("Game: resign clears legal_moves and engine terminal flag") {
+    // Regression: resign used to leave rules_.game_over_ untouched, so
+    // legal_moves() / state_json still reported flips after a player resigned.
+    MockPrng p(42);
+    auto g = Game::create(p);
+    g.apply_flip(0, 0);          // first flip — turn passes to player 1
+    g.apply_resign(1);
+    CHECK(g.game_over());
+    CHECK(g.rules().game_over());
+    for (int v = -1; v <= 1; ++v) {
+        auto s = g.state_json(v);
+        CHECK(s.find("\"legal_moves_for_me\":[]") != std::string::npos);
+    }
+    CHECK(g.rules().legal_moves(0).empty());
+    CHECK(g.rules().legal_moves(1).empty());
+}
+
+TEST_CASE("Game: resign before first flip clears legal_moves for all viewers") {
+    MockPrng p(13);
+    auto g = Game::create(p);
+    g.apply_resign(0);
+    CHECK(g.game_over());
+    for (int v = -1; v <= 1; ++v) {
+        auto s = g.state_json(v);
+        CHECK(s.find("\"legal_moves_for_me\":[]") != std::string::npos);
+    }
+}
+
+TEST_CASE("Game: from_snapshot_json rejects malformed inputs") {
+    MockPrng p(7);
+    auto g = Game::create(p);
+    g.apply_flip(0, 0);
+    auto good = g.snapshot_json();
+
+    // Out-of-range side_to_move_player → would have caused UB in
+    // color_for_player(stm) downstream.
+    {
+        std::string bad = good;
+        auto pos = bad.find("\"side_to_move_player\":1");
+        REQUIRE(pos != std::string::npos);
+        bad.replace(pos, std::string("\"side_to_move_player\":1").size(),
+                    "\"side_to_move_player\":99");
+        CHECK_THROWS(Game::from_snapshot_json(bad));
+    }
+    // Out-of-range layout code.
+    {
+        std::string bad = good;
+        auto pos = bad.find("\"layout\":[");
+        REQUIRE(pos != std::string::npos);
+        // Replace first layout entry with a value > 32
+        auto open = bad.find('[', pos);
+        auto comma = bad.find(',', open);
+        bad.replace(open + 1, comma - open - 1, "999");
+        CHECK_THROWS(Game::from_snapshot_json(bad));
+    }
+    // Bad cell state string.
+    {
+        std::string bad = good;
+        auto pos = bad.find("\"facedown\"");
+        REQUIRE(pos != std::string::npos);
+        bad.replace(pos, std::string("\"facedown\"").size(), "\"bogus\"");
+        CHECK_THROWS(Game::from_snapshot_json(bad));
+    }
+}
+
+TEST_CASE("Game: restoring a resigned snapshot preserves terminal state") {
+    MockPrng p(42);
+    auto g = Game::create(p);
+    g.apply_flip(0, 0);
+    g.apply_resign(1);
+    auto snap = g.snapshot_json();
+    auto g2 = Game::from_snapshot_json(snap);
+    CHECK(g2.game_over());
+    CHECK(g2.rules().game_over());
+    CHECK(g2.winner() == g.winner());
+    CHECK(g2.rules().legal_moves(0).empty());
+    CHECK(g2.rules().legal_moves(1).empty());
+    auto s = g2.state_json(-1);
+    CHECK(s.find("\"legal_moves_for_me\":[]") != std::string::npos);
+}

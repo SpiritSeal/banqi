@@ -57,7 +57,10 @@ public:
     Color side_to_move() const { return side_to_move_; }
     // Player → assigned color (set after first flip). May return Color::None
     // before the first flip is committed.
-    Color color_for_player(int player_index) const { return player_color_[player_index]; }
+    Color color_for_player(int player_index) const {
+        if (player_index != 0 && player_index != 1) return Color::None;
+        return player_color_[player_index];
+    }
     bool game_over() const { return game_over_; }
     Color winner() const { return winner_; }
 
@@ -75,6 +78,11 @@ public:
     // restoring a snapshot end up with correct terminal flags without having
     // to play a move.
     void recheck_terminal();
+
+    // Force the game into a terminal state with the given winner. Used by the
+    // Game layer to propagate resignations into the rules engine so that
+    // legal_moves / state queries stay consistent with game_over().
+    void set_terminal(Color winner);
 
     // ---- legality and generation ----
     // Returns true if the move is legal for the given side (player index).
