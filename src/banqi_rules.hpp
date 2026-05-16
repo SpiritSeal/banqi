@@ -66,7 +66,12 @@ public:
 
     // The two players are indexed 0 and 1. By convention player 0 (host)
     // moves first.
-    void set_initial_side(int player_index) { side_to_move_player_ = player_index; }
+    void set_initial_side(int player_index) {
+        if (player_index != 0 && player_index != 1) {
+            throw std::runtime_error("set_initial_side: player_index must be 0 or 1");
+        }
+        side_to_move_player_ = player_index;
+    }
     int  side_to_move_player() const { return side_to_move_player_; }
 
     // Bypass the normal first-flip flow: directly assign colors and the

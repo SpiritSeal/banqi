@@ -32,16 +32,28 @@ void BanqiRules::set_all_facedown() {
 }
 
 void BanqiRules::set_facedown(int cell) {
+    if (cell < 0 || cell >= CELLS) {
+        throw std::runtime_error("set_facedown: cell out of range");
+    }
     cells_[cell].state = Cell::State::FaceDown;
     cells_[cell].piece = {};
 }
 
 void BanqiRules::set_faceup(int cell, Piece p) {
+    if (cell < 0 || cell >= CELLS) {
+        throw std::runtime_error("set_faceup: cell out of range");
+    }
+    if (p.color == Color::None || p.type == PieceType::None) {
+        throw std::runtime_error("set_faceup: piece has no identity");
+    }
     cells_[cell].state = Cell::State::FaceUp;
     cells_[cell].piece = p;
 }
 
 void BanqiRules::set_empty(int cell) {
+    if (cell < 0 || cell >= CELLS) {
+        throw std::runtime_error("set_empty: cell out of range");
+    }
     cells_[cell].state = Cell::State::Empty;
     cells_[cell].piece = {};
 }
@@ -265,6 +277,12 @@ MoveResult BanqiRules::apply_move(int from, int to) {
     if (src.state != Cell::State::FaceUp) {
         throw std::runtime_error("apply_move: source is not face-up");
     }
+    if (dst.state == Cell::State::FaceDown) {
+        // A face-down destination is never a legal move target (face-down
+        // pieces can only be captured after being flipped). Reject rather
+        // than silently overwriting the hidden identity.
+        throw std::runtime_error("apply_move: destination is face-down");
+    }
     MoveResult r;
     if (dst.state == Cell::State::FaceUp) {
         r.captured = true;
@@ -281,6 +299,12 @@ MoveResult BanqiRules::apply_move(int from, int to) {
 }
 
 void BanqiRules::force_color_assignment(int side_to_move_player, Color p0_color) {
+    if (side_to_move_player != 0 && side_to_move_player != 1) {
+        throw std::runtime_error("force_color_assignment: side_to_move_player must be 0 or 1");
+    }
+    if (p0_color != Color::Red && p0_color != Color::Black) {
+        throw std::runtime_error("force_color_assignment: p0_color must be Red or Black");
+    }
     // State-only setter; does NOT recompute terminal so callers can finish
     // assembling the board before play begins. Terminal detection happens
     // naturally on the first apply_move / apply_flip.

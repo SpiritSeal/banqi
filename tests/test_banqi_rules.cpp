@@ -444,6 +444,19 @@ TEST_CASE("BanqiRules: legal_moves returns nothing if not your turn") {
     CHECK(b.legal_moves(1).empty());
 }
 
+TEST_CASE("BanqiRules: apply_move rejects out-of-range / empty / face-down moves") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red, PieceType::General});
+    b.set_facedown(1);
+    CHECK_THROWS(b.apply_move(-1, 0));
+    CHECK_THROWS(b.apply_move(0, BanqiRules::CELLS));
+    CHECK_THROWS(b.apply_move(0, 0));                // from == to
+    CHECK_THROWS(b.apply_move(8, 0));                // source is empty
+    CHECK_THROWS(b.apply_move(0, 1));                // destination is face-down
+}
+
 TEST_CASE("BanqiRules: apply_flip rejects out-of-range cells") {
     BanqiRules b;
     b.set_all_facedown();
@@ -477,6 +490,43 @@ TEST_CASE("BanqiRules: queries with out-of-range player_index are safe") {
     CHECK_FALSE(b.is_legal(Move{-1, 0}, 2));   // flip path
     CHECK(b.legal_moves(2).empty());
     CHECK(b.legal_moves(-1).empty());
+}
+
+TEST_CASE("BanqiRules: setters reject out-of-range cells") {
+    BanqiRules b;
+    b.clear();
+    CHECK_THROWS(b.set_facedown(-1));
+    CHECK_THROWS(b.set_facedown(BanqiRules::CELLS));
+    CHECK_THROWS(b.set_faceup(-1, Piece{Color::Red, PieceType::General}));
+    CHECK_THROWS(b.set_faceup(BanqiRules::CELLS, Piece{Color::Red, PieceType::General}));
+    CHECK_THROWS(b.set_empty(-1));
+    CHECK_THROWS(b.set_empty(BanqiRules::CELLS));
+}
+
+TEST_CASE("BanqiRules: set_faceup rejects an empty piece") {
+    BanqiRules b;
+    b.clear();
+    CHECK_THROWS(b.set_faceup(0, Piece{}));
+    CHECK_THROWS(b.set_faceup(0, Piece{Color::Red, PieceType::None}));
+    CHECK_THROWS(b.set_faceup(0, Piece{Color::None, PieceType::General}));
+}
+
+TEST_CASE("BanqiRules: set_initial_side and force_color_assignment reject bad args") {
+    BanqiRules b;
+    b.clear();
+    CHECK_THROWS(b.set_initial_side(2));
+    CHECK_THROWS(b.set_initial_side(-1));
+    CHECK_THROWS(b.force_color_assignment(2, Color::Red));
+    CHECK_THROWS(b.force_color_assignment(0, Color::None));
+}
+
+TEST_CASE("can_capture_orthogonal rejects an empty victim or attacker") {
+    Piece red_g{Color::Red, PieceType::General};
+    Piece empty{};
+    Piece bad_type{Color::Black, PieceType::None};
+    CHECK_FALSE(can_capture_orthogonal(red_g, empty));
+    CHECK_FALSE(can_capture_orthogonal(empty, red_g));
+    CHECK_FALSE(can_capture_orthogonal(red_g, bad_type));
 }
 
 TEST_CASE("BanqiRules: set_terminal forces game over and clears legal moves") {
