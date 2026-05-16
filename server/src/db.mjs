@@ -83,6 +83,21 @@ export function normalizeMode(m) {
   return m === 'capture_general' ? 'capture_general' : 'standard';
 }
 
+// Whitelist the first-mover preference. Anything not 'challenger' or
+// 'opponent' collapses to 'random' so the row is always in {challenger,
+// opponent, random}.
+export function normalizeFirstMoverPref(p) {
+  return p === 'challenger' || p === 'opponent' ? p : 'random';
+}
+
+// Resolve 'random' to a concrete seat index (0 = host/challenger, 1 = join/
+// opponent). 'challenger' and 'opponent' map deterministically.
+export function resolveFirstMoverIndex(pref) {
+  if (pref === 'challenger') return 0;
+  if (pref === 'opponent')   return 1;
+  return Math.random() < 0.5 ? 0 : 1;
+}
+
 export async function findGameByRoom(db, roomCode) {
   const { rows } = await db.query('SELECT * FROM games WHERE room_code = $1', [roomCode]);
   return rows[0] || null;
@@ -328,9 +343,12 @@ export async function isMatchEligible(db, userId, otherId) {
 const MATCH_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Idempotent create: if a pending non-expired row already exists from→to,
-// returns it instead of inserting a duplicate (regardless of mode — a sender
-// who wants a different mode should cancel and resend).
-export async function createMatchRequest(db, { fromUserId, toUserId, mode = 'standard' }) {
+// returns it instead of inserting a duplicate (regardless of the new rule
+// fields — a sender who wants different rules should cancel and resend).
+export async function createMatchRequest(db, {
+  fromUserId, toUserId,
+  mode = 'standard', firstMoverPref = 'random', message = null,
+}) {
   const now = Date.now();
   const expires = now + MATCH_REQUEST_TTL_MS;
   const { rows: existing } = await db.query(`
@@ -342,10 +360,12 @@ export async function createMatchRequest(db, { fromUserId, toUserId, mode = 'sta
   if (existing[0]) return existing[0];
   const { rows } = await db.query(`
     INSERT INTO match_requests
-      (from_user_id, to_user_id, status, mode, created_at, expires_at)
-    VALUES ($1, $2, 'pending', $3, $4, $5)
+      (from_user_id, to_user_id, status, mode, first_mover_pref, message,
+       created_at, expires_at)
+    VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7)
     RETURNING *
-  `, [fromUserId, toUserId, normalizeMode(mode), now, expires]);
+  `, [fromUserId, toUserId, normalizeMode(mode),
+      normalizeFirstMoverPref(firstMoverPref), message, now, expires]);
   return rows[0];
 }
 
@@ -428,16 +448,22 @@ export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode
       return null;
     }
     // Allocate a room code with the same 5-retry pattern as routes/games.mjs.
-    // The accepted game inherits the mode chosen by the sender on the request.
-    const mode = normalizeMode(req.mode);
+    // The accepted game inherits the mode + first-mover preference chosen by
+    // the sender on the request. 'random' is resolved to a concrete seat
+    // index here so reconnects always see the same first-mover.
+    const mode             = normalizeMode(req.mode);
+    const firstMoverIndex  = resolveFirstMoverIndex(
+      normalizeFirstMoverPref(req.first_mover_pref)
+    );
     let game = null;
     for (let i = 0; i < 5; ++i) {
       try {
         const { rows: gRows } = await client.query(`
-          INSERT INTO games (room_code, host_user_id, status, mode, created_at)
-          VALUES ($1, $2, 'waiting', $3, $4)
+          INSERT INTO games
+            (room_code, host_user_id, status, mode, first_mover_index, created_at)
+          VALUES ($1, $2, 'waiting', $3, $4, $5)
           RETURNING *
-        `, [allocateRoomCode(), req.from_user_id, mode, now]);
+        `, [allocateRoomCode(), req.from_user_id, mode, firstMoverIndex, now]);
         game = gRows[0];
         break;
       } catch (e) {

@@ -1816,6 +1816,26 @@ body.is-offline #btn-start-online { opacity: 0.55; }
   border-radius: var(--radius-md);
   transition: border-color var(--dur-fast), transform var(--dur-fast);
 }
+/* Requests with a message stack the summary above the message. */
+.friends-req-list li:has(.req-message) { flex-direction: column; align-items: stretch; }
+.friends-req-list .req-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.friends-req-list .req-message {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-style: italic;
+  color: var(--text-2, var(--muted));
+  background: var(--surface-2, transparent);
+  border-left: 3px solid var(--surface-border-strong, var(--surface-border));
+  border-radius: var(--radius-sm, 4px);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .friends-req-list li:hover,
 .friends-list li:hover {
   border-color: var(--surface-border-strong);
@@ -1932,6 +1952,36 @@ body.is-offline #btn-start-online { opacity: 0.55; }
 }
 .notify-row:first-of-type { border-top: none; margin-top: 8px; }
 .notify-row label { cursor: pointer; user-select: none; }
+
+/* ---- challenge details screen --------------- */
+.challenge-details { display: flex; flex-direction: column; gap: 16px; max-width: 560px; }
+.challenge-section {
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin: 0;
+  background: var(--surface-1);
+}
+.challenge-section legend { padding: 0 6px; font-weight: 600; }
+.challenge-section .radio-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.challenge-section .radio-row input[type="radio"] { margin-top: 3px; }
+.challenge-section textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  padding: 8px;
+  background: var(--surface-2, var(--surface-1));
+  color: inherit;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm, 4px);
+}
+.challenge-actions { justify-content: flex-end; }
 
 /* ---- subtle scroll-bar polish for transcript --------------- */
 .transcript-list {

@@ -112,20 +112,21 @@ async function annotate(db, g) {
 
 function decorate(myUserId) {
   return (g) => ({
-    id:             g.id,
-    room_code:      g.room_code,
-    status:         g.status,
-    mode:           g.mode || 'standard',
-    host_user_id:   g.host_user_id,
-    join_user_id:   g.join_user_id,
-    host_name:      g.host_name,
-    join_name:      g.join_name,
-    winner_color:   g.winner_color,
-    winner_user_id: g.winner_user_id,
-    created_at:     g.created_at,
-    last_move_at:   g.last_move_at,
-    ended_at:       g.ended_at,
-    my_role:        g.host_user_id === myUserId ? 'host'
-                     : g.join_user_id === myUserId ? 'join' : null,
+    id:                g.id,
+    room_code:         g.room_code,
+    status:            g.status,
+    mode:              g.mode || 'standard',
+    first_mover_index: g.first_mover_index ?? null,
+    host_user_id:      g.host_user_id,
+    join_user_id:      g.join_user_id,
+    host_name:         g.host_name,
+    join_name:         g.join_name,
+    winner_color:      g.winner_color,
+    winner_user_id:    g.winner_user_id,
+    created_at:        g.created_at,
+    last_move_at:      g.last_move_at,
+    ended_at:          g.ended_at,
+    my_role:           g.host_user_id === myUserId ? 'host'
+                        : g.join_user_id === myUserId ? 'join' : null,
   });
 }

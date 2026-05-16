@@ -76,6 +76,7 @@ const views = {
   leaderboard: $('view-leaderboard'),
   profile:     $('view-profile'),
   friends:     $('view-friends'),
+  challenge:   $('view-challenge'),
 };
 function showView(name) {
   for (const v of Object.values(views)) v?.classList.add('hidden');
@@ -179,6 +180,9 @@ async function route() {
 
   const mp = hash.match(/^#\/profile\/(\d+)$/);
   if (mp) { announce('Profile'); return renderProfile(+mp[1]); }
+
+  const mc = hash.match(/^#\/challenge\/(\d+)$/);
+  if (mc) { announce('Challenge details'); return renderChallengeDetails(+mc[1]); }
 
   const ma = hash.match(/^#\/add-friend\/(\d+-[0-9a-f]{16})$/);
   if (ma) { announce('Add friend'); return addFriendByToken(ma[1]); }
@@ -684,8 +688,17 @@ function turnLabel(state) {
 // mode: 'online' | 'otb' | 'ai'
 function turnPillHtml(state, mode) {
   if (!state.first_flip_done) {
-    return `<span class="turn-pill" role="status">
-              <span class="turn-dot"></span>Awaiting first flip
+    // If the game was created from a directed challenge with a fixed first
+    // mover, surface whose move it is so the locked-out side knows to wait.
+    let label = 'Awaiting first flip';
+    let yours = null;
+    if (mode === 'online' && (state.first_mover_index === 0 || state.first_mover_index === 1)) {
+      yours = state.first_mover_index === state.my_player_index;
+      label = yours ? 'Your move — flip first' : 'Opponent flips first';
+    }
+    const cls = yours === true ? 'your-turn' : yours === false ? 'opp-turn' : '';
+    return `<span class="turn-pill ${cls}" role="status" aria-live="polite">
+              <span class="turn-dot"></span>${label}
             </span>`;
   }
   if (state.game_over) {
@@ -725,6 +738,11 @@ function onOnlineCellClick(idx, state) {
   if (state.game_over) return;
   if (state.replayViewing) return;
   if (state.side_to_move !== state.my_player_index) return;
+  // Pre-first-flip lock from a directed challenge: only the chosen first-mover
+  // may make the opening flip. Server rejects either way; we just avoid round-trips.
+  if (!state.first_flip_done
+      && (state.first_mover_index === 0 || state.first_mover_index === 1)
+      && state.first_mover_index !== state.my_player_index) return;
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me || [];
   if (active.selected == null) {
@@ -1562,10 +1580,8 @@ async function renderProfile(userId) {
       <p class="muted">Deleting your account anonymizes your past games and removes your sign-in. This cannot be undone.</p>
       <button id="btn-delete-account" class="link-btn" style="color:#d24343">Delete my account…</button>` : ''}`;
   if (challengeBlock) {
-    $('btn-challenge').onclick = async () => {
-      const mode = await pickChallengeMode();
-      if (mode == null) return;
-      challengePlayer(p.id, mode);
+    $('btn-challenge').onclick = () => {
+      location.hash = `#/challenge/${p.id}`;
     };
   }
   if (isSelf) {
@@ -1583,68 +1599,160 @@ async function renderProfile(userId) {
 
 // ---- friends + match requests ----
 
-async function challengePlayer(toUserId, mode = 'standard') {
-  if (!me) return;
+async function challengePlayer(toUserId, opts = {}) {
+  if (!me) return null;
+  const mode = normMode(opts.mode);
+  const firstMoverPref = normFirstMoverPref(opts.first_mover_pref);
+  const message = (typeof opts.message === 'string') ? opts.message.trim() : '';
+  const body = {
+    to_user_id: toUserId,
+    mode,
+    first_mover_pref: firstMoverPref,
+  };
+  if (message) body.message = message;
   const res = await fetch('/api/match-requests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to_user_id: toUserId, mode: normMode(mode) }),
+    body: JSON.stringify(body),
   });
-  const body = await res.json().catch(() => ({}));
+  const responseBody = await res.json().catch(() => ({}));
   if (res.status === 403) {
-    toast(body.error || 'Become friends first to challenge each other.', { kind: 'warn' });
-    return;
+    toast(responseBody.error || 'Become friends first to challenge each other.', { kind: 'warn' });
+    return null;
   }
   if (!res.ok) {
-    toast(body.error || 'Could not send challenge.', { kind: 'error' });
-    return;
+    toast(responseBody.error || 'Could not send challenge.', { kind: 'error' });
+    return null;
   }
-  toast(`Challenge sent (${modeLabel(normMode(mode))}).`, { kind: 'success' });
+  toast(`Challenge sent (${modeLabel(mode)}).`, { kind: 'success' });
+  return responseBody;
 }
 
-// Pop a small modal asking the challenger to pick a win condition.
-// Resolves to the chosen mode string, or null if cancelled.
-function pickChallengeMode() {
-  return new Promise((resolve) => {
-    const root = document.getElementById('modal-root');
-    if (!root) { resolve(null); return; }
-    const previouslyFocused = document.activeElement;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cm-title" tabindex="-1">
-        <h2 id="cm-title">Send challenge</h2>
-        <p class="modal-body">Pick the win condition for this match.</p>
-        <div class="row" style="margin:8px 0 16px">
-          <label for="cm-mode">Win condition</label>
-          <select id="cm-mode">
-            <option value="standard" selected>Standard (no legal moves)</option>
-            <option value="capture_general">Capture the General</option>
-          </select>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn-cancel">Cancel</button>
-          <button type="button" class="btn-confirm primary">Send</button>
-        </div>
-      </div>`;
-    const close = (result) => {
-      overlay.remove();
-      document.removeEventListener('keydown', onKey, true);
-      try { previouslyFocused?.focus?.(); } catch (_) {}
-      resolve(result);
-    };
-    const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); close(null); }
-    };
-    overlay.querySelector('.btn-cancel').addEventListener('click', () => close(null));
-    overlay.querySelector('.btn-confirm').addEventListener('click', () => {
-      const v = overlay.querySelector('#cm-mode').value;
-      close(normMode(v));
+const FIRST_MOVER_PREFS = ['challenger', 'opponent', 'random'];
+function normFirstMoverPref(p) {
+  return FIRST_MOVER_PREFS.includes(p) ? p : 'random';
+}
+
+// Per-perspective chip text. Outgoing = the viewer is the challenger;
+// incoming = the viewer is the recipient. 'random' renders no chip (it's
+// the default, no need to clutter the row).
+function firstMoverChipText(pref, perspective) {
+  if (pref === 'random' || !pref) return null;
+  if (perspective === 'outgoing') {
+    return pref === 'challenger' ? 'You flip first' : 'They flip first';
+  }
+  return pref === 'challenger' ? 'They flip first' : 'You flip first';
+}
+
+function matchRequestChips(req, perspective) {
+  const parts = [
+    `<span class="mode-chip small">${escapeHtml(modeLabel(normMode(req.mode)))}</span>`,
+  ];
+  const fm = firstMoverChipText(req.first_mover_pref, perspective);
+  if (fm) parts.push(`<span class="mode-chip small">${escapeHtml(fm)}</span>`);
+  return parts.join(' ');
+}
+
+// Full-screen view the challenger lands on after clicking "Challenge". Lets
+// them pick the win condition, who flips first, and an optional message,
+// then sends the match request via challengePlayer().
+async function renderChallengeDetails(targetUserId) {
+  showView('challenge');
+  const body = $('challenge-body');
+  if (!me) {
+    body.innerHTML = `<div class="muted">Sign in to send a challenge. <a href="#/">Lobby</a></div>`;
+    return;
+  }
+  if (me.id === targetUserId) {
+    body.innerHTML = `<div class="err">You can't challenge yourself. <a href="#/friends">Friends</a></div>`;
+    return;
+  }
+  if (!online) {
+    body.innerHTML = `<div class="muted">You're offline — can't send a challenge right now. <a href="#/">Lobby</a></div>`;
+    return;
+  }
+  body.innerHTML = `<div class="muted">Loading…</div>`;
+  let opponent;
+  try {
+    const r = await fetch(`/api/users/${targetUserId}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    opponent = await r.json();
+  } catch (_) {
+    body.innerHTML = `<div class="err">Couldn't load that player. <a href="#/friends">Friends</a></div>`;
+    return;
+  }
+  body.innerHTML = `
+    <div class="challenge-details">
+      <p class="muted">Sending a challenge to <b>${escapeHtml(opponent.display_name)}</b>
+         <span class="muted small">(Elo ${opponent.elo})</span>.
+         They'll see this request in their Friends page and can accept, decline, or ignore it.</p>
+
+      <fieldset class="challenge-section">
+        <legend>Win condition</legend>
+        <label class="radio-row">
+          <input type="radio" name="cd-mode" value="standard" checked>
+          <span><b>Standard</b> <span class="muted small">— you lose if you have no legal move.</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-mode" value="capture_general">
+          <span><b>Capture the General</b> <span class="muted small">— win by capturing the opposing General.</span></span>
+        </label>
+      </fieldset>
+
+      <fieldset class="challenge-section">
+        <legend>Who flips first</legend>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="random" checked>
+          <span><b>Random</b> <span class="muted small">— decided when they accept.</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="challenger">
+          <span><b>I flip first</b> <span class="muted small">— I'll make the opening flip (claiming that color).</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="opponent">
+          <span><b>${escapeHtml(opponent.display_name)} flips first</b> <span class="muted small">— they make the opening flip.</span></span>
+        </label>
+      </fieldset>
+
+      <fieldset class="challenge-section">
+        <legend>Message <span class="muted small">(optional)</span></legend>
+        <textarea id="cd-message" maxlength="280" rows="3"
+                  placeholder="Add a note for your opponent — they'll see it on their incoming request."></textarea>
+        <div class="muted small"><span id="cd-message-count">0</span> / 280</div>
+      </fieldset>
+
+      <div class="row challenge-actions">
+        <button type="button" id="cd-cancel" class="link-btn">Cancel</button>
+        <button type="button" id="cd-send" class="primary">Send challenge</button>
+      </div>
+    </div>`;
+
+  const messageEl = $('cd-message');
+  const countEl = $('cd-message-count');
+  messageEl.addEventListener('input', () => {
+    countEl.textContent = String(messageEl.value.length);
+  });
+
+  $('cd-cancel').addEventListener('click', () => {
+    if (history.length > 1) history.back();
+    else location.hash = `#/profile/${targetUserId}`;
+  });
+
+  $('cd-send').addEventListener('click', async (e) => {
+    const sendBtn = e.currentTarget;
+    sendBtn.disabled = true;
+    const mode = body.querySelector('input[name="cd-mode"]:checked')?.value || 'standard';
+    const firstMoverPref = body.querySelector('input[name="cd-first"]:checked')?.value || 'random';
+    const message = messageEl.value || '';
+    const result = await challengePlayer(targetUserId, {
+      mode, first_mover_pref: firstMoverPref, message,
     });
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
-    document.addEventListener('keydown', onKey, true);
-    root.appendChild(overlay);
-    overlay.querySelector('.btn-confirm').focus();
+    if (!result) {
+      sendBtn.disabled = false;
+      return;
+    }
+    location.hash = '#/friends';
   });
 }
 
@@ -1744,12 +1852,15 @@ async function renderFriends() {
     ${incoming.length === 0 ? `<div class="muted">No pending requests.</div>` :
       `<ul class="friends-req-list">${incoming.map(r => `
         <li data-req="${r.id}">
-          <span><b>${escapeHtml(r.from_name || '')}</b> wants to play
-            <span class="mode-chip small">${escapeHtml(modeLabel(normMode(r.mode)))}</span></span>
-          <span class="row">
-            <button class="primary" data-action="accept" data-req="${r.id}">Accept</button>
-            <button class="link-btn" data-action="decline" data-req="${r.id}">Decline</button>
-          </span>
+          <div class="req-summary">
+            <span><b>${escapeHtml(r.from_name || '')}</b> wants to play
+              ${matchRequestChips(r, 'incoming')}</span>
+            <span class="row">
+              <button class="primary" data-action="accept" data-req="${r.id}">Accept</button>
+              <button class="link-btn" data-action="decline" data-req="${r.id}">Decline</button>
+            </span>
+          </div>
+          ${r.message ? `<div class="req-message">“${escapeHtml(r.message)}”</div>` : ''}
         </li>`).join('')}</ul>`}`;
 
   const outgoing = requests?.outgoing || [];
@@ -1758,9 +1869,12 @@ async function renderFriends() {
     ${outgoing.length === 0 ? `<div class="muted">No outgoing requests.</div>` :
       `<ul class="friends-req-list">${outgoing.map(r => `
         <li data-req="${r.id}">
-          <span>Sent to <b>${escapeHtml(r.to_name || '')}</b>
-            <span class="mode-chip small">${escapeHtml(modeLabel(normMode(r.mode)))}</span></span>
-          <button class="link-btn" data-action="cancel" data-req="${r.id}">Cancel</button>
+          <div class="req-summary">
+            <span>Sent to <b>${escapeHtml(r.to_name || '')}</b>
+              ${matchRequestChips(r, 'outgoing')}</span>
+            <button class="link-btn" data-action="cancel" data-req="${r.id}">Cancel</button>
+          </div>
+          ${r.message ? `<div class="req-message">“${escapeHtml(r.message)}”</div>` : ''}
         </li>`).join('')}</ul>`}`;
 
   // Friends list + per-friend Challenge + Remove.
@@ -1801,10 +1915,7 @@ async function renderFriends() {
         if (!res.ok) toast('Could not cancel.', { kind: 'error' });
         renderFriends();
       } else if (action === 'challenge' && friendId) {
-        const mode = await pickChallengeMode();
-        if (mode == null) return;
-        await challengePlayer(friendId, mode);
-        renderFriends();
+        location.hash = `#/challenge/${friendId}`;
       } else if (action === 'remove' && friendId) {
         const ok = await confirmModal({
           title: 'Remove this friend?',

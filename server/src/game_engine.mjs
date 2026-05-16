@@ -21,7 +21,7 @@ async function getModule() {
 }
 
 class Session {
-  constructor(gameId, hostUserId, joinUserId, wasm, events) {
+  constructor(gameId, hostUserId, joinUserId, wasm, events, firstMoverIndex = null) {
     this.gameId = gameId;
     this.hostUserId = hostUserId;
     this.joinUserId = joinUserId;
@@ -31,6 +31,11 @@ class Session {
     this._chain = Promise.resolve();
     this.pendingDrawOffer = null; // player index who offered, or null
     this.drawAccepted = false;
+    // null on ad-hoc room games (either side may make the first flip);
+    // 0 or 1 on games created via a directed challenge with a fixed
+    // first-mover. Only consulted before first_flip_done.
+    this.firstMoverIndex = (firstMoverIndex === 0 || firstMoverIndex === 1)
+      ? firstMoverIndex : null;
   }
   // Serialize work for this game so two concurrent intents can't interleave.
   run(fn) {
@@ -62,13 +67,13 @@ export async function createGameEngine({ db }) {
   const evictTimer = setInterval(evictIdle, 5 * 60 * 1000);
   evictTimer.unref?.();
 
-  async function createGame(gameId, hostUserId, mode = 'standard') {
+  async function createGame(gameId, hostUserId, mode = 'standard', firstMoverIndex = null) {
     const wasm = mode === 'capture_general'
       ? Module.Game.createWithMode('capture_general')
       : Module.Game.create();
     const snapshot = wasm.snapshotJson();
     await saveGameState(db, gameId, snapshot);
-    const session = new Session(gameId, hostUserId, null, wasm, []);
+    const session = new Session(gameId, hostUserId, null, wasm, [], firstMoverIndex);
     cache.set(gameId, session);
     return session;
   }
@@ -89,7 +94,8 @@ export async function createGameEngine({ db }) {
     if (!snap) return null;
     const wasm = Module.Game.fromSnapshot(snap);
     const events = await listGameEvents(db, gameId);
-    const session = new Session(gameId, game.host_user_id, game.join_user_id, wasm, events);
+    const session = new Session(gameId, game.host_user_id, game.join_user_id,
+                                wasm, events, game.first_mover_index);
     // Reconstruct pending draw offer from last event (survives session eviction).
     if (events.length > 0) {
       const last = events[events.length - 1];
@@ -106,6 +112,17 @@ export async function createGameEngine({ db }) {
       const pi = session.playerIndexFor(userId);
       if (pi < 0) return { ok: false, reason: 'not a player in this game' };
       if (session.wasm.gameOver() || session.drawAccepted) return { ok: false, reason: 'game is over' };
+
+      // On games created via a directed challenge with a fixed first-mover,
+      // block the wrong side from making the opening flip. Once first_flip_done
+      // is true the WASM rules engine alternates side_to_move correctly, so
+      // this guard is a no-op for every later turn.
+      if (session.firstMoverIndex !== null && intent?.kind === 'flip') {
+        const pre = JSON.parse(session.wasm.stateJson(-1));
+        if (!pre.first_flip_done && pi !== session.firstMoverIndex) {
+          return { ok: false, reason: 'opponent makes the first move' };
+        }
+      }
 
       let action, revealed = null, capture = null, drawOffered = false;
       try {
@@ -208,6 +225,7 @@ export async function createGameEngine({ db }) {
   function viewerState(session, viewerPlayerIndex) {
     const state = JSON.parse(session.wasm.stateJson(viewerPlayerIndex));
     state.draw_offered_by = session.pendingDrawOffer ?? null;
+    state.first_mover_index = session.firstMoverIndex;
     return state;
   }
 

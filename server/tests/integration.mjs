@@ -454,6 +454,66 @@ describe('friends + match requests', () => {
     assert.equal(after.incoming.find(r => r.id === created.id), undefined);
   });
 
+  it('challenge-details fields round-trip through the route', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+
+    // Reject any leftover pending so the idempotent guard doesn't return a stale row.
+    await db.query(
+      `UPDATE match_requests SET status='cancelled' WHERE status='pending'`
+    );
+
+    const r = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id,
+        mode: 'capture_general',
+        first_mover_pref: 'opponent',
+        message: '   gl hf   ',
+      }),
+    });
+    assert.equal(r.status, 200);
+    const created = await r.json();
+    assert.equal(created.mode, 'capture_general');
+    assert.equal(created.first_mover_pref, 'opponent');
+    assert.equal(created.message, 'gl hf');     // trimmed by the route
+
+    // The recipient sees the new fields on their incoming list.
+    const reqs = await (await authedFetch(bob, '/api/match-requests')).json();
+    const pending = reqs.incoming.find(r => r.id === created.id);
+    assert.ok(pending);
+    assert.equal(pending.first_mover_pref, 'opponent');
+    assert.equal(pending.message, 'gl hf');
+
+    // Accept and verify the game inherits a concrete first_mover_index.
+    const accept = await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    });
+    assert.equal(accept.status, 200);
+    const accepted = await accept.json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+    assert.equal(game.first_mover_index, 1, 'opponent → seat 1');
+  });
+
+  it('message over 280 chars is rejected with 400', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(
+      `UPDATE match_requests SET status='cancelled' WHERE status='pending'`
+    );
+    const r = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id,
+        message: 'x'.repeat(281),
+      }),
+    });
+    assert.equal(r.status, 400);
+  });
+
   it('remove friend works; cannot create token-add for an invalid token', async () => {
     const alice = await signInAs('Alice');
     const bob   = await signInAs('Bob');

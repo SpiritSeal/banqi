@@ -129,3 +129,19 @@ ALTER TABLE games           DROP COLUMN IF EXISTS tip_hash;
 -- the game was created via a directed challenge) on the originating match request.
 ALTER TABLE games          ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'standard';
 ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'standard';
+
+-- Optional rules carried from a directed challenge. The challenger picks
+-- these on the challenge-details screen; on accept they propagate onto the
+-- games row.
+--   first_mover_pref:    who must make the first flip — 'challenger' (the
+--                        request sender), 'opponent' (the recipient), or
+--                        'random' (resolved at accept time).
+--   first_mover_index:   resolved seat index on the game: 0 = host (= the
+--                        challenger), 1 = join (= the acceptor). NULL on
+--                        games not created via a directed challenge, which
+--                        keeps the legacy free-for-all "either side flips
+--                        first" behavior.
+--   message:             optional free-text note the challenger attaches.
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS first_mover_pref TEXT NOT NULL DEFAULT 'random';
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS message          TEXT;
+ALTER TABLE games          ADD COLUMN IF NOT EXISTS first_mover_index INTEGER;
