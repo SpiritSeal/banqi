@@ -2,7 +2,9 @@
 //   * move + capture: real wooden-clack sample (CC0 from freesound.org,
 //     "Small Wood Piece Sound" by qubodup, id 822567), pitched and layered
 //     via Web Audio.
-//   * flip + game-over: synthesized on the fly.
+//   * flip: short scrape (filtered noise) + high-pitched tap from the wood
+//     sample, evoking the rotation and landing of the tile.
+//   * game-over: synthesized chime.
 // AudioContext is created lazily on the first move; sample bytes are
 // pre-fetched at module load so the first move doesn't wait on the network.
 
@@ -97,7 +99,13 @@ export function playMoveSound(event) {
     }
 
     if (kind === 'flip') {
-      noise(ac, 0.085, 700, 0.4);
+      // Brief scrape as the piece rotates.
+      noise(ac, 0.055, 1800, 0.18);
+      // High-pitched tap from the wood sample as it lands face-up.
+      getSample(ac).then(buf => {
+        if (!buf) return;
+        playSample(ac, buf, { rate: 1.9, gain: 0.55, offsetSec: 0.045 });
+      }).catch(() => { /* swallow */ });
       return;
     }
 
