@@ -15,8 +15,11 @@
 // engine for online games — it only renders.
 
 import { WebSocketServer } from 'ws';
-import { recordEloChange, setGameWinnerUser, getUser } from './db.mjs';
+import {
+  recordEloChange, setGameWinnerUser, getUser, findGameById,
+} from './db.mjs';
 import { eloDelta } from './elo.mjs';
+import { sendToUser as sendPushToUser } from './push.mjs';
 
 export function attachWebSocket(server, { db, sessionParser, passport, engine }) {
   const wss = new WebSocketServer({ noServer: true });
@@ -36,14 +39,46 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
 
   async function broadcastEvent(gameId, event, session) {
     const peers = rooms.get(gameId);
-    if (!peers) return;
-    for (const peer of peers) {
-      pushTo(peer, {
-        type:  'event',
-        event,
-        state: viewerStateForUser(session, peer.userId),
-      });
+    if (peers) {
+      for (const peer of peers) {
+        pushTo(peer, {
+          type:  'event',
+          event,
+          state: viewerStateForUser(session, peer.userId),
+        });
+      }
     }
+    // Fire a Web Push to the player whose turn it is now, but only if they
+    // don't already have an open WebSocket in the room (otherwise their tab
+    // can handle the in-page Notification API). Skip on game-over and skip
+    // for guest accounts (excluded from push subscriptions).
+    try { await maybePushTurnNotification(gameId, event, session, peers); }
+    catch (e) { console.warn('push: turn-notify failed:', e.message || e); }
+  }
+
+  async function maybePushTurnNotification(gameId, event, session, peers) {
+    if (event.game_over) return;
+    const state = engine.viewerState(session, -1);
+    const nextPi = state.side_to_move;
+    if (nextPi !== 0 && nextPi !== 1) return;
+    const nextUserId = nextPi === 0 ? session.hostUserId : session.joinUserId;
+    if (!nextUserId) return;
+    if (peers && [...peers].some((p) => p.userId === nextUserId)) return;
+    const recipient = await getUser(db, nextUserId);
+    if (!recipient || recipient.provider === 'guest') return;
+    const game = await findGameById(db, gameId);
+    if (!game) return;
+    const mover = nextPi === 0
+      ? await getUser(db, session.joinUserId)
+      : await getUser(db, session.hostUserId);
+    const oppName = mover?.display_name || 'Your opponent';
+    await sendPushToUser(db, nextUserId, {
+      kind:      'turn',
+      title:     'Your turn in Banqi',
+      body:      `${oppName} played a move — tap to play.`,
+      roomCode:  game.room_code,
+      gameId:    game.id,
+    });
   }
 
   async function applyEloOnEnd(session, gameId, winnerColor) {

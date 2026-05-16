@@ -16,6 +16,7 @@ import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
 import { Replay, renderTranscript } from './replay.js';
+import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
 import { initSettings, openSettingsDrawer, openRulesDrawer } from './settings.js';
@@ -382,9 +383,11 @@ async function openOnlineGame(roomCode) {
   conn.on('frame', (frame) => {
     if (!active?.isOnline) return;
     if (frame.type === 'snapshot') {
+      const wasMyTurnBefore = isMyTurn(active.state);
       active.state = frame.state;
       active.replay.setEvents(frame.events || []);
       active.connState = 'live';
+      maybeNotifyTurnTransition(wasMyTurnBefore);
       refreshGame();
       return;
     }
@@ -404,6 +407,7 @@ async function openOnlineGame(roomCode) {
           piece = { color: srcCell.color, glyph: srcCell.glyph };
         }
       }
+      const wasMyTurnBefore = isMyTurn(active.state);
       active.state = frame.state;
       active.replay.appendEvent(ev);
       playMoveSound(ev);
@@ -415,6 +419,7 @@ async function openOnlineGame(roomCode) {
           active.flashUntil = Date.now() + 1200;
         }
       }
+      maybeNotifyTurnTransition(wasMyTurnBefore);
       refreshGame();
       // Fire and forget — animations are pure decoration over the new state.
       playEventAnimation(boardEl, ev, { srcRect, piece });
@@ -431,6 +436,34 @@ async function openOnlineGame(roomCode) {
 
 function rolePlayerIndex(act) {
   return act.role === 'host' ? 0 : act.role === 'join' ? 1 : -1;
+}
+
+// "It's my turn right now" for the live online game. False before the first
+// flip and once the game is over.
+function isMyTurn(state) {
+  if (!state) return false;
+  if (state.game_over) return false;
+  if (!state.first_flip_done) return false;
+  return state.side_to_move === state.my_player_index;
+}
+
+// Driven by every WS frame. Fires the in-page Notification + sound + title-bar
+// alert on the not-my-turn → my-turn edge, and clears the title alert when it
+// turns back into the opponent's turn (or the game ends).
+function maybeNotifyTurnTransition(wasMyTurnBefore) {
+  if (!active?.isOnline) return;
+  const nowMine = isMyTurn(active.state);
+  if (nowMine && !wasMyTurnBefore) {
+    const opp = active.role === 'host'
+      ? active.info?.join_name
+      : active.info?.host_name;
+    Notify.onYourTurn({
+      opponentName: opp || null,
+      roomCode: active.info?.room_code || null,
+    });
+  } else if (!nowMine && wasMyTurnBefore) {
+    Notify.clearTurnAlert();
+  }
 }
 
 // Plain-English description of an event, for the SR announcer.
@@ -964,43 +997,74 @@ function scheduleAIMove() {
 
 // ---- shared rendering ----
 const PIECE_NAMES = ['', 'Soldier', 'Cannon', 'Horse', 'Chariot', 'Elephant', 'Advisor', 'General'];
+const PIECE_TYPE_TOTALS = [0, 5, 2, 2, 2, 2, 2, 1]; // count of each type per color (index = type rank)
+const PIECE_GLYPHS = {
+  1: ['', '兵', '炮', '傌', '俥', '相', '仕', '帥'],
+  2: ['', '卒', '砲', '馬', '車', '象', '士', '將'],
+};
+// Display order: General → Soldier (rank high to low).
+const PIECE_TYPE_DISPLAY_ORDER = [7, 6, 5, 4, 3, 2, 1];
 
 function pieceCounts(cells, replay) {
-  let shown_red = 0, shown_black = 0;
+  const shown = { 1: [0, 0, 0, 0, 0, 0, 0, 0], 2: [0, 0, 0, 0, 0, 0, 0, 0] };
   for (const c of cells) {
-    if (c.state === 'faceup') {
-      if (c.color === 1) shown_red++;
-      else if (c.color === 2) shown_black++;
+    if (c.state === 'faceup' && (c.color === 1 || c.color === 2) && c.type >= 1 && c.type <= 7) {
+      shown[c.color][c.type]++;
     }
   }
-  let captured_red = 0, captured_black = 0;
+  const captured = { 1: [0, 0, 0, 0, 0, 0, 0, 0], 2: [0, 0, 0, 0, 0, 0, 0, 0] };
   if (replay) {
     const upTo = replay.isLive()
       ? replay.snapshots.length
       : (replay.viewIndex >= 0 ? replay.viewIndex + 1 : 0);
     for (let i = 0; i < upTo; i++) {
       const cap = replay.snapshots[i]?.capture;
-      if (cap?.color === 1) captured_red++;
-      else if (cap?.color === 2) captured_black++;
+      if (cap && (cap.color === 1 || cap.color === 2) && cap.type >= 1 && cap.type <= 7) {
+        captured[cap.color][cap.type]++;
+      }
     }
   }
-  return {
-    red:   { shown: shown_red,   hidden: 16 - shown_red   - captured_red,   captured: captured_red   },
-    black: { shown: shown_black, hidden: 16 - shown_black - captured_black, captured: captured_black },
+  const build = (color) => {
+    const byType = {};
+    let shownTotal = 0, hiddenTotal = 0, capturedTotal = 0;
+    for (let t = 1; t <= 7; t++) {
+      const s = shown[color][t];
+      const cap = captured[color][t];
+      const h = Math.max(0, PIECE_TYPE_TOTALS[t] - s - cap);
+      byType[t] = { shown: s, hidden: h, captured: cap };
+      shownTotal += s; hiddenTotal += h; capturedTotal += cap;
+    }
+    return { shown: shownTotal, hidden: hiddenTotal, captured: capturedTotal, byType };
   };
+  return { red: build(1), black: build(2) };
 }
 
 function renderPieceCountsHtml(counts) {
-  const row = (label, glyph, cls, c) =>
-    `<div class="pc-row">
+  const breakdown = (colorVal, byType, category) => {
+    const glyphs = PIECE_GLYPHS[colorVal];
+    const parts = [];
+    for (const t of PIECE_TYPE_DISPLAY_ORDER) {
+      const n = byType[t][category];
+      if (n > 0) {
+        const name = PIECE_NAMES[t];
+        const label = `${name} ${category}: ${n}`;
+        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}">${glyphs[t]}<span class="pc-chip-n">${n}</span></span>`);
+      }
+    }
+    return parts.length
+      ? `<span class="pc-breakdown" aria-hidden="false">${parts.join('')}</span>`
+      : '';
+  };
+  const row = (label, sideGlyph, cls, colorVal, c) =>
+    `<div class="pc-row pc-row-${cls}">
       <span class="pc-side ${cls}" aria-label="${label}">
-        <span class="pc-glyph" aria-hidden="true">${glyph}</span>${label}
+        <span class="pc-glyph" aria-hidden="true">${sideGlyph}</span>${label}
       </span>
-      <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}</span>
-      <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}</span>
-      <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}</span>
+      <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}${breakdown(colorVal, c.byType, 'shown')}</span>
+      <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}${breakdown(colorVal, c.byType, 'hidden')}</span>
+      <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}${breakdown(colorVal, c.byType, 'captured')}</span>
     </div>`;
-  return `<div class="piece-counts">${row('Red', '帥', 'red', counts.red)}${row('Black', '將', 'black', counts.black)}</div>`;
+  return `<div class="piece-counts">${row('Red', '帥', 'red', 1, counts.red)}${row('Black', '將', 'black', 2, counts.black)}</div>`;
 }
 
 function cellAriaLabel(idx, cell, opts = {}) {
@@ -1130,9 +1194,14 @@ function renderBoard(boardEl, state, onClick) {
 async function renderDashboard() {
   showView('dashboard');
   refreshNotificationBadge();
+  ensureNotifySettingsPanel();
   const list = $('dashboard-list');
   if (!me) { list.innerHTML = `<div>Sign in first. <a href="#/">Lobby</a></div>`; return; }
-  if (!online) { list.innerHTML = `<div class="muted">You're offline — can't load games. <a href="#/">Lobby</a></div>`; return; }
+  if (!online) {
+    list.innerHTML = `<div class="muted">You're offline — can't load games. <a href="#/">Lobby</a></div>`;
+    return;
+  }
+  renderNotifySettings();
   let games;
   try {
     const r = await fetch('/api/games');
@@ -1194,6 +1263,109 @@ async function renderDashboard() {
         toast(`Couldn't remove game: ${e.message || e}`, { kind: 'error' });
       }
     };
+  });
+}
+
+// ---- notification settings (rendered in the dashboard view) ----
+function ensureNotifySettingsPanel() {
+  if (document.getElementById('notify-settings')) return;
+  const view = views.dashboard;
+  if (!view) return;
+  const panel = document.createElement('div');
+  panel.id = 'notify-settings';
+  panel.className = 'notify-settings';
+  // Insert just above the games list so users can flip it on without scrolling.
+  const list = $('dashboard-list');
+  view.insertBefore(panel, list);
+}
+
+async function renderNotifySettings() {
+  const panel = document.getElementById('notify-settings');
+  if (!panel) return;
+  if (!me || me.is_guest) {
+    panel.innerHTML = me?.is_guest
+      ? `<div class="muted small">Sign in (not as a guest) to enable turn notifications across devices.</div>`
+      : '';
+    return;
+  }
+  const s = Notify.getSettings();
+  const pushSupported = await Notify.isPushSupported();
+  const browserPerm = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+  const currentSub = pushSupported ? await Notify.currentPushSubscription() : null;
+  const pushOn = !!currentSub && s.push;
+
+  let pushStatus = '';
+  if (!pushSupported) pushStatus = 'Push not supported on this browser.';
+  else if (browserPerm === 'denied') pushStatus = 'Browser notifications are blocked — re-enable in site settings.';
+  else if (pushOn) pushStatus = 'On — you\'ll get a notification on this device when it\'s your turn.';
+  else pushStatus = 'Off — turn on to get notified when your tab is closed.';
+
+  panel.innerHTML = `
+    <details class="notify-card">
+      <summary><b>Turn notifications</b> <span class="muted small" id="notify-status"></span></summary>
+      <div class="notify-row">
+        <label><input type="checkbox" id="notify-sound" ${s.sound ? 'checked' : ''}>
+          Play a sound when it's my turn</label>
+      </div>
+      <div class="notify-row">
+        <label><input type="checkbox" id="notify-desktop" ${s.desktopAlerts ? 'checked' : ''}>
+          Show a desktop alert when this tab is hidden</label>
+      </div>
+      <div class="notify-row">
+        <div>
+          <div><b>Push notifications</b></div>
+          <div class="muted small" id="notify-push-status">${escapeHtml(pushStatus)}</div>
+        </div>
+        <button type="button" id="notify-push-toggle"
+                class="${pushOn ? 'link-btn' : 'primary'}"
+                ${(!pushSupported || browserPerm === 'denied') ? 'disabled' : ''}>
+          ${pushOn ? 'Turn off' : 'Turn on'}
+        </button>
+      </div>
+    </details>`;
+
+  const summaryStatus = $('notify-status');
+  const compactStatus = () => {
+    const bits = [];
+    if (s.sound) bits.push('sound');
+    if (s.desktopAlerts) bits.push('alerts');
+    if (pushOn) bits.push('push');
+    return bits.length ? bits.join(' · ') : 'off';
+  };
+  summaryStatus.textContent = compactStatus();
+
+  $('notify-sound').addEventListener('change', (e) => {
+    Notify.saveSettings({ sound: e.target.checked });
+    renderNotifySettings();
+  });
+  $('notify-desktop').addEventListener('change', async (e) => {
+    const want = e.target.checked;
+    if (want && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      try { await Notification.requestPermission(); } catch (_) {}
+    }
+    Notify.saveSettings({ desktopAlerts: want });
+    renderNotifySettings();
+  });
+  $('notify-push-toggle').addEventListener('click', async () => {
+    const btn = $('notify-push-toggle');
+    btn.disabled = true;
+    if (pushOn) {
+      await Notify.unsubscribePush();
+      toast('Push notifications turned off.', { kind: 'info', timeoutMs: 2500 });
+    } else {
+      const result = await Notify.requestPushPermissionAndSubscribe();
+      if (!result.ok) {
+        const msg = result.reason === 'denied'        ? 'Permission denied. Allow notifications in your browser settings.'
+                  : result.reason === 'unsupported'   ? 'Push is not supported on this browser.'
+                  : result.reason === 'server-disabled' ? 'Push isn\'t configured on this server.'
+                  : result.reason === 'guest'         ? 'Sign in (not as a guest) to enable push.'
+                  : 'Could not enable push. Try again later.';
+        toast(msg, { kind: 'warn' });
+      } else {
+        toast('Push notifications enabled.', { kind: 'success', timeoutMs: 2500 });
+      }
+    }
+    renderNotifySettings();
   });
 }
 

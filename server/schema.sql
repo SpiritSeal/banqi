@@ -101,6 +101,22 @@ CREATE TABLE IF NOT EXISTS match_requests (
 CREATE INDEX IF NOT EXISTS idx_mreq_to_pending   ON match_requests(to_user_id,   status);
 CREATE INDEX IF NOT EXISTS idx_mreq_from_pending ON match_requests(from_user_id, status);
 
+-- Web Push subscriptions for "your turn" notifications. A user may install the
+-- PWA on multiple devices (phone, laptop, etc.); each device gets its own row.
+-- Endpoint is the per-device push service URL; (p256dh, auth) are the keys the
+-- browser hands us during subscription. We delete rows on 404/410 from the
+-- push service so dead endpoints don't accumulate.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id              SERIAL  PRIMARY KEY,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint        TEXT    NOT NULL,
+  p256dh          TEXT    NOT NULL,
+  auth            TEXT    NOT NULL,
+  created_at      BIGINT  NOT NULL,
+  UNIQUE(user_id, endpoint)
+);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+
 -- Drop legacy federated-relay tables / columns if present. The server-
 -- authoritative model persists moves via game_state + game_events; end-of-
 -- game claims are unnecessary now that the server decides terminal state;

@@ -64,6 +64,17 @@ Required env vars:
 | `GITHUB_CLIENT_ID` / `_SECRET` | OAuth app at <https://github.com/settings/applications/new>. Callback: `${PUBLIC_URL}/auth/callback/github` |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | OAuth app at <https://console.cloud.google.com/apis/credentials>. Callback: `${PUBLIC_URL}/auth/callback/google` |
 
+Optional (push notifications):
+
+| Variable             | Notes                                                            |
+|----------------------|------------------------------------------------------------------|
+| `VAPID_PUBLIC_KEY`   | Base64url public key from `npx web-push generate-vapid-keys`. Safe to expose. |
+| `VAPID_PRIVATE_KEY`  | Base64url private key. Treat like a database password.           |
+| `VAPID_SUBJECT`      | `mailto:you@yourdomain.com` or `https://...`. Reachable contact for the push services. |
+
+If unset, push notifications are disabled and `/api/push/vapid-key` returns
+503; in-page sound + title-bar alerts still work.
+
 At least one OAuth provider must be configured for production. Do **not**
 set `AUTH_DEV=1` in production.
 
@@ -79,6 +90,45 @@ docker run -p 8080:8080 \
   -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
   banqi
 ```
+
+### Enabling push notifications
+
+Push notifications (the "your turn" toast that fires when the recipient's
+tab is closed) require a VAPID keypair. Generate one **once, ever** — the
+public key is baked into every browser subscription, so rotating it
+invalidates every existing subscription.
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+Store the private key in a secret manager (GCP Secret Manager, AWS Secrets
+Manager, Vault, etc.) and your team password manager. Pass all three values
+to the server as environment variables: `VAPID_PUBLIC_KEY`,
+`VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`.
+
+On Cloud Run with Secret Manager:
+
+```bash
+# One-time: create the secret.
+printf 'YOUR_PRIVATE_KEY' | gcloud secrets create banqi-vapid-private-key \
+  --replication-policy=automatic --data-file=-
+
+# Grant the service's runtime SA read access.
+gcloud secrets add-iam-policy-binding banqi-vapid-private-key \
+  --member="serviceAccount:RUNTIME_SA_EMAIL" \
+  --role="roles/secretmanager.secretAccessor"
+
+# Wire all three into the service. Use --update-env-vars / --update-secrets
+# instead of --set-* if other vars are already configured.
+gcloud run services update YOUR_SERVICE --region=YOUR_REGION \
+  --update-env-vars="VAPID_PUBLIC_KEY=...,VAPID_SUBJECT=mailto:you@example.com" \
+  --update-secrets="VAPID_PRIVATE_KEY=banqi-vapid-private-key:latest"
+```
+
+Confirm with `curl https://YOUR_HOST/api/push/vapid-key` — it should return
+JSON with the public key, not 503. Then sign in (not as a guest), open
+**My games → Turn notifications**, and toggle push on.
 
 ## Threat model
 
