@@ -245,6 +245,9 @@ std::vector<Move> BanqiRules::legal_moves(int player_index) const {
 }
 
 void BanqiRules::apply_flip(int cell, Piece revealed) {
+    if (game_over_) {
+        throw std::runtime_error("apply_flip: game is over");
+    }
     if (cell < 0 || cell >= CELLS) {
         throw std::runtime_error("apply_flip: cell out of range");
     }
@@ -269,6 +272,9 @@ void BanqiRules::apply_flip(int cell, Piece revealed) {
 }
 
 MoveResult BanqiRules::apply_move(int from, int to) {
+    if (game_over_) {
+        throw std::runtime_error("apply_move: game is over");
+    }
     if (from < 0 || from >= CELLS || to < 0 || to >= CELLS || from == to) {
         throw std::runtime_error("apply_move: cells out of range");
     }

@@ -541,3 +541,16 @@ TEST_CASE("BanqiRules: set_terminal forces game over and clears legal moves") {
     CHECK(b.legal_moves(0).empty());
     CHECK(b.legal_moves(1).empty());
 }
+
+TEST_CASE("BanqiRules: apply_flip / apply_move refuse to mutate a terminal engine") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_facedown(0);
+    b.set_faceup(8, Piece{Color::Red, PieceType::General});
+    b.set_terminal(Color::Black);
+    CHECK_THROWS(b.apply_flip(0, Piece{Color::Red, PieceType::Advisor}));
+    CHECK_THROWS(b.apply_move(8, 0));
+    CHECK(b.at(0).state == Cell::State::FaceDown);
+    CHECK(b.at(8).state == Cell::State::FaceUp);
+}
