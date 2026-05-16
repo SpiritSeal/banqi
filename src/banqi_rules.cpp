@@ -27,6 +27,9 @@ void BanqiRules::set_all_facedown() {
         c.piece = {};
     }
     first_flip_done_ = false;
+    side_to_move_player_ = 0;
+    side_to_move_ = Color::None;
+    player_color_ = {Color::None, Color::None};
     game_over_ = false;
     winner_ = Color::None;
 }

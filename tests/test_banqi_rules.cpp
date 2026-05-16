@@ -542,6 +542,22 @@ TEST_CASE("BanqiRules: set_terminal forces game over and clears legal moves") {
     CHECK(b.legal_moves(1).empty());
 }
 
+TEST_CASE("BanqiRules: set_all_facedown fully resets state (no leftover colors)") {
+    BanqiRules b;
+    b.set_all_facedown();
+    b.apply_flip(0, Piece{Color::Red, PieceType::Advisor});  // assigns colors
+    REQUIRE(b.color_for_player(0) == Color::Red);
+    REQUIRE(b.side_to_move_player() == 1);
+    b.set_all_facedown();  // back to a fresh game
+    CHECK_FALSE(b.first_flip_done());
+    CHECK(b.color_for_player(0) == Color::None);
+    CHECK(b.color_for_player(1) == Color::None);
+    CHECK(b.side_to_move_player() == 0);
+    // P0 (the convention) must be able to start fresh.
+    CHECK(b.legal_moves(0).size() == 32);
+    CHECK(b.legal_moves(1).empty());
+}
+
 TEST_CASE("BanqiRules: apply_flip / apply_move refuse to mutate a terminal engine") {
     BanqiRules b;
     b.clear();
