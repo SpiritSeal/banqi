@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import 'dotenv/config';
 
-import { openDb } from './db.mjs';
+import { openDb, ensureAiUsers } from './db.mjs';
 import { configureAuth, authProviders } from './auth.mjs';
 import { gamesRouter } from './routes/games.mjs';
 import { usersRouter } from './routes/users.mjs';
@@ -36,6 +36,7 @@ if (SERVER_SECRET === 'dev-insecure-secret-change-me' && env.NODE_ENV === 'produ
 export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERVER_SECRET,
                                   publicUrl = PUBLIC_URL, envOverride = env } = {}) {
   const db = await openDb(databaseUrl);
+  await ensureAiUsers(db);
   const engine = await createGameEngine({ db });
   configurePush({ env: envOverride });
   const app = express();
@@ -54,14 +55,8 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
       public_url: publicUrl,
     });
   });
-  // Create the HTTP server + attach WS upfront so the routes can use the
-  // returned broadcast/finalize helpers (e.g. claim-timeout fires a terminal
-  // event from an HTTP request, not an intent frame).
-  const server = createServer(app);
-  const wsHelpers = attachWebSocket(server, { db, sessionParser, passport, engine });
-
   app.use('/api', usersRouter({ db }));
-  app.use('/api', gamesRouter({ db, engine, wsHelpers }));
+  app.use('/api', gamesRouter({ db, engine }));
   app.use('/api', leaderboardRouter({ db }));
   app.use('/api', friendsRouter({ db, serverSecret, publicUrl }));
   app.use('/api', matchRequestsRouter({ db, engine }));
@@ -74,6 +69,8 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
     res.sendFile(join(WEB_DIR, 'index.html'));
   });
 
+  const server = createServer(app);
+  attachWebSocket(server, { db, sessionParser, passport, engine });
   return { app, server, db, engine };
 }
 

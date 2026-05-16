@@ -143,6 +143,19 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     ]);
   }
 
+  // Subscribe to engine events. The engine fires this for human-driven
+  // intents (via applyIntent), server-initiated AI follow-up moves, and
+  // out-of-band terminal events like claim-timeout, so all paths funnel
+  // through the same broadcast + Elo logic.
+  engine.onEvent(async ({ gameId, event, session, endedNow, isDraw }) => {
+    await broadcastEvent(gameId, event, session);
+    if (endedNow) {
+      const lossReason = event.action?.kind === 'timeout' ? 'timeout' : null;
+      try { await applyEloOnEnd(session, gameId, event.winner, isDraw, lossReason); }
+      catch (e) { console.error('elo update failed:', e); }
+    }
+  });
+
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://x');
     const m = url.pathname.match(/^\/ws\/(\d+)$/);
@@ -196,13 +209,7 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
         pushTo(entry, { type: 'reject', reason: result.reason });
         return;
       }
-      await broadcastEvent(session.gameId, result.event, session);
-      if (result.endedNow) {
-        const isDraw = result.event.action?.kind === 'accept_draw';
-        const lossReason = result.event.action?.kind === 'timeout' ? 'timeout' : null;
-        try { await applyEloOnEnd(session, session.gameId, result.event.winner, isDraw, lossReason); }
-        catch (e) { console.error('elo update failed:', e); }
-      }
+      // Broadcast + Elo handled by the engine.onEvent subscriber above.
     });
 
     ws.on('close', () => {
@@ -222,9 +229,4 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
       }
     }
   }, 30_000).unref();
-
-  // Exposed so HTTP routes that synthesize terminal events outside the WS
-  // path (e.g. POST /api/games/:id/claim-timeout) can broadcast + finalize
-  // through the same channel as in-game intents.
-  return { broadcastEvent, applyEloOnEnd };
 }

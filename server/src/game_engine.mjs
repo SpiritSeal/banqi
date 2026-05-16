@@ -7,11 +7,16 @@
 // Concurrency: each game's apply path is serialized via a per-game mutex so
 // two simultaneous intents from the same player can't race the WASM state.
 
+import { chooseMove } from '../../web/ai.js';
 import {
   findGameById, saveGameState, loadGameState,
   appendGameEvent, listGameEvents, markGameEnded,
-  saveClockState,
+  saveClockState, getUser,
 } from './db.mjs';
+
+// Delay before the server-side AI plays its move, so the human sees a
+// little "thinking" pause instead of an instant snap-reply.
+const AI_THINK_DELAY_MS = 350;
 
 // Default WASM loader. Imported dynamically so this file can be loaded in
 // test contexts that pass an injected fake module — the real banqi.js +
@@ -35,18 +40,24 @@ class Session {
     this._chain = Promise.resolve();
     this.pendingDrawOffer = null; // player index who offered, or null
     this.drawAccepted = false;
-    const fmi = opts.firstMoverIndex;
-    // null on ad-hoc room games (either side may make the first flip);
+    // AI metadata, populated on hydration/attach when either side is an AI
+    // user row. aiPlayerIndex is 0 (host) or 1 (join); aiUserId is the
+    // corresponding users.id; aiDifficulty is the provider_id.
+    this.aiPlayerIndex = null;
+    this.aiUserId = null;
+    this.aiDifficulty = null;
+    this.aiPending = false;
+    // null on ad-hoc / AI games (either side may make the first flip);
     // 0 or 1 on games created via a directed challenge with a fixed
     // first-mover. Only consulted before first_flip_done.
+    const fmi = opts.firstMoverIndex;
     this.firstMoverIndex = (fmi === 0 || fmi === 1) ? fmi : null;
-    // Time control. timeLimitMs===null means "unlimited" — no clock state
-    // is tracked and clock-related fields stay null/0 forever.
+    // Time control. timeLimitMs === null means "unlimited" — no clock
+    // state is tracked and clock-related fields stay null/0 forever.
     this.timeLimitMs = Number.isInteger(opts.timeLimitMs) && opts.timeLimitMs > 0
       ? opts.timeLimitMs : null;
     this.incrementMs = Number.isInteger(opts.incrementMs) && opts.incrementMs > 0
       ? opts.incrementMs : 0;
-    // clocks[0], clocks[1] = remaining ms for each seat. Null when unlimited.
     if (this.timeLimitMs != null) {
       const c = opts.clocks;
       this.clocks = (c && Number.isInteger(c[0]) && Number.isInteger(c[1]))
@@ -59,8 +70,8 @@ class Session {
     // happens it points at the side now on the move and activeSince is set.
     const ai = opts.activeIndex;
     this.activeIndex = (ai === 0 || ai === 1) ? ai : null;
-    // Always reset on construction — the elapsed time between a save and the
-    // next intent isn't deducted (gentle behavior across server restarts).
+    // Always reset on construction — the elapsed time between a save and
+    // the next intent isn't deducted (gentle behavior across restarts).
     this.activeSince = this.activeIndex == null ? null : Date.now();
     // Set when a side runs out of time. Persisted via clock_state_json so
     // rehydrate of a timed-out session still reports game_over.
@@ -93,6 +104,17 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
   const Module = banqiModule || await getDefaultModule();
   const cache = new Map();   // gameId → Session
 
+  // Subscribers notified after every successful intent (human OR AI).
+  // Signature: fn({ gameId, event, session, endedNow, isDraw }).
+  const eventListeners = new Set();
+  function onEvent(fn) { eventListeners.add(fn); return () => eventListeners.delete(fn); }
+  async function emitEvent(payload) {
+    for (const fn of eventListeners) {
+      try { await fn(payload); }
+      catch (e) { console.error('engine event listener failed:', e); }
+    }
+  }
+
   function evictIdle() {
     const cutoff = Date.now() - IDLE_MS;
     for (const [id, s] of cache) {
@@ -101,6 +123,23 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
   }
   const evictTimer = setInterval(evictIdle, 5 * 60 * 1000);
   evictTimer.unref?.();
+
+  // Resolve AI metadata for the session by inspecting its host/join users.
+  // No-op if neither side is an AI row.
+  async function resolveAiMetadata(session) {
+    const candidates = [];
+    if (session.hostUserId) candidates.push([0, session.hostUserId]);
+    if (session.joinUserId) candidates.push([1, session.joinUserId]);
+    for (const [pi, uid] of candidates) {
+      const u = await getUser(db, uid);
+      if (u && u.provider === 'ai') {
+        session.aiPlayerIndex = pi;
+        session.aiUserId = uid;
+        session.aiDifficulty = u.provider_id;
+        return;
+      }
+    }
+  }
 
   async function createGame(gameId, hostUserId, mode = 'standard',
                             firstMoverIndex = null,
@@ -116,7 +155,9 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
     if (session.timeLimitMs != null) {
       await saveClockState(db, gameId, serializeClockState(session));
     }
+    await resolveAiMetadata(session);
     cache.set(gameId, session);
+    maybeScheduleAiMove(session);
     return session;
   }
 
@@ -124,12 +165,18 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
     const session = await getSession(gameId);
     if (!session) return null;
     session.joinUserId = joinUserId;
+    await resolveAiMetadata(session);
+    maybeScheduleAiMove(session);
     return session;
   }
 
   async function getSession(gameId) {
     const cached = cache.get(gameId);
-    if (cached) { cached.lastTouched = Date.now(); return cached; }
+    if (cached) {
+      cached.lastTouched = Date.now();
+      maybeScheduleAiMove(cached);
+      return cached;
+    }
     const game = await findGameById(db, gameId);
     if (!game) return null;
     const snap = await loadGameState(db, gameId);
@@ -155,7 +202,12 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
       const last = events[events.length - 1];
       if (last.draw_offered && !last.game_over) session.pendingDrawOffer = last.mover;
     }
+    await resolveAiMetadata(session);
     cache.set(gameId, session);
+    // After server-restart hydration: if it's the AI's turn, kick it off so
+    // the human's reconnect doesn't sit forever waiting for a move that will
+    // never come.
+    maybeScheduleAiMove(session);
     return session;
   }
 
@@ -193,9 +245,9 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
 
   // Synthesize and persist the terminal 'timeout' event. Same flow as a
   // regular intent: append to events, save WASM snapshot, save clock state,
-  // mark games row complete. Called both from applyIntent (when the active
-  // side tries to move past their flag) and from claimTimeout (opponent
-  // notices a stalled clock).
+  // mark games row complete. Called both from _applyIntentLocked (when the
+  // active side tries to move past their flag) and from claimTimeout
+  // (opponent notices a stalled clock).
   async function fireTimeout(session, loserIndex, now) {
     if (session.clocks) session.clocks[loserIndex] = 0;
     session.timeoutLoser = loserIndex;
@@ -224,182 +276,164 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
     return { ok: true, event, endedNow };
   }
 
-  async function applyIntent(gameId, userId, intent) {
-    const session = await getSession(gameId);
-    if (!session) return { ok: false, reason: 'no such game' };
-    return session.run(async () => {
-      const pi = session.playerIndexFor(userId);
-      if (pi < 0) return { ok: false, reason: 'not a player in this game' };
-      if (session.wasm.gameOver() || session.drawAccepted ||
-          session.timeoutLoser !== null) {
-        return { ok: false, reason: 'game is over' };
+  // Core intent-application logic, used by both the human-initiated path
+  // (applyIntent) and the server-initiated AI follow-up (applyAiTurn).
+  // Caller must hold the session's run-lock.
+  async function _applyIntentLocked(session, pi, intent) {
+    if (session.wasm.gameOver() || session.drawAccepted ||
+        session.timeoutLoser !== null) {
+      return { ok: false, reason: 'game is over' };
+    }
+    const now = Date.now();
+
+    // Clocks: if the mover IS the active player, decrement their remaining
+    // time by elapsed real time first. If that drops to 0 the move is
+    // dropped entirely and a timeout event fires instead — they ran out of
+    // time before the move landed.
+    if (session.clocks && session.activeIndex === pi) {
+      const remaining = tickActiveClock(session, now);
+      if (remaining <= 0) return fireTimeout(session, pi, now);
+    }
+
+    // On games created via a directed challenge with a fixed first-mover,
+    // block the wrong side from making the opening flip. Once first_flip_done
+    // is true the WASM rules engine alternates side_to_move correctly, so
+    // this guard is a no-op for every later turn.
+    if (session.firstMoverIndex !== null && intent?.kind === 'flip') {
+      const pre = JSON.parse(session.wasm.stateJson(-1));
+      if (!pre.first_flip_done && pi !== session.firstMoverIndex) {
+        return { ok: false, reason: 'opponent makes the first move' };
       }
-      const now = Date.now();
+    }
 
-      // Clocks: if the mover IS the active player, decrement their remaining
-      // time by elapsed real time first. If that drops to 0 the move is
-      // dropped entirely and a timeout event fires instead — they ran out of
-      // time before the move landed. (For a non-active mover trying to play
-      // out of turn, WASM will reject below and the active clock keeps
-      // ticking, which is what we want.)
-      if (session.clocks && session.activeIndex === pi) {
-        const remaining = tickActiveClock(session, now);
-        if (remaining <= 0) return fireTimeout(session, pi, now);
-        // Don't reset activeSince here — we'll set it after the intent
-        // commits, when control passes to the opponent.
-      }
+    const preState = session.clocks
+      ? JSON.parse(session.wasm.stateJson(-1)) : null;
+    const wasFirstFlipDone = preState?.first_flip_done ?? null;
 
-      // On games created via a directed challenge with a fixed first-mover,
-      // block the wrong side from making the opening flip. Once first_flip_done
-      // is true the WASM rules engine alternates side_to_move correctly, so
-      // this guard is a no-op for every later turn.
-      if (session.firstMoverIndex !== null && intent?.kind === 'flip') {
-        const pre = JSON.parse(session.wasm.stateJson(-1));
-        if (!pre.first_flip_done && pi !== session.firstMoverIndex) {
-          return { ok: false, reason: 'opponent makes the first move' };
-        }
-      }
-
-      const preState = session.clocks
-        ? JSON.parse(session.wasm.stateJson(-1)) : null;
-      const wasFirstFlipDone = preState?.first_flip_done ?? null;
-
-      let action, revealed = null, capture = null, drawOffered = false;
-      try {
-        switch (intent?.kind) {
-          case 'flip': {
-            const cell = Number(intent.cell);
-            if (!Number.isInteger(cell) || cell < 0 || cell >= 32) {
-              throw new Error('bad cell');
-            }
-            const piece = JSON.parse(session.wasm.applyFlip(pi, cell));
-            revealed = piece;
-            action = { kind: 'flip', to: cell };
-            // Clear opponent's draw offer when a move is made.
-            if (session.pendingDrawOffer !== null && session.pendingDrawOffer !== pi) {
-              session.pendingDrawOffer = null;
-            }
-            if (intent.offer_draw && !session.wasm.gameOver()) {
-              const st = JSON.parse(session.wasm.stateJson(-1));
-              if (st.first_flip_done && session.pendingDrawOffer === null) {
-                session.pendingDrawOffer = pi;
-                drawOffered = true;
-              }
-            }
-            break;
+    let action, revealed = null, capture = null, drawOffered = false;
+    try {
+      switch (intent?.kind) {
+        case 'flip': {
+          const cell = Number(intent.cell);
+          if (!Number.isInteger(cell) || cell < 0 || cell >= 32) {
+            throw new Error('bad cell');
           }
-          case 'move': {
-            const from = Number(intent.from), to = Number(intent.to);
-            if (!Number.isInteger(from) || !Number.isInteger(to)) throw new Error('bad coords');
-            const beforeState = JSON.parse(session.wasm.stateJson(-1));
-            const dst = beforeState.cells[to];
-            session.wasm.applyMove(pi, from, to);
-            if (dst && dst.state === 'faceup') {
-              capture = { color: dst.color, type: dst.type, glyph: dst.glyph };
-            }
-            action = { kind: 'move', from, to };
-            // Clear opponent's draw offer when a move is made.
-            if (session.pendingDrawOffer !== null && session.pendingDrawOffer !== pi) {
-              session.pendingDrawOffer = null;
-            }
-            if (intent.offer_draw && !session.wasm.gameOver() && session.pendingDrawOffer === null) {
+          const piece = JSON.parse(session.wasm.applyFlip(pi, cell));
+          revealed = piece;
+          action = { kind: 'flip', to: cell };
+          if (session.pendingDrawOffer !== null && session.pendingDrawOffer !== pi) {
+            session.pendingDrawOffer = null;
+          }
+          if (intent.offer_draw && !session.wasm.gameOver()) {
+            const st = JSON.parse(session.wasm.stateJson(-1));
+            if (st.first_flip_done && session.pendingDrawOffer === null) {
               session.pendingDrawOffer = pi;
               drawOffered = true;
             }
-            break;
           }
-          case 'accept_draw': {
-            if (session.pendingDrawOffer === null) {
-              return { ok: false, reason: 'no draw offer to accept' };
-            }
-            if (session.pendingDrawOffer === pi) {
-              return { ok: false, reason: 'cannot accept your own draw offer' };
-            }
-            session.drawAccepted = true;
-            session.pendingDrawOffer = null;
-            action = { kind: 'accept_draw' };
-            break;
-          }
-          case 'resign': {
-            session.wasm.applyResign(pi);
-            action = { kind: 'resign' };
-            session.pendingDrawOffer = null;
-            break;
-          }
-          default:
-            throw new Error('unknown intent kind');
+          break;
         }
-      } catch (e) {
-        return { ok: false, reason: String(e.message || e) };
-      }
-
-      // Clock bookkeeping. The intent has committed; the active clock for the
-      // mover is consumed (its current remaining was already in session.clocks
-      // from the tick above). Now: add increment for the mover (skip on the
-      // first flip — pre-flip is untimed), then hand the timer over to the
-      // opponent. accept_draw / resign don't pass the timer along: the game
-      // is ending in this same event.
-      const eventTs = Date.now();
-      if (session.clocks) {
-        const transitionedFromFirstFlip = wasFirstFlipDone === false
-          && action?.kind === 'flip';
-        if (transitionedFromFirstFlip) {
-          // First move of the game just landed. Mover doesn't get an
-          // increment (pre-flip was untimed). Opponent's clock starts now.
-          session.activeIndex = 1 - pi;
-          session.activeSince = eventTs;
-        } else if (action?.kind === 'flip' || action?.kind === 'move') {
-          // Subsequent ply: increment the mover, then hand off to opponent.
-          session.clocks[pi] = session.clocks[pi] + session.incrementMs;
-          session.activeIndex = 1 - pi;
-          session.activeSince = eventTs;
+        case 'move': {
+          const from = Number(intent.from), to = Number(intent.to);
+          if (!Number.isInteger(from) || !Number.isInteger(to)) throw new Error('bad coords');
+          const beforeState = JSON.parse(session.wasm.stateJson(-1));
+          const dst = beforeState.cells[to];
+          session.wasm.applyMove(pi, from, to);
+          if (dst && dst.state === 'faceup') {
+            capture = { color: dst.color, type: dst.type, glyph: dst.glyph };
+          }
+          action = { kind: 'move', from, to };
+          if (session.pendingDrawOffer !== null && session.pendingDrawOffer !== pi) {
+            session.pendingDrawOffer = null;
+          }
+          if (intent.offer_draw && !session.wasm.gameOver() && session.pendingDrawOffer === null) {
+            session.pendingDrawOffer = pi;
+            drawOffered = true;
+          }
+          break;
         }
-        // For accept_draw / resign we leave activeIndex/activeSince untouched;
-        // the game is over so they no longer matter.
+        case 'accept_draw': {
+          if (session.pendingDrawOffer === null) {
+            return { ok: false, reason: 'no draw offer to accept' };
+          }
+          if (session.pendingDrawOffer === pi) {
+            return { ok: false, reason: 'cannot accept your own draw offer' };
+          }
+          session.drawAccepted = true;
+          session.pendingDrawOffer = null;
+          action = { kind: 'accept_draw' };
+          break;
+        }
+        case 'resign': {
+          session.wasm.applyResign(pi);
+          action = { kind: 'resign' };
+          session.pendingDrawOffer = null;
+          break;
+        }
+        default:
+          throw new Error('unknown intent kind');
       }
+    } catch (e) {
+      return { ok: false, reason: String(e.message || e) };
+    }
 
-      const event = {
-        seq:          session.events.length,
-        ts:           eventTs,
-        mover:        pi,
-        action,
-        revealed,
-        capture,
-        game_over:    session.wasm.gameOver() || session.drawAccepted,
-        winner:       session.drawAccepted ? 0 : session.wasm.winner(),
-        draw_offered: drawOffered,
-        clocks_after: session.clocks
-          ? { 0: session.clocks[0], 1: session.clocks[1] } : null,
-      };
-      session.events.push(event);
-      session.lastTouched = eventTs;
-
-      // Persist updated state + event row.
-      const snap = session.wasm.snapshotJson();
-      await saveGameState(db, gameId, snap);
-      if (session.clocks) {
-        await saveClockState(db, gameId, serializeClockState(session));
+    // Clock bookkeeping. The intent has committed; if the mover was on the
+    // active clock, add their increment and hand the timer to the opponent.
+    // First-flip is special: pre-flip is untimed, so the first flipper does
+    // NOT receive an increment — we just start the opponent's clock.
+    // accept_draw / resign skip this: the game is ending in this same event.
+    const eventTs = Date.now();
+    if (session.clocks) {
+      const transitionedFromFirstFlip = wasFirstFlipDone === false
+        && action?.kind === 'flip';
+      if (transitionedFromFirstFlip) {
+        session.activeIndex = 1 - pi;
+        session.activeSince = eventTs;
+      } else if (action?.kind === 'flip' || action?.kind === 'move') {
+        session.clocks[pi] = session.clocks[pi] + session.incrementMs;
+        session.activeIndex = 1 - pi;
+        session.activeSince = eventTs;
       }
-      await appendGameEvent(db, gameId, event);
+    }
 
-      // If the game just ended, mark the games row terminal — callers can
-      // observe this via getSession or by inspecting the returned event.
-      let endedNow = false;
-      if (event.game_over) {
-        endedNow = await markGameEnded(db, gameId, event.winner);
-      }
-      return { ok: true, event, endedNow };
-    });
+    const event = {
+      seq:          session.events.length,
+      ts:           eventTs,
+      mover:        pi,
+      action,
+      revealed,
+      capture,
+      game_over:    session.wasm.gameOver() || session.drawAccepted,
+      winner:       session.drawAccepted ? 0 : session.wasm.winner(),
+      draw_offered: drawOffered,
+      clocks_after: session.clocks
+        ? { 0: session.clocks[0], 1: session.clocks[1] } : null,
+    };
+    session.events.push(event);
+    session.lastTouched = eventTs;
+
+    const snap = session.wasm.snapshotJson();
+    await saveGameState(db, session.gameId, snap);
+    if (session.clocks) {
+      await saveClockState(db, session.gameId, serializeClockState(session));
+    }
+    await appendGameEvent(db, session.gameId, event);
+
+    let endedNow = false;
+    if (event.game_over) {
+      endedNow = await markGameEnded(db, session.gameId, event.winner);
+    }
+    return { ok: true, event, endedNow };
   }
 
   // Opposing player can claim a win when the active side has run their clock
-  // to zero. Returns the same shape as applyIntent so the WS broadcast path
-  // can reuse it. Refuses if there's still time left, if it's the active
-  // side's own request, or if the game is already over.
+  // to zero. Shares the per-game mutex with applyIntent so a stalled move
+  // and a concurrent claim resolve deterministically. Returns the same
+  // shape as _applyIntentLocked so the WS broadcast path can reuse it.
   async function claimTimeout(gameId, userId) {
     const session = await getSession(gameId);
     if (!session) return { ok: false, reason: 'no such game' };
-    return session.run(async () => {
+    const result = await session.run(async () => {
       const pi = session.playerIndexFor(userId);
       if (pi < 0) return { ok: false, reason: 'not a player in this game' };
       if (session.wasm.gameOver() || session.drawAccepted ||
@@ -419,6 +453,82 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
       }
       return fireTimeout(session, session.activeIndex, now);
     });
+    if (result.ok) {
+      await emitEvent({ gameId, event: result.event, session,
+                        endedNow: result.endedNow, isDraw: false });
+    }
+    return result;
+  }
+
+  async function applyIntent(gameId, userId, intent) {
+    const session = await getSession(gameId);
+    if (!session) return { ok: false, reason: 'no such game' };
+    const result = await session.run(async () => {
+      const pi = session.playerIndexFor(userId);
+      if (pi < 0) return { ok: false, reason: 'not a player in this game' };
+      // Don't let the human user submit an intent on behalf of the AI side.
+      if (pi === session.aiPlayerIndex) {
+        return { ok: false, reason: 'not your turn' };
+      }
+      return _applyIntentLocked(session, pi, intent);
+    });
+    if (result.ok) {
+      const isDraw = result.event.action?.kind === 'accept_draw';
+      await emitEvent({ gameId, event: result.event, session,
+                        endedNow: result.endedNow, isDraw });
+      maybeScheduleAiMove(session);
+    }
+    return result;
+  }
+
+  // Schedule the AI's move when the session has an AI side, the game is
+  // live, and it's the AI's turn. Idempotent — multiple calls coalesce
+  // onto the single in-flight timer / chain entry.
+  function maybeScheduleAiMove(session) {
+    if (session.aiPlayerIndex == null) return;
+    if (session.aiPending) return;
+    if (session.wasm.gameOver() || session.drawAccepted) return;
+    const state = JSON.parse(session.wasm.stateJson(-1));
+    if (state.game_over) return;
+    if (state.side_to_move !== session.aiPlayerIndex) return;
+    session.aiPending = true;
+    const timer = setTimeout(() => { runAiTurn(session).catch((e) => {
+      console.error('AI turn failed:', e);
+      session.aiPending = false;
+    }); }, AI_THINK_DELAY_MS);
+    timer.unref?.();
+  }
+
+  async function runAiTurn(session) {
+    const result = await session.run(async () => {
+      // Re-check inside the lock — a human action (resign / accept_draw)
+      // could have changed the state while we were waiting.
+      if (session.wasm.gameOver() || session.drawAccepted) return null;
+      const state = JSON.parse(session.wasm.stateJson(session.aiPlayerIndex));
+      if (state.game_over) return null;
+      if (state.side_to_move !== session.aiPlayerIndex) return null;
+      let move;
+      try {
+        move = chooseMove(state, session.aiPlayerIndex, session.aiDifficulty);
+      } catch (e) {
+        console.error('chooseMove threw:', e);
+        return null;
+      }
+      if (!move) return null;
+      const intent = move.from < 0
+        ? { kind: 'flip', cell: move.to }
+        : { kind: 'move', from: move.from, to: move.to };
+      return _applyIntentLocked(session, session.aiPlayerIndex, intent);
+    });
+    session.aiPending = false;
+    if (result && result.ok) {
+      const isDraw = result.event.action?.kind === 'accept_draw';
+      await emitEvent({ gameId: session.gameId, event: result.event, session,
+                        endedNow: result.endedNow, isDraw });
+      // Edge case: an AI-vs-AI game (not currently exposed) would loop here.
+      // Harmless for human-vs-AI since side_to_move flips back to human.
+      maybeScheduleAiMove(session);
+    }
   }
 
   function viewerState(session, viewerPlayerIndex) {
@@ -439,7 +549,7 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
       }
       state.clocks = live;
       state.clock_active_index = active;
-      state.clock_server_ts    = now;     // client uses this to anchor local decrement
+      state.clock_server_ts    = now;     // client anchors its local decrement to this
     } else {
       state.clocks = null;
       state.clock_active_index = null;
@@ -466,6 +576,6 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
 
   return {
     createGame, attachJoin, getSession, applyIntent, claimTimeout,
-    viewerState, viewerStateForUser, detach, close,
+    viewerState, viewerStateForUser, detach, close, onEvent,
   };
 }

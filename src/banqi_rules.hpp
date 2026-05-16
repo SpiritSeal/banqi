@@ -64,7 +64,10 @@ public:
     Color side_to_move() const { return side_to_move_; }
     // Player → assigned color (set after first flip). May return Color::None
     // before the first flip is committed.
-    Color color_for_player(int player_index) const { return player_color_[player_index]; }
+    Color color_for_player(int player_index) const {
+        if (player_index != 0 && player_index != 1) return Color::None;
+        return player_color_[player_index];
+    }
     bool game_over() const { return game_over_; }
     Color winner() const { return winner_; }
     GameMode mode() const { return mode_; }
@@ -72,7 +75,12 @@ public:
 
     // The two players are indexed 0 and 1. By convention player 0 (host)
     // moves first.
-    void set_initial_side(int player_index) { side_to_move_player_ = player_index; }
+    void set_initial_side(int player_index) {
+        if (player_index != 0 && player_index != 1) {
+            throw std::runtime_error("set_initial_side: player_index must be 0 or 1");
+        }
+        side_to_move_player_ = player_index;
+    }
     int  side_to_move_player() const { return side_to_move_player_; }
 
     // Bypass the normal first-flip flow: directly assign colors and the
@@ -85,8 +93,11 @@ public:
     // to play a move.
     void recheck_terminal();
 
-    // Force terminal state. Used by snapshot restore for win conditions
-    // (e.g. capture-general) that aren't recoverable from the board alone.
+    // Force the game into a terminal state with the given winner. Used by
+    // the Game layer to propagate resignations and by snapshot restore for
+    // win conditions (e.g. capture-general) that aren't recoverable from
+    // the board layout alone — both need legal_moves / state queries to stay
+    // consistent with game_over().
     void force_terminal(Color winner) { game_over_ = true; winner_ = winner; }
 
     // ---- legality and generation ----

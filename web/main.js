@@ -593,6 +593,18 @@ function refreshGame() {
   const clocksRow = (liveState.time_limit_ms != null && liveState.clocks)
     ? renderClocksRowHtml(liveState, myPlayerIdx, opp || 'Opponent', me?.display_name || 'You', active)
     : '';
+  const isAiGame = !!active.info.opponent_is_ai;
+  const aiDifficulty = active.info.ai_difficulty || '';
+  // Replay-on-AI affordance: after a vs-AI game ends, drop a "play another"
+  // button in the header so the user can spin up a fresh game with the same
+  // settings without going back through the lobby.
+  const playAnotherRow = isAiGame && liveState.game_over && !view.replayViewing
+    ? `<div class="meta-row">
+         <button id="btn-play-another-ai" class="primary" type="button">
+           Play another vs ${escapeHtml(active.info.join_name || 'AI')}
+         </button>
+       </div>`
+    : "";
   $('game-header').innerHTML = `
     ${disconnectBanner}
     <div class="meta game-meta">
@@ -610,7 +622,7 @@ function refreshGame() {
         </div>
       </div>
       <div class="meta-row">
-        ${turnPillHtml(liveState, 'online')}
+        ${turnPillHtml(liveState, 'online', { opponentIsAi: isAiGame })}
         <div><span class="meta-label">vs</span> <strong>${escapeHtml(opp || '(waiting for opponent)')}</strong> ${colorChip}</div>
         <div class="meta-btn-group">
           ${offerDrawChk}
@@ -620,6 +632,7 @@ function refreshGame() {
       </div>
       ${clocksRow}
       ${drawOfferRow}
+      ${playAnotherRow}
       <div class="meta-row meta-row-status">
         <span><span class="meta-label">Move</span> ${active.replay.totalMoves()}</span>
         <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info, active.replay)}</span></span>
@@ -659,6 +672,28 @@ function refreshGame() {
     startClockTicker();
   } else {
     stopClockTicker();
+  }
+  const playAnotherBtn = $('btn-play-another-ai');
+  if (playAnotherBtn) {
+    playAnotherBtn.onclick = async () => {
+      playAnotherBtn.disabled = true;
+      try {
+        const res = await fetch('/api/games', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode:     active.info.mode || 'standard',
+            opponent: 'ai:' + aiDifficulty,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const g = await res.json();
+        location.hash = `#/g/${g.roomCode}`;
+      } catch (e) {
+        playAnotherBtn.disabled = false;
+        toast('Could not start a new AI game.', { kind: 'error' });
+      }
+    };
   }
 
   renderTranscript($('game-transcript'), active.replay, {
@@ -705,7 +740,7 @@ function turnLabel(state) {
 
 // HTML for the prominent turn-indicator pill shown in game HUDs.
 // mode: 'online' | 'otb' | 'ai'
-function turnPillHtml(state, mode) {
+function turnPillHtml(state, mode, opts = {}) {
   if (!state.first_flip_done) {
     // If the game was created from a directed challenge with a fixed first
     // mover, surface whose move it is so the locked-out side knows to wait.
@@ -728,7 +763,8 @@ function turnPillHtml(state, mode) {
   let yours, label;
   if (mode === 'online') {
     yours = state.side_to_move === state.my_player_index;
-    label = yours ? 'Your turn' : "Opponent's turn";
+    if (yours) label = 'Your turn';
+    else label = opts.opponentIsAi ? 'AI is thinking…' : "Opponent's turn";
   } else if (mode === 'ai') {
     yours = state.side_to_move === 0;
     label = yours ? 'Your turn' : 'AI thinking…';
@@ -1087,6 +1123,25 @@ const AI_THINK_DELAY_MS = 350;
 async function openAIGame() {
   const difficulty = $('lobby-ai-difficulty')?.value || Difficulty.MEDIUM;
   const mode = normMode($('lobby-ai-mode')?.value);
+  // Signed-in non-guest users get a server-persisted AI game that shows up
+  // on their dashboard, contributes to Elo, and survives a refresh. Guests
+  // and logged-out users keep the local-only WASM flow.
+  if (me && !me.is_guest && online) {
+    try {
+      const res = await fetch('/api/games', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, opponent: 'ai:' + difficulty }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const g = await res.json();
+      location.hash = `#/g/${g.roomCode}`;
+      return;
+    } catch (e) {
+      toast('Could not start AI game. Falling back to local play.', { kind: 'warn' });
+      // fall through to local mode
+    }
+  }
   await _moduleReady;
   _startAIGame(difficulty, mode);
 }
@@ -1679,11 +1734,20 @@ async function renderProfile(userId) {
   }
   const h2h = p.head_to_head || [];
   const isSelf = me && p.id === me.id;
-  const challengeBlock = (me && !isSelf) ? `
-    <div class="row" style="margin:12px 0">
-      <button id="btn-challenge" class="primary">Challenge to a game</button>
-      <span class="muted small">Sends a match request. They have to be a friend or someone you've played before.</span>
-    </div>` : '';
+  const isAi = p.provider === 'ai';
+  // AI profiles get a "Play vs <difficulty>" CTA instead of the human
+  // challenge button — match requests and friending are blocked server-side
+  // for AI rows, so we shouldn't offer those affordances here either.
+  const challengeBlock = isAi
+    ? (me && !me.is_guest ? `
+        <div class="row" style="margin:12px 0">
+          <button id="btn-play-ai-from-profile" class="primary">Play Banqi AI · ${escapeHtml((p.provider_id || '').replace(/^./, (c) => c.toUpperCase()))}</button>
+        </div>` : '')
+    : (me && !isSelf ? `
+        <div class="row" style="margin:12px 0">
+          <button id="btn-challenge" class="primary">Challenge to a game</button>
+          <span class="muted small">Sends a match request. They have to be a friend or someone you've played before.</span>
+        </div>` : '');
   $('profile-body').innerHTML = `
     <h2>${escapeHtml(p.display_name)}</h2>
     <div><b>Elo:</b> ${p.elo}</div>
@@ -1700,9 +1764,27 @@ async function renderProfile(userId) {
       <h3>Danger zone</h3>
       <p class="muted">Deleting your account anonymizes your past games and removes your sign-in. This cannot be undone.</p>
       <button id="btn-delete-account" class="link-btn" style="color:#d24343">Delete my account…</button>` : ''}`;
-  if (challengeBlock) {
+  if (challengeBlock && !isAi) {
     $('btn-challenge').onclick = () => {
       location.hash = `#/challenge/${p.id}`;
+    };
+  }
+  if (isAi && $('btn-play-ai-from-profile')) {
+    $('btn-play-ai-from-profile').onclick = async () => {
+      const mode = await pickChallengeMode();
+      if (mode == null) return;
+      try {
+        const res = await fetch('/api/games', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, opponent: 'ai:' + p.provider_id }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const g = await res.json();
+        location.hash = `#/g/${g.roomCode}`;
+      } catch (e) {
+        toast('Could not start AI game.', { kind: 'error' });
+      }
     };
   }
   if (isSelf) {
@@ -1808,6 +1890,54 @@ function matchRequestChips(req, perspective) {
     parts.push(`<span class="mode-chip small">${escapeHtml(timeControlLabel(req.time_limit_ms, req.increment_ms || 0))}</span>`);
   }
   return parts.join(' ');
+}
+
+// Minimal mode-only modal used by the AI profile button ("Play Banqi AI · X").
+// AI games are created via POST /api/games and don't carry first-mover / TC /
+// message; the full challenge-details screen is reserved for human directed
+// challenges. Resolves to the chosen mode string, or null if cancelled.
+function pickChallengeMode() {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(null); return; }
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cm-title" tabindex="-1">
+        <h2 id="cm-title">Start game</h2>
+        <p class="modal-body">Pick the win condition for this match.</p>
+        <div class="row" style="margin:8px 0 16px">
+          <label for="cm-mode">Win condition</label>
+          <select id="cm-mode">
+            <option value="standard" selected>Standard (no legal moves)</option>
+            <option value="capture_general">Capture the General</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel">Cancel</button>
+          <button type="button" class="btn-confirm primary">Start</button>
+        </div>
+      </div>`;
+    const close = (result) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+    };
+    overlay.querySelector('.btn-cancel').addEventListener('click', () => close(null));
+    overlay.querySelector('.btn-confirm').addEventListener('click', () => {
+      const v = overlay.querySelector('#cm-mode').value;
+      close(normMode(v));
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    overlay.querySelector('.btn-confirm').focus();
+  });
 }
 
 // Full-screen view the challenger lands on after clicking "Challenge". Lets
