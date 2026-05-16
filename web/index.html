@@ -13,7 +13,7 @@
 <meta name="apple-mobile-web-app-title" content="Banqi">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body data-theme="dark" data-board-style="classic" data-piece-style="glyph">
 <!-- Polite screen-reader region for cross-view announcements. -->
 <div id="sr-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
@@ -23,11 +23,37 @@
 <!-- Modal mount point. -->
 <div id="modal-root"></div>
 
+<!-- Drawers (settings + rules) mount here. -->
+<div id="drawer-root"></div>
+
 <div class="page">
   <header>
     <a href="#/" class="brand"><h1>Banqi · 半棋</h1></a>
     <div class="subtitle">Chinese Dark Chess · play online or share a screen</div>
   </header>
+
+  <!-- Persistent app nav. Items are added/hidden via JS based on sign-in state. -->
+  <nav id="app-nav" class="app-nav" aria-label="Primary">
+    <a href="#/" data-route="#/" class="nav-item">Play</a>
+    <a href="#/dashboard" data-route="#/dashboard" class="nav-item" data-requires-auth>My games</a>
+    <a href="#/friends" data-route="#/friends" class="nav-item" data-requires-auth data-not-guest>
+      Friends<span id="nav-notif-badge" class="app-nav-notif hidden"></span>
+    </a>
+    <a href="#/leaderboard" data-route="#/leaderboard" class="nav-item" data-not-guest>Leaderboard</a>
+    <span class="nav-spacer"></span>
+    <button type="button" class="nav-item" id="btn-open-rules" aria-label="Open rules">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 4h12a4 4 0 014 4v12H8a4 4 0 01-4-4V4zm2 2v10a2 2 0 002 2h10V8a2 2 0 00-2-2H6zm2 3h8v2H8V9zm0 4h5v2H8v-2z"/>
+      </svg>
+      Rules
+    </button>
+    <button type="button" class="nav-item" id="btn-open-settings" aria-label="Open settings">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M19.14 12.94c.04-.31.06-.62.06-.94 0-.32-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.5.5 0 00-.6-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.5-.42h-3.84a.5.5 0 00-.5.42l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.5.5 0 00-.6.22L2.74 8.87a.5.5 0 00.12.61L4.89 11.06c-.04.31-.06.62-.06.94 0 .32.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.27.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.59-.24 1.13-.57 1.62-.94l2.39.96c.27.1.55 0 .68-.22l1.92-3.32a.5.5 0 00-.12-.61l-2.03-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6S10.02 8.4 12 8.4s3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+      </svg>
+      <span class="sr-only">Settings</span>
+    </button>
+  </nav>
 
   <main id="main-content">
   <!-- LOBBY -->
@@ -43,26 +69,33 @@
         <div class="row">
           <button id="btn-start-online" class="primary big">Start a game →</button>
         </div>
+        <span class="card-deco" aria-hidden="true">將</span>
       </div>
 
       <div class="lobby-card">
         <h3>Play on this device</h3>
         <p class="muted">No internet, no sign-in. Two players take turns on the same screen.</p>
-        <button id="btn-otb" class="primary big">Hot-seat →</button>
+        <div class="row">
+          <button id="btn-otb" class="primary big">Hot-seat →</button>
+        </div>
+        <span class="card-deco" aria-hidden="true">帥</span>
       </div>
 
       <div class="lobby-card">
         <h3>Play vs AI</h3>
         <p class="muted">Challenge a computer opponent. Pick your difficulty — the hardest mode uses full lookahead search.</p>
-        <div class="row">
+        <div class="row" style="margin-bottom:8px">
           <label for="lobby-ai-difficulty">Difficulty</label>
           <select id="lobby-ai-difficulty">
             <option value="easy">Easy</option>
             <option value="medium" selected>Medium</option>
             <option value="hard">Hard</option>
           </select>
+        </div>
+        <div class="row">
           <button id="btn-ai" class="primary big">vs AI →</button>
         </div>
+        <span class="card-deco" aria-hidden="true">炮</span>
       </div>
     </div>
   </section>
@@ -119,28 +152,24 @@
   <!-- DASHBOARD -->
   <section id="view-dashboard" class="panel hidden" aria-labelledby="dashboard-heading">
     <h2 id="dashboard-heading" tabindex="-1">My games</h2>
-    <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="dashboard-list" class="dashboard-list"></div>
   </section>
 
   <!-- LEADERBOARD -->
   <section id="view-leaderboard" class="panel hidden" aria-labelledby="leaderboard-heading">
     <h2 id="leaderboard-heading" tabindex="-1">Leaderboard</h2>
-    <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="leaderboard-table"></div>
   </section>
 
   <!-- PROFILE -->
   <section id="view-profile" class="panel hidden" aria-labelledby="profile-heading">
     <h2 id="profile-heading" class="sr-only" tabindex="-1">Profile</h2>
-    <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="profile-body"></div>
   </section>
 
   <!-- FRIENDS -->
   <section id="view-friends" class="panel hidden" aria-labelledby="friends-heading">
     <h2 id="friends-heading" tabindex="-1">Friends</h2>
-    <div><a class="link-btn" href="#/">← Lobby</a></div>
     <div id="friends-invite-box"></div>
     <div id="friends-incoming-requests"></div>
     <div id="friends-outgoing-requests"></div>
@@ -148,10 +177,10 @@
   </section>
   </main>
 
-  <!-- Pieces & rules — collapsible crib sheet. -->
-  <aside id="crib" class="panel crib-collapsible" aria-labelledby="crib-heading">
-    <details id="crib-details" open>
-      <summary><h2 id="crib-heading">Pieces &amp; rules</h2></summary>
+  <!-- Rules drawer content (hidden until opened). The same crib markup that
+       used to live at the bottom of the page; the rules button moves it into
+       a slide-over drawer on click. -->
+  <template id="crib-template">
     <div class="crib-grid">
       <div>
         <h3>Pieces (rank high → low)</h3>
@@ -179,8 +208,7 @@
         </ul>
       </div>
     </div>
-    </details>
-  </aside>
+  </template>
 </div>
 
 <script type="module" src="main.js"></script>
