@@ -15,6 +15,13 @@
 
 namespace banqi {
 
+// Which win condition is in effect.
+//   Standard       — classic Taiwanese rule: side-to-move with no legal move loses.
+//   CaptureGeneral — capturing the opponent's General ends the game immediately
+//                    with the capturing side as the winner. The standard
+//                    "no legal moves loses" rule still applies as a fallback.
+enum class GameMode : uint8_t { Standard = 0, CaptureGeneral = 1 };
+
 struct Cell {
     enum class State : uint8_t { Empty, FaceDown, FaceUp };
     State state = State::Empty;
@@ -63,6 +70,8 @@ public:
     }
     bool game_over() const { return game_over_; }
     Color winner() const { return winner_; }
+    GameMode mode() const { return mode_; }
+    void set_mode(GameMode m) { mode_ = m; }
 
     // The two players are indexed 0 and 1. By convention player 0 (host)
     // moves first.
@@ -84,10 +93,12 @@ public:
     // to play a move.
     void recheck_terminal();
 
-    // Force the game into a terminal state with the given winner. Used by the
-    // Game layer to propagate resignations into the rules engine so that
-    // legal_moves / state queries stay consistent with game_over().
-    void set_terminal(Color winner);
+    // Force the game into a terminal state with the given winner. Used by
+    // the Game layer to propagate resignations and by snapshot restore for
+    // win conditions (e.g. capture-general) that aren't recoverable from
+    // the board layout alone — both need legal_moves / state queries to stay
+    // consistent with game_over().
+    void force_terminal(Color winner) { game_over_ = true; winner_ = winner; }
 
     // ---- legality and generation ----
     // Returns true if the move is legal for the given side (player index).
@@ -116,6 +127,7 @@ private:
     std::array<Color, 2> player_color_{Color::None, Color::None};
     bool  game_over_ = false;
     Color winner_ = Color::None;
+    GameMode mode_ = GameMode::Standard;
 
     void recompute_terminal();
     void advance_turn();

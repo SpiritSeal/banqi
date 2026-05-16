@@ -8,10 +8,16 @@
 // two simultaneous intents from the same player can't race the WASM state.
 
 import createBanqi from '../../web/banqi.js';
+import { chooseMove } from '../../web/ai.js';
 import {
   findGameById, saveGameState, loadGameState,
   appendGameEvent, listGameEvents, markGameEnded,
+  getUser,
 } from './db.mjs';
+
+// Delay before the server-side AI plays its move, so the human sees a
+// little "thinking" pause instead of an instant snap-reply.
+const AI_THINK_DELAY_MS = 350;
 
 let _Module = null;
 async function getModule() {
@@ -29,6 +35,15 @@ class Session {
     this.events = events;
     this.lastTouched = Date.now();
     this._chain = Promise.resolve();
+    this.pendingDrawOffer = null; // player index who offered, or null
+    this.drawAccepted = false;
+    // AI metadata, populated on hydration/attach when either side is an AI
+    // user row. aiPlayerIndex is 0 (host) or 1 (join); aiUserId is the
+    // corresponding users.id; aiDifficulty is the provider_id.
+    this.aiPlayerIndex = null;
+    this.aiUserId = null;
+    this.aiDifficulty = null;
+    this.aiPending = false;
   }
   // Serialize work for this game so two concurrent intents can't interleave.
   run(fn) {
@@ -51,6 +66,17 @@ export async function createGameEngine({ db }) {
   const Module = await getModule();
   const cache = new Map();   // gameId → Session
 
+  // Subscribers notified after every successful intent (human OR AI).
+  // Signature: fn({ gameId, event, session, endedNow, isDraw }).
+  const eventListeners = new Set();
+  function onEvent(fn) { eventListeners.add(fn); return () => eventListeners.delete(fn); }
+  async function emitEvent(payload) {
+    for (const fn of eventListeners) {
+      try { await fn(payload); }
+      catch (e) { console.error('engine event listener failed:', e); }
+    }
+  }
+
   function evictIdle() {
     const cutoff = Date.now() - IDLE_MS;
     for (const [id, s] of cache) {
@@ -60,12 +86,33 @@ export async function createGameEngine({ db }) {
   const evictTimer = setInterval(evictIdle, 5 * 60 * 1000);
   evictTimer.unref?.();
 
-  async function createGame(gameId, hostUserId) {
-    const wasm = Module.Game.create();
+  // Resolve AI metadata for the session by inspecting its host/join users.
+  // No-op if neither side is an AI row.
+  async function resolveAiMetadata(session) {
+    const candidates = [];
+    if (session.hostUserId) candidates.push([0, session.hostUserId]);
+    if (session.joinUserId) candidates.push([1, session.joinUserId]);
+    for (const [pi, uid] of candidates) {
+      const u = await getUser(db, uid);
+      if (u && u.provider === 'ai') {
+        session.aiPlayerIndex = pi;
+        session.aiUserId = uid;
+        session.aiDifficulty = u.provider_id;
+        return;
+      }
+    }
+  }
+
+  async function createGame(gameId, hostUserId, mode = 'standard') {
+    const wasm = mode === 'capture_general'
+      ? Module.Game.createWithMode('capture_general')
+      : Module.Game.create();
     const snapshot = wasm.snapshotJson();
     await saveGameState(db, gameId, snapshot);
     const session = new Session(gameId, hostUserId, null, wasm, []);
+    await resolveAiMetadata(session);
     cache.set(gameId, session);
+    maybeScheduleAiMove(session);
     return session;
   }
 
@@ -73,12 +120,18 @@ export async function createGameEngine({ db }) {
     const session = await getSession(gameId);
     if (!session) return null;
     session.joinUserId = joinUserId;
+    await resolveAiMetadata(session);
+    maybeScheduleAiMove(session);
     return session;
   }
 
   async function getSession(gameId) {
     const cached = cache.get(gameId);
-    if (cached) { cached.lastTouched = Date.now(); return cached; }
+    if (cached) {
+      cached.lastTouched = Date.now();
+      maybeScheduleAiMove(cached);
+      return cached;
+    }
     const game = await findGameById(db, gameId);
     if (!game) return null;
     const snap = await loadGameState(db, gameId);
@@ -86,85 +139,195 @@ export async function createGameEngine({ db }) {
     const wasm = Module.Game.fromSnapshot(snap);
     const events = await listGameEvents(db, gameId);
     const session = new Session(gameId, game.host_user_id, game.join_user_id, wasm, events);
+    // Reconstruct pending draw offer from last event (survives session eviction).
+    if (events.length > 0) {
+      const last = events[events.length - 1];
+      if (last.draw_offered && !last.game_over) session.pendingDrawOffer = last.mover;
+    }
+    await resolveAiMetadata(session);
     cache.set(gameId, session);
+    // After server-restart hydration: if it's the AI's turn, kick it off so
+    // the human's reconnect doesn't sit forever waiting for a move that will
+    // never come.
+    maybeScheduleAiMove(session);
     return session;
+  }
+
+  // Core intent-application logic, used by both the human-initiated path
+  // (applyIntent) and the server-initiated AI follow-up (applyAiTurn).
+  // Caller must hold the session's run-lock.
+  async function _applyIntentLocked(session, pi, intent) {
+    if (session.wasm.gameOver() || session.drawAccepted) {
+      return { ok: false, reason: 'game is over' };
+    }
+
+    let action, revealed = null, capture = null, drawOffered = false;
+    try {
+      switch (intent?.kind) {
+        case 'flip': {
+          const cell = Number(intent.cell);
+          if (!Number.isInteger(cell) || cell < 0 || cell >= 32) {
+            throw new Error('bad cell');
+          }
+          const piece = JSON.parse(session.wasm.applyFlip(pi, cell));
+          revealed = piece;
+          action = { kind: 'flip', to: cell };
+          if (session.pendingDrawOffer !== null && session.pendingDrawOffer !== pi) {
+            session.pendingDrawOffer = null;
+          }
+          if (intent.offer_draw && !session.wasm.gameOver()) {
+            const st = JSON.parse(session.wasm.stateJson(-1));
+            if (st.first_flip_done && session.pendingDrawOffer === null) {
+              session.pendingDrawOffer = pi;
+              drawOffered = true;
+            }
+          }
+          break;
+        }
+        case 'move': {
+          const from = Number(intent.from), to = Number(intent.to);
+          if (!Number.isInteger(from) || !Number.isInteger(to)) throw new Error('bad coords');
+          const beforeState = JSON.parse(session.wasm.stateJson(-1));
+          const dst = beforeState.cells[to];
+          session.wasm.applyMove(pi, from, to);
+          if (dst && dst.state === 'faceup') {
+            capture = { color: dst.color, type: dst.type, glyph: dst.glyph };
+          }
+          action = { kind: 'move', from, to };
+          if (session.pendingDrawOffer !== null && session.pendingDrawOffer !== pi) {
+            session.pendingDrawOffer = null;
+          }
+          if (intent.offer_draw && !session.wasm.gameOver() && session.pendingDrawOffer === null) {
+            session.pendingDrawOffer = pi;
+            drawOffered = true;
+          }
+          break;
+        }
+        case 'accept_draw': {
+          if (session.pendingDrawOffer === null) {
+            return { ok: false, reason: 'no draw offer to accept' };
+          }
+          if (session.pendingDrawOffer === pi) {
+            return { ok: false, reason: 'cannot accept your own draw offer' };
+          }
+          session.drawAccepted = true;
+          session.pendingDrawOffer = null;
+          action = { kind: 'accept_draw' };
+          break;
+        }
+        case 'resign': {
+          session.wasm.applyResign(pi);
+          action = { kind: 'resign' };
+          session.pendingDrawOffer = null;
+          break;
+        }
+        default:
+          throw new Error('unknown intent kind');
+      }
+    } catch (e) {
+      return { ok: false, reason: String(e.message || e) };
+    }
+
+    const event = {
+      seq:          session.events.length,
+      ts:           Date.now(),
+      mover:        pi,
+      action,
+      revealed,
+      capture,
+      game_over:    session.wasm.gameOver() || session.drawAccepted,
+      winner:       session.drawAccepted ? 0 : session.wasm.winner(),
+      draw_offered: drawOffered,
+    };
+    session.events.push(event);
+    session.lastTouched = Date.now();
+
+    const snap = session.wasm.snapshotJson();
+    await saveGameState(db, session.gameId, snap);
+    await appendGameEvent(db, session.gameId, event);
+
+    let endedNow = false;
+    if (event.game_over) {
+      endedNow = await markGameEnded(db, session.gameId, event.winner);
+    }
+    return { ok: true, event, endedNow };
   }
 
   async function applyIntent(gameId, userId, intent) {
     const session = await getSession(gameId);
     if (!session) return { ok: false, reason: 'no such game' };
-    return session.run(async () => {
+    const result = await session.run(async () => {
       const pi = session.playerIndexFor(userId);
       if (pi < 0) return { ok: false, reason: 'not a player in this game' };
-      if (session.wasm.gameOver()) return { ok: false, reason: 'game is over' };
-
-      let action, revealed = null, capture = null;
-      try {
-        switch (intent?.kind) {
-          case 'flip': {
-            const cell = Number(intent.cell);
-            if (!Number.isInteger(cell) || cell < 0 || cell >= 32) {
-              throw new Error('bad cell');
-            }
-            const piece = JSON.parse(session.wasm.applyFlip(pi, cell));
-            revealed = piece;
-            action = { kind: 'flip', to: cell };
-            break;
-          }
-          case 'move': {
-            const from = Number(intent.from), to = Number(intent.to);
-            if (!Number.isInteger(from) || !Number.isInteger(to)) throw new Error('bad coords');
-            const beforeState = JSON.parse(session.wasm.stateJson(-1));
-            const dst = beforeState.cells[to];
-            session.wasm.applyMove(pi, from, to);
-            if (dst && dst.state === 'faceup') {
-              capture = { color: dst.color, type: dst.type, glyph: dst.glyph };
-            }
-            action = { kind: 'move', from, to };
-            break;
-          }
-          case 'resign': {
-            session.wasm.applyResign(pi);
-            action = { kind: 'resign' };
-            break;
-          }
-          default:
-            throw new Error('unknown intent kind');
-        }
-      } catch (e) {
-        return { ok: false, reason: String(e.message || e) };
+      // Don't let the human user submit an intent on behalf of the AI side.
+      if (pi === session.aiPlayerIndex) {
+        return { ok: false, reason: 'not your turn' };
       }
-
-      const event = {
-        seq:        session.events.length,
-        ts:         Date.now(),
-        mover:      pi,
-        action,
-        revealed,
-        capture,
-        game_over:  session.wasm.gameOver(),
-        winner:     session.wasm.winner(),
-      };
-      session.events.push(event);
-      session.lastTouched = Date.now();
-
-      // Persist updated state + event row.
-      const snap = session.wasm.snapshotJson();
-      await saveGameState(db, gameId, snap);
-      await appendGameEvent(db, gameId, event);
-
-      // If the game just ended, mark the games row terminal — callers can
-      // observe this via getSession or by inspecting the returned event.
-      let endedNow = false;
-      if (event.game_over) {
-        endedNow = await markGameEnded(db, gameId, event.winner);
-      }
-      return { ok: true, event, endedNow };
+      return _applyIntentLocked(session, pi, intent);
     });
+    if (result.ok) {
+      const isDraw = result.event.action?.kind === 'accept_draw';
+      await emitEvent({ gameId, event: result.event, session,
+                        endedNow: result.endedNow, isDraw });
+      maybeScheduleAiMove(session);
+    }
+    return result;
+  }
+
+  // Schedule the AI's move when the session has an AI side, the game is
+  // live, and it's the AI's turn. Idempotent — multiple calls coalesce
+  // onto the single in-flight timer / chain entry.
+  function maybeScheduleAiMove(session) {
+    if (session.aiPlayerIndex == null) return;
+    if (session.aiPending) return;
+    if (session.wasm.gameOver() || session.drawAccepted) return;
+    const state = JSON.parse(session.wasm.stateJson(-1));
+    if (state.game_over) return;
+    if (state.side_to_move !== session.aiPlayerIndex) return;
+    session.aiPending = true;
+    const timer = setTimeout(() => { runAiTurn(session).catch((e) => {
+      console.error('AI turn failed:', e);
+      session.aiPending = false;
+    }); }, AI_THINK_DELAY_MS);
+    timer.unref?.();
+  }
+
+  async function runAiTurn(session) {
+    const result = await session.run(async () => {
+      // Re-check inside the lock — a human action (resign / accept_draw)
+      // could have changed the state while we were waiting.
+      if (session.wasm.gameOver() || session.drawAccepted) return null;
+      const state = JSON.parse(session.wasm.stateJson(session.aiPlayerIndex));
+      if (state.game_over) return null;
+      if (state.side_to_move !== session.aiPlayerIndex) return null;
+      let move;
+      try {
+        move = chooseMove(state, session.aiPlayerIndex, session.aiDifficulty);
+      } catch (e) {
+        console.error('chooseMove threw:', e);
+        return null;
+      }
+      if (!move) return null;
+      const intent = move.from < 0
+        ? { kind: 'flip', cell: move.to }
+        : { kind: 'move', from: move.from, to: move.to };
+      return _applyIntentLocked(session, session.aiPlayerIndex, intent);
+    });
+    session.aiPending = false;
+    if (result && result.ok) {
+      const isDraw = result.event.action?.kind === 'accept_draw';
+      await emitEvent({ gameId: session.gameId, event: result.event, session,
+                        endedNow: result.endedNow, isDraw });
+      // Edge case: an AI-vs-AI game (not currently exposed) would loop here.
+      // Harmless for human-vs-AI since side_to_move flips back to human.
+      maybeScheduleAiMove(session);
+    }
   }
 
   function viewerState(session, viewerPlayerIndex) {
-    return JSON.parse(session.wasm.stateJson(viewerPlayerIndex));
+    const state = JSON.parse(session.wasm.stateJson(viewerPlayerIndex));
+    state.draw_offered_by = session.pendingDrawOffer ?? null;
+    return state;
   }
 
   function viewerStateForUser(session, userId) {
@@ -183,6 +346,6 @@ export async function createGameEngine({ db }) {
 
   return {
     createGame, attachJoin, getSession, applyIntent,
-    viewerState, viewerStateForUser, detach, close,
+    viewerState, viewerStateForUser, detach, close, onEvent,
   };
 }

@@ -191,6 +191,21 @@ TEST_CASE("Game: resign before first flip is allowed; no winner color") {
     CHECK(g.winner() == Color::None);
 }
 
+TEST_CASE("Game: default mode is Standard") {
+    MockPrng p(1);
+    auto g = Game::create(p);
+    CHECK(g.rules().mode() == GameMode::Standard);
+}
+
+TEST_CASE("Game: capture-general mode survives snapshot round-trip") {
+    MockPrng p(11);
+    auto g = Game::create(p, GameMode::CaptureGeneral);
+    CHECK(g.rules().mode() == GameMode::CaptureGeneral);
+    auto snap = g.snapshot_json();
+    auto g2 = Game::from_snapshot_json(snap);
+    CHECK(g2.rules().mode() == GameMode::CaptureGeneral);
+}
+
 TEST_CASE("Game: resign clears legal_moves and engine terminal flag") {
     // Regression: resign used to leave rules_.game_over_ untouched, so
     // legal_moves() / state_json still reported flips after a player resigned.

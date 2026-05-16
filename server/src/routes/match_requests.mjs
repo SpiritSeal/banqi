@@ -14,7 +14,7 @@ import express from 'express';
 import {
   createMatchRequest, listIncomingMatchRequests, listOutgoingMatchRequests,
   cancelMatchRequest, declineMatchRequest, acceptMatchRequest,
-  isMatchEligible, getMatchRequest, getUser,
+  isMatchEligible, getMatchRequest, getUser, normalizeMode,
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 import { newRoomCode } from '../rooms.mjs';
@@ -42,13 +42,19 @@ export function matchRequestsRouter({ db, engine }) {
     }
     const other = await getUser(db, toUserId);
     if (!other) return res.status(404).json({ error: 'user not found' });
+    if (other.provider === 'ai') {
+      return res.status(400).json({
+        error: 'AI opponents are started from the lobby, not via challenge',
+      });
+    }
     if (!await isMatchEligible(db, req.user.id, toUserId)) {
       return res.status(403).json({
         error: 'not eligible — add this player as a friend first, or play them once',
       });
     }
+    const mode = normalizeMode(req.body?.mode);
     const created = await createMatchRequest(db, {
-      fromUserId: req.user.id, toUserId,
+      fromUserId: req.user.id, toUserId, mode,
     });
     res.json(created);
   }));
@@ -69,11 +75,12 @@ export function matchRequestsRouter({ db, engine }) {
     }
     // Seed the in-memory engine session for the just-created game. The host
     // is the request sender; the acceptor is already auto-joined in SQL.
-    await engine.createGame(result.game.id, result.game.host_user_id);
+    await engine.createGame(result.game.id, result.game.host_user_id, result.game.mode);
     await engine.attachJoin(result.game.id, req.user.id);
     res.json({
       game_id:   result.game.id,
       room_code: result.game.room_code,
+      mode:      result.game.mode,
     });
   }));
 

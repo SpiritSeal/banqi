@@ -40,6 +40,8 @@ export function usersRouter({ db }) {
       display_name: u.display_name,
       avatar_url: u.avatar_url,
       elo: u.elo,
+      provider: u.provider,
+      provider_id: u.provider_id,
       head_to_head: await headToHead(db, u.id),
     });
   }));

@@ -9,14 +9,28 @@ namespace banqi {
 
 using json = nlohmann::json;
 
+static const char* mode_to_str(GameMode m) {
+    switch (m) {
+        case GameMode::CaptureGeneral: return "capture_general";
+        case GameMode::Standard:       return "standard";
+    }
+    return "standard";
+}
+
+static GameMode mode_from_str(const std::string& s) {
+    if (s == "capture_general") return GameMode::CaptureGeneral;
+    return GameMode::Standard;
+}
+
 Game::Game() {
     rules_.set_all_facedown();
     auto deck = initial_deck();
     for (int i = 0; i < 32; ++i) layout_[i] = deck[i];
 }
 
-Game Game::create(IPrng& prng) {
+Game Game::create(IPrng& prng, GameMode mode) {
     Game g;
+    g.rules_.set_mode(mode);
     auto deck = initial_deck();
     for (int i = (int)deck.size() - 1; i > 0; --i) {
         uint8_t buf[8];
@@ -64,7 +78,7 @@ void Game::apply_resign(int player_index) {
     resign_winner_ = other;
     // Propagate the terminal state into the rule engine so legal_moves /
     // state_json reflect the resignation consistently.
-    rules_.set_terminal(other);
+    rules_.force_terminal(other);
 }
 
 std::string Game::state_json(int viewer_player_index) const {
@@ -76,6 +90,7 @@ std::string Game::state_json(int viewer_player_index) const {
     j["first_flip_done"] = rules_.first_flip_done();
     j["game_over"]       = game_over();
     j["winner"]          = (int)winner();
+    j["mode"]            = mode_to_str(rules_.mode());
 
     if (viewer >= 0) {
         j["my_color"] = (int)rules_.color_for_player(viewer);
@@ -148,6 +163,11 @@ std::string Game::snapshot_json() const {
     j["resigned"]           = resigned_;
     j["resign_player"]      = resign_player_;
     j["resign_winner"]      = (int)resign_winner_;
+    j["mode"]               = mode_to_str(rules_.mode());
+    // In capture-general mode the terminal state is set by a specific capture
+    // (not derivable from the board layout alone), so persist it directly.
+    j["game_over"]          = rules_.game_over();
+    j["winner"]             = (int)rules_.winner();
     return j.dump();
 }
 
@@ -185,6 +205,7 @@ Game Game::from_snapshot_json(const std::string& s) {
     }
 
     g.rules_.clear();
+    g.rules_.set_mode(mode_from_str(j.value("mode", std::string("standard"))));
     const auto& cells = j.at("cells");
     for (int i = 0; i < BanqiRules::CELLS; ++i) {
         const auto& cj = cells.at(i);
@@ -224,7 +245,12 @@ Game Game::from_snapshot_json(const std::string& s) {
         if (g.resign_player_ != 0 && g.resign_player_ != 1) {
             throw std::runtime_error("from_snapshot_json: bad resign_player");
         }
-        g.rules_.set_terminal(g.resign_winner_);
+        g.rules_.force_terminal(g.resign_winner_);
+    } else if (j.value("game_over", false)) {
+        // Capture-general mode (or any rule that ends the game via a specific
+        // capture) needs its terminal flag persisted directly: recheck_terminal
+        // can't re-derive it from the board layout alone.
+        g.rules_.force_terminal(check_color(j.value("winner", 0)));
     }
     return g;
 }

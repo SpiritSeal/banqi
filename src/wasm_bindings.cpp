@@ -28,6 +28,12 @@ public:
         return std::shared_ptr<GameWrapper>(new GameWrapper(Game::create(shared_prng())));
     }
 
+    static std::shared_ptr<GameWrapper> createWithMode(const std::string& mode) {
+        GameMode m = (mode == "capture_general") ? GameMode::CaptureGeneral
+                                                 : GameMode::Standard;
+        return std::shared_ptr<GameWrapper>(new GameWrapper(Game::create(shared_prng(), m)));
+    }
+
     static std::shared_ptr<GameWrapper> fromSnapshot(const std::string& json_str) {
         return std::shared_ptr<GameWrapper>(new GameWrapper(Game::from_snapshot_json(json_str)));
     }
@@ -76,6 +82,7 @@ EMSCRIPTEN_BINDINGS(banqi_module) {
     class_<GameWrapper>("Game")
         .smart_ptr<std::shared_ptr<GameWrapper>>("Game")
         .class_function("create",            &GameWrapper::create)
+        .class_function("createWithMode",    &GameWrapper::createWithMode)
         .class_function("fromSnapshot",      &GameWrapper::fromSnapshot)
         .function("applyFlip",               &GameWrapper::applyFlip)
         .function("applyMove",               &GameWrapper::applyMove)
