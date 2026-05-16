@@ -15,7 +15,7 @@ import { newRoomCode } from '../rooms.mjs';
 
 const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
-export function gamesRouter({ db, engine }) {
+export function gamesRouter({ db, engine, wsHelpers = null }) {
   const r = express.Router();
 
   r.post('/games', requireAuth, asyncRoute(async (req, res) => {
@@ -74,6 +74,30 @@ export function gamesRouter({ db, engine }) {
     if (result === 'forbidden') return res.status(403).json({ error: 'not a player in this game' });
     if (result === 'removed') engine.detach(id);
     res.json({ ok: true, result });
+  }));
+
+  // Lazy timeout claim: when the active side has run their clock to zero
+  // but isn't around to make a move, the opponent calls this to end the
+  // game on time. Refuses if the opponent still has time left.
+  r.post('/games/:id/claim-timeout', requireAuth, asyncRoute(async (req, res) => {
+    const id = +req.params.id;
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'invalid id' });
+    }
+    const result = await engine.claimTimeout(id, req.user.id);
+    if (!result.ok) {
+      return res.status(409).json({ error: result.reason });
+    }
+    if (wsHelpers) {
+      const session = await engine.getSession(id);
+      if (session) {
+        try { await wsHelpers.broadcastEvent(id, result.event, session); }
+        catch (e) { console.error('claim-timeout broadcast failed:', e); }
+        try { await wsHelpers.applyEloOnEnd(session, id, result.event.winner, false, 'timeout'); }
+        catch (e) { console.error('claim-timeout elo failed:', e); }
+      }
+    }
+    res.json({ ok: true, event: result.event });
   }));
 
   r.post('/games/:id/join', requireAuth, asyncRoute(async (req, res) => {

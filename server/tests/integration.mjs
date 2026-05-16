@@ -532,6 +532,54 @@ describe('friends + match requests', () => {
     assert.equal(game.increment_ms,  5_000);
   });
 
+  it('TC game: WS snapshot carries clocks; first flip starts opponent clock', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    const created = await (await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id, time_limit_ms: 300_000, increment_ms: 3000,
+        first_mover_pref: 'challenger',
+      }),
+    })).json();
+    const accepted = await (await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    })).json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+
+    // Pre-first-flip snapshot: clocks present, active_index null.
+    assert.equal(a.snap.state.time_limit_ms, 300_000);
+    assert.equal(a.snap.state.increment_ms,  3000);
+    assert.equal(a.snap.state.clocks[0], 300_000);
+    assert.equal(a.snap.state.clocks[1], 300_000);
+    assert.equal(a.snap.state.clock_active_index, null);
+
+    // Alice (challenger / host / seat 0) makes the first flip. After it,
+    // Bob's clock should be running.
+    a.send({ kind: 'flip', cell: 0 });
+    const ev = await a.waitNext((f) => f.type === 'event');
+    assert.equal(ev.event.action.kind, 'flip');
+    assert.equal(ev.state.clock_active_index, 1);
+    assert.ok(ev.event.clocks_after);
+
+    // Bob has time left, so an immediate claim-timeout by Alice is rejected.
+    const claim = await authedFetch(alice, `/api/games/${game.id}/claim-timeout`, {
+      method: 'POST',
+    });
+    assert.equal(claim.status, 409);
+    const claimBody = await claim.json();
+    assert.match(claimBody.error || '', /still has time/);
+
+    a.close(); b.close();
+  });
+
   it('invalid time control values return 400', async () => {
     const alice = await signInAs('Alice');
     const bob   = await signInAs('Bob');

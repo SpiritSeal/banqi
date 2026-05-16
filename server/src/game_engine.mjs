@@ -11,6 +11,7 @@ import createBanqi from '../../web/banqi.js';
 import {
   findGameById, saveGameState, loadGameState,
   appendGameEvent, listGameEvents, markGameEnded,
+  saveClockState,
 } from './db.mjs';
 
 let _Module = null;
@@ -21,7 +22,7 @@ async function getModule() {
 }
 
 class Session {
-  constructor(gameId, hostUserId, joinUserId, wasm, events, firstMoverIndex = null) {
+  constructor(gameId, hostUserId, joinUserId, wasm, events, opts = {}) {
     this.gameId = gameId;
     this.hostUserId = hostUserId;
     this.joinUserId = joinUserId;
@@ -31,11 +32,37 @@ class Session {
     this._chain = Promise.resolve();
     this.pendingDrawOffer = null; // player index who offered, or null
     this.drawAccepted = false;
+    const fmi = opts.firstMoverIndex;
     // null on ad-hoc room games (either side may make the first flip);
     // 0 or 1 on games created via a directed challenge with a fixed
     // first-mover. Only consulted before first_flip_done.
-    this.firstMoverIndex = (firstMoverIndex === 0 || firstMoverIndex === 1)
-      ? firstMoverIndex : null;
+    this.firstMoverIndex = (fmi === 0 || fmi === 1) ? fmi : null;
+    // Time control. timeLimitMs===null means "unlimited" — no clock state
+    // is tracked and clock-related fields stay null/0 forever.
+    this.timeLimitMs = Number.isInteger(opts.timeLimitMs) && opts.timeLimitMs > 0
+      ? opts.timeLimitMs : null;
+    this.incrementMs = Number.isInteger(opts.incrementMs) && opts.incrementMs > 0
+      ? opts.incrementMs : 0;
+    // clocks[0], clocks[1] = remaining ms for each seat. Null when unlimited.
+    if (this.timeLimitMs != null) {
+      const c = opts.clocks;
+      this.clocks = (c && Number.isInteger(c[0]) && Number.isInteger(c[1]))
+        ? { 0: c[0], 1: c[1] }
+        : { 0: this.timeLimitMs, 1: this.timeLimitMs };
+    } else {
+      this.clocks = null;
+    }
+    // activeIndex: 0 | 1 | null. Null pre-first-flip; once the first flip
+    // happens it points at the side now on the move and activeSince is set.
+    const ai = opts.activeIndex;
+    this.activeIndex = (ai === 0 || ai === 1) ? ai : null;
+    // Always reset on construction — the elapsed time between a save and the
+    // next intent isn't deducted (gentle behavior across server restarts).
+    this.activeSince = this.activeIndex == null ? null : Date.now();
+    // Set when a side runs out of time. Persisted via clock_state_json so
+    // rehydrate of a timed-out session still reports game_over.
+    this.timeoutLoser = (opts.timeoutLoser === 0 || opts.timeoutLoser === 1)
+      ? opts.timeoutLoser : null;
   }
   // Serialize work for this game so two concurrent intents can't interleave.
   run(fn) {
@@ -67,13 +94,20 @@ export async function createGameEngine({ db }) {
   const evictTimer = setInterval(evictIdle, 5 * 60 * 1000);
   evictTimer.unref?.();
 
-  async function createGame(gameId, hostUserId, mode = 'standard', firstMoverIndex = null) {
+  async function createGame(gameId, hostUserId, mode = 'standard',
+                            firstMoverIndex = null,
+                            timeLimitMs = null, incrementMs = 0) {
     const wasm = mode === 'capture_general'
       ? Module.Game.createWithMode('capture_general')
       : Module.Game.create();
     const snapshot = wasm.snapshotJson();
     await saveGameState(db, gameId, snapshot);
-    const session = new Session(gameId, hostUserId, null, wasm, [], firstMoverIndex);
+    const session = new Session(gameId, hostUserId, null, wasm, [], {
+      firstMoverIndex, timeLimitMs, incrementMs,
+    });
+    if (session.timeLimitMs != null) {
+      await saveClockState(db, gameId, serializeClockState(session));
+    }
     cache.set(gameId, session);
     return session;
   }
@@ -94,8 +128,20 @@ export async function createGameEngine({ db }) {
     if (!snap) return null;
     const wasm = Module.Game.fromSnapshot(snap);
     const events = await listGameEvents(db, gameId);
+    let clockState = null;
+    if (game.clock_state_json) {
+      try { clockState = JSON.parse(game.clock_state_json); }
+      catch (_) { clockState = null; }
+    }
     const session = new Session(gameId, game.host_user_id, game.join_user_id,
-                                wasm, events, game.first_mover_index);
+                                wasm, events, {
+      firstMoverIndex: game.first_mover_index,
+      timeLimitMs:     game.time_limit_ms ?? null,
+      incrementMs:     game.increment_ms ?? 0,
+      clocks:          clockState?.clocks,
+      activeIndex:     clockState?.active_index,
+      timeoutLoser:    clockState?.timeout_loser,
+    });
     // Reconstruct pending draw offer from last event (survives session eviction).
     if (events.length > 0) {
       const last = events[events.length - 1];
@@ -105,13 +151,95 @@ export async function createGameEngine({ db }) {
     return session;
   }
 
+  // Serialize the clock-related slice of a session for the DB. Active timer
+  // is stamped relative to "now" so a server restart doesn't bill the active
+  // side for downtime.
+  function serializeClockState(session) {
+    if (!session.clocks) return null;
+    return JSON.stringify({
+      clocks: { 0: session.clocks[0], 1: session.clocks[1] },
+      active_index: session.activeIndex,
+      timeout_loser: session.timeoutLoser,
+    });
+  }
+
+  // Decrement the active side's clock by elapsed real time and return the
+  // updated remaining ms. Active timer is consumed — caller must reset
+  // activeSince after.
+  function tickActiveClock(session, now) {
+    if (!session.clocks || session.activeIndex == null) return null;
+    const elapsed = Math.max(0, now - session.activeSince);
+    session.clocks[session.activeIndex] = Math.max(
+      0, session.clocks[session.activeIndex] - elapsed
+    );
+    return session.clocks[session.activeIndex];
+  }
+
+  // Compute what the active clock would show right now, without mutating.
+  // Used for viewerState + claim-timeout liveness checks.
+  function peekActiveClock(session, now) {
+    if (!session.clocks || session.activeIndex == null) return null;
+    const elapsed = Math.max(0, now - session.activeSince);
+    return Math.max(0, session.clocks[session.activeIndex] - elapsed);
+  }
+
+  // Synthesize and persist the terminal 'timeout' event. Same flow as a
+  // regular intent: append to events, save WASM snapshot, save clock state,
+  // mark games row complete. Called both from applyIntent (when the active
+  // side tries to move past their flag) and from claimTimeout (opponent
+  // notices a stalled clock).
+  async function fireTimeout(session, loserIndex, now) {
+    if (session.clocks) session.clocks[loserIndex] = 0;
+    session.timeoutLoser = loserIndex;
+    const state = JSON.parse(session.wasm.stateJson(-1));
+    const winnerColor = loserIndex === 0
+      ? state.player1_color
+      : state.player0_color;
+    const event = {
+      seq:          session.events.length,
+      ts:           now,
+      mover:        loserIndex,
+      action:       { kind: 'timeout' },
+      revealed:     null,
+      capture:      null,
+      game_over:    true,
+      winner:       winnerColor,
+      draw_offered: false,
+      clocks_after: { 0: session.clocks?.[0] ?? 0, 1: session.clocks?.[1] ?? 0 },
+    };
+    session.events.push(event);
+    session.lastTouched = now;
+    await saveGameState(db, session.gameId, session.wasm.snapshotJson());
+    await saveClockState(db, session.gameId, serializeClockState(session));
+    await appendGameEvent(db, session.gameId, event);
+    const endedNow = await markGameEnded(db, session.gameId, winnerColor);
+    return { ok: true, event, endedNow };
+  }
+
   async function applyIntent(gameId, userId, intent) {
     const session = await getSession(gameId);
     if (!session) return { ok: false, reason: 'no such game' };
     return session.run(async () => {
       const pi = session.playerIndexFor(userId);
       if (pi < 0) return { ok: false, reason: 'not a player in this game' };
-      if (session.wasm.gameOver() || session.drawAccepted) return { ok: false, reason: 'game is over' };
+      if (session.wasm.gameOver() || session.drawAccepted ||
+          session.timeoutLoser !== null) {
+        return { ok: false, reason: 'game is over' };
+      }
+      const now = Date.now();
+
+      // Clocks: if the mover IS the active player, decrement their remaining
+      // time by elapsed real time first. If that drops to 0 the move is
+      // dropped entirely and a timeout event fires instead — they ran out of
+      // time before the move landed. (For a non-active mover trying to play
+      // out of turn, WASM will reject below and the active clock keeps
+      // ticking, which is what we want.)
+      if (session.clocks && session.activeIndex === pi) {
+        const remaining = tickActiveClock(session, now);
+        if (remaining <= 0) return fireTimeout(session, pi, now);
+        // Don't reset activeSince here — we'll set it after the intent
+        // commits, when control passes to the opponent.
+      }
 
       // On games created via a directed challenge with a fixed first-mover,
       // block the wrong side from making the opening flip. Once first_flip_done
@@ -123,6 +251,10 @@ export async function createGameEngine({ db }) {
           return { ok: false, reason: 'opponent makes the first move' };
         }
       }
+
+      const preState = session.clocks
+        ? JSON.parse(session.wasm.stateJson(-1)) : null;
+      const wasFirstFlipDone = preState?.first_flip_done ?? null;
 
       let action, revealed = null, capture = null, drawOffered = false;
       try {
@@ -193,9 +325,34 @@ export async function createGameEngine({ db }) {
         return { ok: false, reason: String(e.message || e) };
       }
 
+      // Clock bookkeeping. The intent has committed; the active clock for the
+      // mover is consumed (its current remaining was already in session.clocks
+      // from the tick above). Now: add increment for the mover (skip on the
+      // first flip — pre-flip is untimed), then hand the timer over to the
+      // opponent. accept_draw / resign don't pass the timer along: the game
+      // is ending in this same event.
+      const eventTs = Date.now();
+      if (session.clocks) {
+        const transitionedFromFirstFlip = wasFirstFlipDone === false
+          && action?.kind === 'flip';
+        if (transitionedFromFirstFlip) {
+          // First move of the game just landed. Mover doesn't get an
+          // increment (pre-flip was untimed). Opponent's clock starts now.
+          session.activeIndex = 1 - pi;
+          session.activeSince = eventTs;
+        } else if (action?.kind === 'flip' || action?.kind === 'move') {
+          // Subsequent ply: increment the mover, then hand off to opponent.
+          session.clocks[pi] = session.clocks[pi] + session.incrementMs;
+          session.activeIndex = 1 - pi;
+          session.activeSince = eventTs;
+        }
+        // For accept_draw / resign we leave activeIndex/activeSince untouched;
+        // the game is over so they no longer matter.
+      }
+
       const event = {
         seq:          session.events.length,
-        ts:           Date.now(),
+        ts:           eventTs,
         mover:        pi,
         action,
         revealed,
@@ -203,13 +360,18 @@ export async function createGameEngine({ db }) {
         game_over:    session.wasm.gameOver() || session.drawAccepted,
         winner:       session.drawAccepted ? 0 : session.wasm.winner(),
         draw_offered: drawOffered,
+        clocks_after: session.clocks
+          ? { 0: session.clocks[0], 1: session.clocks[1] } : null,
       };
       session.events.push(event);
-      session.lastTouched = Date.now();
+      session.lastTouched = eventTs;
 
       // Persist updated state + event row.
       const snap = session.wasm.snapshotJson();
       await saveGameState(db, gameId, snap);
+      if (session.clocks) {
+        await saveClockState(db, gameId, serializeClockState(session));
+      }
       await appendGameEvent(db, gameId, event);
 
       // If the game just ended, mark the games row terminal — callers can
@@ -222,10 +384,61 @@ export async function createGameEngine({ db }) {
     });
   }
 
+  // Opposing player can claim a win when the active side has run their clock
+  // to zero. Returns the same shape as applyIntent so the WS broadcast path
+  // can reuse it. Refuses if there's still time left, if it's the active
+  // side's own request, or if the game is already over.
+  async function claimTimeout(gameId, userId) {
+    const session = await getSession(gameId);
+    if (!session) return { ok: false, reason: 'no such game' };
+    return session.run(async () => {
+      const pi = session.playerIndexFor(userId);
+      if (pi < 0) return { ok: false, reason: 'not a player in this game' };
+      if (session.wasm.gameOver() || session.drawAccepted ||
+          session.timeoutLoser !== null) {
+        return { ok: false, reason: 'game is over' };
+      }
+      if (!session.clocks || session.activeIndex == null) {
+        return { ok: false, reason: 'no clock running' };
+      }
+      if (session.activeIndex === pi) {
+        return { ok: false, reason: 'cannot claim your own timeout' };
+      }
+      const now = Date.now();
+      const remaining = peekActiveClock(session, now);
+      if (remaining > 0) {
+        return { ok: false, reason: 'opponent still has time' };
+      }
+      return fireTimeout(session, session.activeIndex, now);
+    });
+  }
+
   function viewerState(session, viewerPlayerIndex) {
     const state = JSON.parse(session.wasm.stateJson(viewerPlayerIndex));
     state.draw_offered_by = session.pendingDrawOffer ?? null;
     state.first_mover_index = session.firstMoverIndex;
+    // Clock view: emit ms-remaining for each side as of "now", plus enough
+    // metadata for the client to interpolate. Unlimited games carry null for
+    // clocks so the client can hide the widgets entirely.
+    state.time_limit_ms = session.timeLimitMs;
+    state.increment_ms  = session.incrementMs;
+    if (session.clocks) {
+      const now = Date.now();
+      const active = session.activeIndex;
+      const live = { 0: session.clocks[0], 1: session.clocks[1] };
+      if (active === 0 || active === 1) {
+        live[active] = Math.max(0, live[active] - (now - session.activeSince));
+      }
+      state.clocks = live;
+      state.clock_active_index = active;
+      state.clock_server_ts    = now;     // client uses this to anchor local decrement
+    } else {
+      state.clocks = null;
+      state.clock_active_index = null;
+      state.clock_server_ts    = null;
+    }
+    state.timeout_loser = session.timeoutLoser;
+    if (session.timeoutLoser !== null) state.game_over = true;
     return state;
   }
 
@@ -244,7 +457,7 @@ export async function createGameEngine({ db }) {
   }
 
   return {
-    createGame, attachJoin, getSession, applyIntent,
+    createGame, attachJoin, getSession, applyIntent, claimTimeout,
     viewerState, viewerStateForUser, detach, close,
   };
 }

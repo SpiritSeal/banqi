@@ -81,7 +81,7 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     });
   }
 
-  async function applyEloOnEnd(session, gameId, winnerColor, isDraw) {
+  async function applyEloOnEnd(session, gameId, winnerColor, isDraw, lossReason = null) {
     // Pre-flip resign — no Elo applied.
     if (!isDraw && winnerColor !== 1 && winnerColor !== 2) return;
     // Skip Elo if either side is a guest account (ephemeral, unrated).
@@ -138,6 +138,7 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
       recordEloChange(db, {
         userId: loser.id, gameId, opponentId: winner.id,
         eloBefore: loser.elo, eloAfter: loser.elo + dL, result: 'loss',
+        lossReason,
       }),
     ]);
   }
@@ -198,7 +199,8 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
       await broadcastEvent(session.gameId, result.event, session);
       if (result.endedNow) {
         const isDraw = result.event.action?.kind === 'accept_draw';
-        try { await applyEloOnEnd(session, session.gameId, result.event.winner, isDraw); }
+        const lossReason = result.event.action?.kind === 'timeout' ? 'timeout' : null;
+        try { await applyEloOnEnd(session, session.gameId, result.event.winner, isDraw, lossReason); }
         catch (e) { console.error('elo update failed:', e); }
       }
     });
@@ -220,4 +222,9 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
       }
     }
   }, 30_000).unref();
+
+  // Exposed so HTTP routes that synthesize terminal events outside the WS
+  // path (e.g. POST /api/games/:id/claim-timeout) can broadcast + finalize
+  // through the same channel as in-game intents.
+  return { broadcastEvent, applyEloOnEnd };
 }

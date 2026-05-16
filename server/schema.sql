@@ -154,3 +154,17 @@ ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS time_limit_ms INTEGER;
 ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS increment_ms  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE games          ADD COLUMN IF NOT EXISTS time_limit_ms INTEGER;
 ALTER TABLE games          ADD COLUMN IF NOT EXISTS increment_ms  INTEGER NOT NULL DEFAULT 0;
+
+-- Live clock state for games with a time limit. Refreshed atomically with
+-- game_state on each event. JSON shape:
+--   { clocks: { "0": ms_left, "1": ms_left },
+--     active_index: 0 | 1 | null,
+--     timeout_loser: 0 | 1 | null }
+-- On rehydrate after a server restart, active_index + clocks resume; the
+-- gap-during-downtime is forfeited to the active player (we reset
+-- activeSince to now) rather than the loser, on the gentler side.
+ALTER TABLE games ADD COLUMN IF NOT EXISTS clock_state_json TEXT;
+
+-- Why a player lost (for analytics / "Won on time" UI). NULL for wins and
+-- draws. Today only 'timeout' is written; resignations remain unmarked.
+ALTER TABLE elo_history ADD COLUMN IF NOT EXISTS loss_reason TEXT;

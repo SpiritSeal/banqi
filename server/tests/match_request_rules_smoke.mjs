@@ -13,6 +13,7 @@ import {
   normalizeFirstMoverPref, resolveFirstMoverIndex,
   normalizeTimeControl,
   TIME_LIMIT_MIN_MS, TIME_LIMIT_MAX_MS, INCREMENT_MAX_MS,
+  saveClockState, recordEloChange,
 } from '../src/db.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql:///banqi_test';
@@ -183,6 +184,76 @@ describe('acceptMatchRequest carries TC onto the game row', () => {
     assert.ok(result);
     assert.equal(result.game.time_limit_ms, null);
     assert.equal(result.game.increment_ms,  0);
+  });
+});
+
+describe('clock_state_json + loss_reason persistence', () => {
+  it('saveClockState round-trips arbitrary JSON onto the games row', async () => {
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const req = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+      timeLimitMs: 300_000, incrementMs: 3000,
+    });
+    const result = await acceptMatchRequest(db, bob, req.id, freshRoomCode);
+    assert.ok(result);
+    const gameId = result.game.id;
+
+    const payload = JSON.stringify({
+      clocks: { 0: 250_000, 1: 290_000 },
+      active_index: 1,
+      timeout_loser: null,
+    });
+    await saveClockState(db, gameId, payload);
+
+    const { rows } = await db.query(
+      'SELECT clock_state_json FROM games WHERE id = $1', [gameId]
+    );
+    assert.equal(rows[0].clock_state_json, payload);
+    const parsed = JSON.parse(rows[0].clock_state_json);
+    assert.equal(parsed.clocks[0], 250_000);
+    assert.equal(parsed.clocks[1], 290_000);
+    assert.equal(parsed.active_index, 1);
+  });
+
+  it('recordEloChange stores loss_reason (e.g. "timeout")', async () => {
+    // Stand up a game so the FK is satisfied. We don't need it played.
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const req = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+    });
+    const result = await acceptMatchRequest(db, bob, req.id, freshRoomCode);
+    assert.ok(result);
+    const gameId = result.game.id;
+    await recordEloChange(db, {
+      userId: bob, gameId, opponentId: alice,
+      eloBefore: 1200, eloAfter: 1184, result: 'loss', lossReason: 'timeout',
+    });
+    const { rows } = await db.query(
+      `SELECT loss_reason FROM elo_history
+        WHERE user_id = $1 AND game_id = $2`,
+      [bob, gameId]
+    );
+    assert.equal(rows[0].loss_reason, 'timeout');
+  });
+
+  it('recordEloChange defaults loss_reason to NULL for wins/draws', async () => {
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const req = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+    });
+    const result = await acceptMatchRequest(db, bob, req.id, freshRoomCode);
+    assert.ok(result);
+    const gameId = result.game.id;
+    await recordEloChange(db, {
+      userId: alice, gameId, opponentId: bob,
+      eloBefore: 1200, eloAfter: 1216, result: 'win',
+    });
+    const { rows } = await db.query(
+      `SELECT loss_reason FROM elo_history
+        WHERE user_id = $1 AND game_id = $2`,
+      [alice, gameId]
+    );
+    assert.equal(rows[0].loss_reason, null);
   });
 });
 

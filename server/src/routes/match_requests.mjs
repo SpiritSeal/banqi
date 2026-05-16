@@ -114,11 +114,13 @@ export function matchRequestsRouter({ db, engine }) {
     }
     // Seed the in-memory engine session for the just-created game. The host
     // is the request sender; the acceptor is already auto-joined in SQL.
-    // first_mover_index pins the opening flip; the TC is read off the games
-    // row by the engine session itself when clocks are enforced.
+    // first_mover_index pins the opening flip; time_limit_ms / increment_ms
+    // (null = unlimited) configure the chess clocks.
     await engine.createGame(
       result.game.id, result.game.host_user_id, result.game.mode,
       result.game.first_mover_index,
+      result.game.time_limit_ms ?? null,
+      result.game.increment_ms  ?? 0,
     );
     await engine.attachJoin(result.game.id, req.user.id);
     res.json({

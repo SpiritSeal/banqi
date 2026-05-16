@@ -505,6 +505,7 @@ function describeAction(event) {
   }
   if (a.kind === 'resign') return 'resigned';
   if (a.kind === "accept_draw") return "accepted the draw offer";
+  if (a.kind === 'timeout') return 'ran out of time';
   return 'made a move';
 }
 
@@ -589,6 +590,9 @@ function refreshGame() {
          <input type="checkbox" id="chk-offer-draw"${active.offerDraw ? " checked" : ""}> Offer draw
        </label>`
     : "";
+  const clocksRow = (liveState.time_limit_ms != null && liveState.clocks)
+    ? renderClocksRowHtml(liveState, myPlayerIdx, opp || 'Opponent', me?.display_name || 'You', active)
+    : '';
   $('game-header').innerHTML = `
     ${disconnectBanner}
     <div class="meta game-meta">
@@ -614,6 +618,7 @@ function refreshGame() {
             ${liveState.first_flip_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
         </div>
       </div>
+      ${clocksRow}
       ${drawOfferRow}
       <div class="meta-row meta-row-status">
         <span><span class="meta-label">Move</span> ${active.replay.totalMoves()}</span>
@@ -642,6 +647,19 @@ function refreshGame() {
   };
   const retryBtn = $('btn-retry-conn');
   if (retryBtn) retryBtn.onclick = () => { active.conn?.reconnect?.(); };
+  const claimBtn = $('btn-claim-timeout');
+  if (claimBtn) claimBtn.onclick = async () => {
+    claimBtn.disabled = true;
+    await claimTimeout(active.info.id);
+    // The terminal event arrives over WS and refreshGame() repaints.
+  };
+  // Kick the local clock-decrement loop when this game has a TC; cheap no-op
+  // when the loop is already running.
+  if (liveState.time_limit_ms != null && !liveState.game_over) {
+    startClockTicker();
+  } else {
+    stopClockTicker();
+  }
 
   renderTranscript($('game-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshGame(); },
@@ -722,6 +740,108 @@ function turnPillHtml(state, mode) {
   return `<span class="turn-pill ${yours ? 'your-turn' : 'opp-turn'}" role="status" aria-live="polite">
             <span class="turn-dot"></span>${label}
           </span>`;
+}
+
+// Format a remaining-time value for a chess-style clock display.
+// >= 1m  → 'M:SS'.   <10s  → 'S.t' (one decimal).   Otherwise 'M:SS'.
+function formatClockMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) ms = 0;
+  if (ms < 10_000) {
+    return (ms / 1000).toFixed(1) + 's';
+  }
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Render the two-clock strip + optional "Claim time" button. The data-clock-pi
+// attribute lets the local decrement loop update the right cell without a
+// full refreshGame().
+function renderClocksRowHtml(state, myPlayerIdx, oppName, myName, active) {
+  const c0 = state.clocks?.[0] ?? 0;
+  const c1 = state.clocks?.[1] ?? 0;
+  const myMs   = myPlayerIdx === 0 ? c0 : c1;
+  const oppMs  = myPlayerIdx === 0 ? c1 : c0;
+  const myActive  = state.clock_active_index === myPlayerIdx;
+  const oppActive = state.clock_active_index === (1 - myPlayerIdx);
+  const lowMine  = myActive  && myMs  < 30_000;
+  const lowOpp   = oppActive && oppMs < 30_000;
+  // Claim-timeout: opponent is the active side and their clock is at 0.
+  const canClaim = !state.game_over
+    && state.clock_active_index === (1 - myPlayerIdx)
+    && oppMs <= 0
+    && !active.replayViewing;
+  return `
+    <div class="meta-row clocks-row">
+      <div class="clock opp-clock ${oppActive ? 'active' : ''} ${lowOpp ? 'low' : ''}"
+           aria-label="${escapeHtml(oppName)} clock">
+        <span class="clock-name">${escapeHtml(oppName)}</span>
+        <span class="clock-time" data-clock-pi="${1 - myPlayerIdx}">${formatClockMs(oppMs)}</span>
+      </div>
+      <div class="clock my-clock ${myActive ? 'active' : ''} ${lowMine ? 'low' : ''}"
+           aria-label="${escapeHtml(myName)} clock">
+        <span class="clock-name">${escapeHtml(myName)}</span>
+        <span class="clock-time" data-clock-pi="${myPlayerIdx}">${formatClockMs(myMs)}</span>
+      </div>
+      ${canClaim ? `<button id="btn-claim-timeout" class="primary" type="button">Claim win on time</button>` : ''}
+    </div>`;
+}
+
+// Run a single requestAnimationFrame loop while an online game is active and
+// has clocks enabled. Updates only the active-side cell to avoid layout
+// thrash. Re-anchors from state.clocks + clock_server_ts every frame so it
+// stays in sync with the most-recently-received server snapshot/event.
+let _clockRafHandle = null;
+function startClockTicker() {
+  if (_clockRafHandle != null) return;
+  const tick = () => {
+    _clockRafHandle = null;
+    if (!active?.isOnline || !active.state || active.state.game_over) return;
+    const s = active.state;
+    if (!s.clocks || s.clock_active_index !== 0 && s.clock_active_index !== 1) {
+      _clockRafHandle = requestAnimationFrame(tick);
+      return;
+    }
+    const elapsed = Math.max(0, Date.now() - (s.clock_server_ts || Date.now()));
+    const activePi = s.clock_active_index;
+    const liveMs = Math.max(0, s.clocks[activePi] - elapsed);
+    const el = document.querySelector(`#game-header .clock-time[data-clock-pi="${activePi}"]`);
+    if (el) {
+      const newText = formatClockMs(liveMs);
+      if (el.textContent !== newText) el.textContent = newText;
+      // Add a "low" class to the clock container when under 30s.
+      const wrap = el.closest('.clock');
+      if (wrap) wrap.classList.toggle('low', liveMs < 30_000);
+      // If we just crossed zero and we're not the active side, surface the
+      // claim button by triggering a full refresh.
+      if (liveMs === 0 && activePi !== rolePlayerIndex(active)) {
+        const existing = document.getElementById('btn-claim-timeout');
+        if (!existing) refreshGame();
+      }
+    }
+    _clockRafHandle = requestAnimationFrame(tick);
+  };
+  _clockRafHandle = requestAnimationFrame(tick);
+}
+function stopClockTicker() {
+  if (_clockRafHandle != null) {
+    cancelAnimationFrame(_clockRafHandle);
+    _clockRafHandle = null;
+  }
+}
+
+async function claimTimeout(gameId) {
+  try {
+    const r = await fetch(`/api/games/${gameId}/claim-timeout`, { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      toast(body.error || 'Could not claim timeout.', { kind: 'warn' });
+      return;
+    }
+  } catch (_) {
+    toast('Network error — could not claim timeout.', { kind: 'error' });
+  }
 }
 function statusLabel(state, info, replay) {
   if (state.game_over) {

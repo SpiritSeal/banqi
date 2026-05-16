@@ -230,11 +230,20 @@ export async function appendGameEvent(db, gameId, event) {
     game_over: event.game_over,
     winner: event.winner,
     draw_offered: event.draw_offered || false,
+    clocks_after: event.clocks_after || null,
   });
   await db.query(`
     INSERT INTO game_events (game_id, seq, ts, mover, payload_json)
     VALUES ($1, $2, $3, $4, $5)
   `, [gameId, event.seq, event.ts, event.mover, payload]);
+}
+
+// Persist the live clock state alongside the WASM snapshot. Called by the
+// engine on every event when a game has clocks enabled. NULL clears it
+// (e.g. for unlimited games — saves a row per write).
+export async function saveClockState(db, gameId, json) {
+  await db.query('UPDATE games SET clock_state_json = $1 WHERE id = $2',
+                 [json, gameId]);
 }
 
 export async function listGameEvents(db, gameId) {
@@ -253,13 +262,16 @@ export async function listGameEvents(db, gameId) {
 // ---------- Elo ----------
 
 export async function recordEloChange(db, { userId, gameId, opponentId,
-                                            eloBefore, eloAfter, result }) {
+                                            eloBefore, eloAfter, result,
+                                            lossReason = null }) {
   const now = Date.now();
   await db.query(`
     INSERT INTO elo_history
-      (user_id, game_id, opponent_id, elo_before, elo_after, delta, result, created_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-  `, [userId, gameId, opponentId, eloBefore, eloAfter, eloAfter - eloBefore, result, now]);
+      (user_id, game_id, opponent_id, elo_before, elo_after, delta,
+       result, loss_reason, created_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+  `, [userId, gameId, opponentId, eloBefore, eloAfter, eloAfter - eloBefore,
+      result, lossReason, now]);
   await db.query('UPDATE users SET elo = $1 WHERE id = $2', [eloAfter, userId]);
 }
 

@@ -54,8 +54,14 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
       public_url: publicUrl,
     });
   });
+  // Create the HTTP server + attach WS upfront so the routes can use the
+  // returned broadcast/finalize helpers (e.g. claim-timeout fires a terminal
+  // event from an HTTP request, not an intent frame).
+  const server = createServer(app);
+  const wsHelpers = attachWebSocket(server, { db, sessionParser, passport, engine });
+
   app.use('/api', usersRouter({ db }));
-  app.use('/api', gamesRouter({ db, engine }));
+  app.use('/api', gamesRouter({ db, engine, wsHelpers }));
   app.use('/api', leaderboardRouter({ db }));
   app.use('/api', friendsRouter({ db, serverSecret, publicUrl }));
   app.use('/api', matchRequestsRouter({ db, engine }));
@@ -64,12 +70,10 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
 
   // SPA-style fallback: send index.html for unknown GETs that look like
   // hash-routed pages, so deep links like /g/ROOMCODE work.
-  app.get(/^\/(g|dashboard|leaderboard|profile|friends|add-friend)\b/, (_req, res) => {
+  app.get(/^\/(g|dashboard|leaderboard|profile|friends|add-friend|challenge)\b/, (_req, res) => {
     res.sendFile(join(WEB_DIR, 'index.html'));
   });
 
-  const server = createServer(app);
-  attachWebSocket(server, { db, sessionParser, passport, engine });
   return { app, server, db, engine };
 }
 

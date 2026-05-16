@@ -189,6 +189,12 @@ export function exportPgn(replay, meta = {}) {
                 : null;
       if (who) half += ` {${who} resigns}`;
     }
+    if (snap.action?.kind === 'timeout') {
+      const who = snap.mover === 0 ? (p0Color === 1 ? 'Red' : p0Color === 2 ? 'Black' : 'Player 1')
+                : snap.mover === 1 ? (p1Color === 1 ? 'Red' : p1Color === 2 ? 'Black' : 'Player 2')
+                : null;
+      if (who) half += ` {${who} ran out of time}`;
+    }
     tokens.push(half);
   }
   tokens.push(result);
@@ -220,6 +226,9 @@ export function formatAction(snap, prevCells) {
   }
   if (a.kind === 'accept_draw') {
     return { primary: 'Draw', detail: 'agreed', piece: '', jump: false };
+  }
+  if (a.kind === 'timeout') {
+    return { primary: 'Timeout', detail: 'flag fell', piece: '', jump: false };
   }
   return { primary: '(unknown)', detail: '', piece: '', jump: false };
 }
@@ -350,6 +359,7 @@ export function renderTranscript(container, replay, opts = {}) {
         'transcript-row',
         isCurrent ? 'current' : '',
         s.action?.kind === 'resign' ? 'resign' : '',
+        s.action?.kind === 'timeout' ? 'timeout' : '',
       ].filter(Boolean).join(' ');
       const jumpLabel = parts.jump ? '<span class="badge jump" aria-label="cannon jump">jump</span>' : '';
       const piece = parts.piece ? `<span class="t-piece" aria-hidden="true">${parts.piece}</span>` : '';
