@@ -54,6 +54,7 @@ class Board {
     this.playerColors = [0, 0]; // resolved color for each player (0 = unassigned)
     this.over = false;
     this.winner = 0;
+    this.mode = 'standard';    // 'standard' | 'capture_general'
   }
 
   clone() {
@@ -68,6 +69,7 @@ class Board {
     b.playerColors = [...this.playerColors];
     b.over = this.over;
     b.winner = this.winner;
+    b.mode = this.mode;
     return b;
   }
 
@@ -78,6 +80,7 @@ class Board {
     b.sidePlayer = state.side_to_move;
     b.over = state.game_over;
     b.winner = state.winner;
+    b.mode = state.mode === 'capture_general' ? 'capture_general' : 'standard';
     const mi = state.my_player_index;
     const mc = state.my_color;
     if (mc) {
@@ -170,8 +173,16 @@ class Board {
   }
 
   applyMove(from, to) {
-    this.cells[to] = this.cells[from];
+    const captured = this.cells[to];
+    const moving = this.cells[from];
+    this.cells[to] = moving;
     this.cells[from] = null;
+    // Capture-general mode: capturing the opponent's General ends the game.
+    if (this.mode === 'capture_general' && captured && !captured.fd &&
+        captured.type === GENERAL && moving) {
+      this.over = true;
+      this.winner = moving.color;
+    }
     this._advanceTurn();
   }
 

@@ -67,14 +67,20 @@ export async function deleteUser(db, id) {
 
 // ---------- Games ----------
 
-export async function createGame(db, { roomCode, hostUserId }) {
+export async function createGame(db, { roomCode, hostUserId, mode = 'standard' }) {
   const now = Date.now();
   const { rows } = await db.query(`
-    INSERT INTO games (room_code, host_user_id, status, created_at)
-    VALUES ($1, $2, 'waiting', $3)
+    INSERT INTO games (room_code, host_user_id, status, mode, created_at)
+    VALUES ($1, $2, 'waiting', $3, $4)
     RETURNING *
-  `, [roomCode, hostUserId, now]);
+  `, [roomCode, hostUserId, normalizeMode(mode), now]);
   return rows[0];
+}
+
+// Whitelist the game-mode strings. Unknown / missing values collapse to
+// 'standard' so a client sending garbage doesn't poison the DB row.
+export function normalizeMode(m) {
+  return m === 'capture_general' ? 'capture_general' : 'standard';
 }
 
 export async function findGameByRoom(db, roomCode) {
@@ -321,8 +327,9 @@ export async function isMatchEligible(db, userId, otherId) {
 const MATCH_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Idempotent create: if a pending non-expired row already exists from→to,
-// returns it instead of inserting a duplicate.
-export async function createMatchRequest(db, { fromUserId, toUserId }) {
+// returns it instead of inserting a duplicate (regardless of mode — a sender
+// who wants a different mode should cancel and resend).
+export async function createMatchRequest(db, { fromUserId, toUserId, mode = 'standard' }) {
   const now = Date.now();
   const expires = now + MATCH_REQUEST_TTL_MS;
   const { rows: existing } = await db.query(`
@@ -334,10 +341,10 @@ export async function createMatchRequest(db, { fromUserId, toUserId }) {
   if (existing[0]) return existing[0];
   const { rows } = await db.query(`
     INSERT INTO match_requests
-      (from_user_id, to_user_id, status, created_at, expires_at)
-    VALUES ($1, $2, 'pending', $3, $4)
+      (from_user_id, to_user_id, status, mode, created_at, expires_at)
+    VALUES ($1, $2, 'pending', $3, $4, $5)
     RETURNING *
-  `, [fromUserId, toUserId, now, expires]);
+  `, [fromUserId, toUserId, normalizeMode(mode), now, expires]);
   return rows[0];
 }
 
@@ -420,14 +427,16 @@ export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode
       return null;
     }
     // Allocate a room code with the same 5-retry pattern as routes/games.mjs.
+    // The accepted game inherits the mode chosen by the sender on the request.
+    const mode = normalizeMode(req.mode);
     let game = null;
     for (let i = 0; i < 5; ++i) {
       try {
         const { rows: gRows } = await client.query(`
-          INSERT INTO games (room_code, host_user_id, status, created_at)
-          VALUES ($1, $2, 'waiting', $3)
+          INSERT INTO games (room_code, host_user_id, status, mode, created_at)
+          VALUES ($1, $2, 'waiting', $3, $4)
           RETURNING *
-        `, [allocateRoomCode(), req.from_user_id, now]);
+        `, [allocateRoomCode(), req.from_user_id, mode, now]);
         game = gRows[0];
         break;
       } catch (e) {

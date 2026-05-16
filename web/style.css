@@ -1339,6 +1339,20 @@ table a:hover { text-decoration: underline; }
 .color-chip.red   { background: var(--red-soft); color: var(--red-light); border: 1px solid rgba(210, 67, 67, 0.4); }
 .color-chip.black { background: var(--black-soft); color: var(--black-light); border: 1px solid rgba(220, 220, 220, 0.3); }
 
+/* ---- game-mode chip ---------------------------------------------- */
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(120, 160, 220, 0.15);
+  color: #b8d0f0;
+  border: 1px solid rgba(120, 160, 220, 0.35);
+}
+.mode-chip.small { font-size: 11px; padding: 0 6px; margin-left: 6px; }
+
 /* ---- crib sheet --------------------------------------------------- */
 .crib-grid {
   display: grid;

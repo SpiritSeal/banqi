@@ -8,7 +8,7 @@
 import express from 'express';
 import {
   createGame, findGameById, findGameByRoom, joinGame,
-  listGamesForUser, deleteGameForUser, getUser,
+  listGamesForUser, deleteGameForUser, getUser, normalizeMode,
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 import { newRoomCode } from '../rooms.mjs';
@@ -19,14 +19,15 @@ export function gamesRouter({ db, engine }) {
   const r = express.Router();
 
   r.post('/games', requireAuth, asyncRoute(async (req, res) => {
+    const mode = normalizeMode(req.body?.mode);
     // Retry against the (very unlikely) room-code collision.
     for (let i = 0; i < 5; ++i) {
       try {
         const g = await createGame(db, {
-          roomCode: newRoomCode(), hostUserId: req.user.id,
+          roomCode: newRoomCode(), hostUserId: req.user.id, mode,
         });
-        await engine.createGame(g.id, g.host_user_id);
-        return res.json({ id: g.id, roomCode: g.room_code });
+        await engine.createGame(g.id, g.host_user_id, g.mode);
+        return res.json({ id: g.id, roomCode: g.room_code, mode: g.mode });
       } catch (e) {
         if (i === 4) return res.status(500).json({ error: 'could not allocate room code' });
       }
@@ -114,6 +115,7 @@ function decorate(myUserId) {
     id:             g.id,
     room_code:      g.room_code,
     status:         g.status,
+    mode:           g.mode || 'standard',
     host_user_id:   g.host_user_id,
     join_user_id:   g.join_user_id,
     host_name:      g.host_name,

@@ -262,6 +262,14 @@ MoveResult BanqiRules::apply_move(int from, int to) {
     src.piece = {};
     dst.state = Cell::State::FaceUp;
     dst.piece = moving;
+    // Capture-general mode: capturing the opponent's General ends the game
+    // immediately; the capturing side wins. Set the terminal flags before
+    // advance_turn so recompute_terminal's short-circuit honours the result.
+    if (mode_ == GameMode::CaptureGeneral && r.captured &&
+        r.captured_piece.type == PieceType::General) {
+        game_over_ = true;
+        winner_ = moving.color;
+    }
     advance_turn();
     return r;
 }

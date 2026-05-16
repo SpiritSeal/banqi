@@ -60,8 +60,10 @@ export async function createGameEngine({ db }) {
   const evictTimer = setInterval(evictIdle, 5 * 60 * 1000);
   evictTimer.unref?.();
 
-  async function createGame(gameId, hostUserId) {
-    const wasm = Module.Game.create();
+  async function createGame(gameId, hostUserId, mode = 'standard') {
+    const wasm = mode === 'capture_general'
+      ? Module.Game.createWithMode('capture_general')
+      : Module.Game.create();
     const snapshot = wasm.snapshotJson();
     await saveGameState(db, gameId, snapshot);
     const session = new Session(gameId, hostUserId, null, wasm, []);

@@ -119,10 +119,13 @@ CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
 
 -- Drop legacy federated-relay tables / columns if present. The server-
 -- authoritative model persists moves via game_state + game_events; end-of-
--- game claims are unnecessary now that the server decides terminal state;
--- and there's only one game mode.
+-- game claims are unnecessary now that the server decides terminal state.
 DROP TABLE IF EXISTS finalize_claims;
 DROP TABLE IF EXISTS messages;
-ALTER TABLE games           DROP COLUMN IF EXISTS mode;
 ALTER TABLE games           DROP COLUMN IF EXISTS tip_hash;
-ALTER TABLE match_requests  DROP COLUMN IF EXISTS mode;
+
+-- Game mode. 'standard' = classic Banqi (no-legal-moves loses). 'capture_general'
+-- = win by capturing the opponent's General. Carried on the games row and (when
+-- the game was created via a directed challenge) on the originating match request.
+ALTER TABLE games          ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'standard';
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'standard';
