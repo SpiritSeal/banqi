@@ -15,7 +15,7 @@
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
-import { Replay, renderTranscript } from './replay.js';
+import { Replay, renderTranscript, exportPgn } from './replay.js';
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
@@ -590,9 +590,33 @@ function refreshGame() {
 
   renderTranscript($('game-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshGame(); },
+    onExport: (replay) => {
+      const pgn = exportPgn(replay, {
+        players: [active.info.host_name || 'Host', active.info.join_name || 'Guest'],
+        round:   active.info.room_code,
+        date:    active.info.created_at,
+      });
+      downloadPgn(pgn, `banqi-${active.info.room_code || 'online'}.pgn`);
+    },
   });
   maybeShowTutorialTip($('game-board'));
   maybeShowGameOver(view);
+}
+
+function downloadPgn(text, filename) {
+  try {
+    const blob = new Blob([text], { type: 'application/x-chess-pgn;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (e) {
+    toast(`Couldn't export PGN: ${e.message || e}`, { kind: 'error' });
+  }
 }
 
 function sendIntent(intent) {
@@ -789,6 +813,10 @@ function refreshOTB() {
 
   renderTranscript($('otb-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshOTB(); },
+    onExport: (replay) => {
+      const pgn = exportPgn(replay, { players: ['Player 1', 'Player 2'], event: 'Banqi (over-the-board)' });
+      downloadPgn(pgn, `banqi-otb-${pgnFileStamp()}.pgn`);
+    },
   });
   maybeShowTutorialTip($('otb-board'));
   maybeShowGameOver(view);
@@ -944,9 +972,23 @@ function refreshAI() {
 
   renderTranscript($('ai-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshAI(); },
+    onExport: (replay) => {
+      const diff = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
+      const pgn = exportPgn(replay, {
+        players: ['You', `AI (${diff || active.difficulty})`],
+        event:   'Banqi (vs AI)',
+      });
+      downloadPgn(pgn, `banqi-ai-${pgnFileStamp()}.pgn`);
+    },
   });
   maybeShowTutorialTip($('ai-board'));
   maybeShowGameOver(view);
+}
+
+function pgnFileStamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
 function scheduleAIMove() {
