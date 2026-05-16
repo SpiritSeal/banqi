@@ -29,6 +29,8 @@ class Session {
     this.events = events;
     this.lastTouched = Date.now();
     this._chain = Promise.resolve();
+    this.pendingDrawOffer = null; // player index who offered, or null
+    this.drawAccepted = false;
   }
   // Serialize work for this game so two concurrent intents can't interleave.
   run(fn) {
@@ -88,6 +90,11 @@ export async function createGameEngine({ db }) {
     const wasm = Module.Game.fromSnapshot(snap);
     const events = await listGameEvents(db, gameId);
     const session = new Session(gameId, game.host_user_id, game.join_user_id, wasm, events);
+    // Reconstruct pending draw offer from last event (survives session eviction).
+    if (events.length > 0) {
+      const last = events[events.length - 1];
+      if (last.draw_offered && !last.game_over) session.pendingDrawOffer = last.mover;
+    }
     cache.set(gameId, session);
     return session;
   }
@@ -98,9 +105,9 @@ export async function createGameEngine({ db }) {
     return session.run(async () => {
       const pi = session.playerIndexFor(userId);
       if (pi < 0) return { ok: false, reason: 'not a player in this game' };
-      if (session.wasm.gameOver()) return { ok: false, reason: 'game is over' };
+      if (session.wasm.gameOver() || session.drawAccepted) return { ok: false, reason: 'game is over' };
 
-      let action, revealed = null, capture = null;
+      let action, revealed = null, capture = null, drawOffered = false;
       try {
         switch (intent?.kind) {
           case 'flip': {
@@ -111,6 +118,17 @@ export async function createGameEngine({ db }) {
             const piece = JSON.parse(session.wasm.applyFlip(pi, cell));
             revealed = piece;
             action = { kind: 'flip', to: cell };
+            // Clear opponent's draw offer when a move is made.
+            if (session.pendingDrawOffer !== null && session.pendingDrawOffer !== pi) {
+              session.pendingDrawOffer = null;
+            }
+            if (intent.offer_draw && !session.wasm.gameOver()) {
+              const st = JSON.parse(session.wasm.stateJson(-1));
+              if (st.first_flip_done && session.pendingDrawOffer === null) {
+                session.pendingDrawOffer = pi;
+                drawOffered = true;
+              }
+            }
             break;
           }
           case 'move': {
@@ -123,11 +141,32 @@ export async function createGameEngine({ db }) {
               capture = { color: dst.color, type: dst.type, glyph: dst.glyph };
             }
             action = { kind: 'move', from, to };
+            // Clear opponent's draw offer when a move is made.
+            if (session.pendingDrawOffer !== null && session.pendingDrawOffer !== pi) {
+              session.pendingDrawOffer = null;
+            }
+            if (intent.offer_draw && !session.wasm.gameOver() && session.pendingDrawOffer === null) {
+              session.pendingDrawOffer = pi;
+              drawOffered = true;
+            }
+            break;
+          }
+          case 'accept_draw': {
+            if (session.pendingDrawOffer === null) {
+              return { ok: false, reason: 'no draw offer to accept' };
+            }
+            if (session.pendingDrawOffer === pi) {
+              return { ok: false, reason: 'cannot accept your own draw offer' };
+            }
+            session.drawAccepted = true;
+            session.pendingDrawOffer = null;
+            action = { kind: 'accept_draw' };
             break;
           }
           case 'resign': {
             session.wasm.applyResign(pi);
             action = { kind: 'resign' };
+            session.pendingDrawOffer = null;
             break;
           }
           default:
@@ -138,14 +177,15 @@ export async function createGameEngine({ db }) {
       }
 
       const event = {
-        seq:        session.events.length,
-        ts:         Date.now(),
-        mover:      pi,
+        seq:          session.events.length,
+        ts:           Date.now(),
+        mover:        pi,
         action,
         revealed,
         capture,
-        game_over:  session.wasm.gameOver(),
-        winner:     session.wasm.winner(),
+        game_over:    session.wasm.gameOver() || session.drawAccepted,
+        winner:       session.drawAccepted ? 0 : session.wasm.winner(),
+        draw_offered: drawOffered,
       };
       session.events.push(event);
       session.lastTouched = Date.now();
@@ -166,7 +206,9 @@ export async function createGameEngine({ db }) {
   }
 
   function viewerState(session, viewerPlayerIndex) {
-    return JSON.parse(session.wasm.stateJson(viewerPlayerIndex));
+    const state = JSON.parse(session.wasm.stateJson(viewerPlayerIndex));
+    state.draw_offered_by = session.pendingDrawOffer ?? null;
+    return state;
   }
 
   function viewerStateForUser(session, userId) {

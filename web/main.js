@@ -383,6 +383,7 @@ async function openOnlineGame(roomCode) {
     replay: new Replay(),
     flashCellIdx: -1,
     flashUntil: 0,
+    offerDraw: false,
   };
   if (info.events) active.replay.setEvents(info.events);
 
@@ -421,12 +422,17 @@ async function openOnlineGame(roomCode) {
       active.replay.appendEvent(ev);
       playMoveSound(ev);
       if (ev.mover !== rolePlayerIndex(active)) {
-        announce(`Opponent: ${describeAction(ev)}`);
+        const desc = describeAction(ev);
+        const drawNote = ev.draw_offered ? " (with draw offer)" : "";
+        announce(`Opponent: ${desc}${drawNote}`);
         const to = ev.action?.to;
         if (typeof to === 'number') {
           active.flashCellIdx = to;
           active.flashUntil = Date.now() + 1200;
         }
+      }
+      if (ev.action?.kind === "accept_draw") {
+        announce("Draw accepted. The game is a draw.");
       }
       maybeNotifyTurnTransition(wasMyTurnBefore);
       refreshGame();
@@ -494,6 +500,7 @@ function describeAction(event) {
     return s;
   }
   if (a.kind === 'resign') return 'resigned';
+  if (a.kind === "accept_draw") return "accepted the draw offer";
   return 'made a move';
 }
 
@@ -553,6 +560,31 @@ function refreshGame() {
        </div>`
     : '';
   const counts = pieceCounts(view.cells, active.replay);
+  const myPlayerIdx = rolePlayerIndex(active);
+  const drawOfferedBy = liveState.draw_offered_by ?? null;
+  const opponentOffered = drawOfferedBy !== null && drawOfferedBy !== myPlayerIdx
+                          && liveState.side_to_move === myPlayerIdx
+                          && !liveState.game_over && !view.replayViewing;
+  const iOffered = drawOfferedBy === myPlayerIdx && !liveState.game_over;
+  const canOfferDraw = liveState.first_flip_done && !liveState.game_over
+                       && !view.replayViewing
+                       && liveState.side_to_move === myPlayerIdx
+                       && drawOfferedBy === null;
+  const drawOfferRow = opponentOffered
+    ? `<div class="meta-row draw-offer-row" role="alert">
+         <span>Opponent offers a draw &mdash; accept, or make your move to decline.</span>
+         <button id="btn-accept-draw" class="primary" type="button">Accept Draw</button>
+       </div>`
+    : iOffered
+      ? `<div class="meta-row draw-offer-pending-row">
+           <span class="muted">Draw offer pending &mdash; waiting for opponent.</span>
+         </div>`
+      : "";
+  const offerDrawChk = canOfferDraw
+    ? `<label class="offer-draw-label" title="Attach a draw offer to your next move">
+         <input type="checkbox" id="chk-offer-draw"${active.offerDraw ? " checked" : ""}> Offer draw
+       </label>`
+    : "";
   $('game-header').innerHTML = `
     ${disconnectBanner}
     <div class="meta game-meta">
@@ -571,18 +603,26 @@ function refreshGame() {
       <div class="meta-row">
         ${turnPillHtml(liveState, 'online')}
         <div><span class="meta-label">vs</span> <strong>${escapeHtml(opp || '(waiting for opponent)')}</strong> ${colorChip}</div>
-        <button id="btn-resign" class="btn-danger-inline" type="button"
-          ${liveState.first_flip_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
+        <div class="meta-btn-group">
+          ${offerDrawChk}
+          <button id="btn-resign" class="btn-danger-inline" type="button"
+            ${liveState.first_flip_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
+        </div>
       </div>
+      ${drawOfferRow}
       <div class="meta-row meta-row-status">
         <span><span class="meta-label">Move</span> ${active.replay.totalMoves()}</span>
-        <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info)}</span></span>
+        <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info, active.replay)}</span></span>
       </div>
       <div class="meta-row meta-row-counts">
         ${renderPieceCountsHtml(counts)}
       </div>
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
+  const chkOfferDraw = $('chk-offer-draw');
+  if (chkOfferDraw) chkOfferDraw.onchange = (e) => { if (active) active.offerDraw = e.target.checked; };
+  const btnAcceptDraw = $('btn-accept-draw');
+  if (btnAcceptDraw) btnAcceptDraw.onclick = () => { sendIntent({ kind: 'accept_draw' }); };
   $('btn-resign').onclick = async () => {
     if (!active.replay.isLive()) return;
     const ok = await confirmModal({
@@ -669,10 +709,13 @@ function turnPillHtml(state, mode) {
             <span class="turn-dot"></span>${label}
           </span>`;
 }
-function statusLabel(state, info) {
+function statusLabel(state, info, replay) {
   if (state.game_over) {
     const w = state.winner;
-    return `winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}`;
+    if (w === 1) return 'winner: Red';
+    if (w === 2) return 'winner: Black';
+    const lastKind = replay?.snapshots?.[replay.snapshots.length - 1]?.action?.kind;
+    return lastKind === "accept_draw" ? "draw" : "winner: —";
   }
   if (info.join_user_id == null || info.status === 'waiting') return 'waiting for opponent to join';
   return 'playing';
@@ -686,7 +729,9 @@ function onOnlineCellClick(idx, state) {
   const legal = state.legal_moves_for_me || [];
   if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
-      sendIntent({ kind: 'flip', cell: idx });
+      const drawOffer = active.offerDraw;
+      active.offerDraw = false;
+      sendIntent({ kind: 'flip', cell: idx, offer_draw: drawOffer });
       return;
     }
     if (c.state === 'faceup' && c.color === state.my_color &&
@@ -699,7 +744,9 @@ function onOnlineCellClick(idx, state) {
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
     active.selected = null;
-    sendIntent({ kind: 'move', from, to: idx });
+    const drawOffer = active.offerDraw;
+    active.offerDraw = false;
+    sendIntent({ kind: 'move', from, to: idx, offer_draw: drawOffer });
     return;
   }
   if (idx === active.selected) { active.selected = null; refreshGame(); return; }

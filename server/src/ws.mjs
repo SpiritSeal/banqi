@@ -81,9 +81,9 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     });
   }
 
-  async function applyEloOnEnd(session, gameId, winnerColor) {
-    // Pre-flip resign or draw — no Elo applied.
-    if (winnerColor !== 1 && winnerColor !== 2) return;
+  async function applyEloOnEnd(session, gameId, winnerColor, isDraw) {
+    // Pre-flip resign — no Elo applied.
+    if (!isDraw && winnerColor !== 1 && winnerColor !== 2) return;
     // Skip Elo if either side is a guest account (ephemeral, unrated).
     const [host, join] = await Promise.all([
       getUser(db, session.hostUserId),
@@ -91,15 +91,32 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     ]);
     if (!host || !join) return;
     if (host.provider === 'guest' || join.provider === 'guest') {
-      // Still record winner_user_id for game history, just no rating change.
-      const state = engine.viewerState(session, -1);
-      const winnerPlayerIndex =
-        state.player0_color === winnerColor ? 0 :
-        state.player1_color === winnerColor ? 1 : -1;
-      if (winnerPlayerIndex >= 0) {
-        const winnerUserId = winnerPlayerIndex === 0 ? session.hostUserId : session.joinUserId;
-        await setGameWinnerUser(db, gameId, winnerUserId);
+      if (!isDraw) {
+        // Still record winner_user_id for game history, just no rating change.
+        const state = engine.viewerState(session, -1);
+        const winnerPlayerIndex =
+          state.player0_color === winnerColor ? 0 :
+          state.player1_color === winnerColor ? 1 : -1;
+        if (winnerPlayerIndex >= 0) {
+          const winnerUserId = winnerPlayerIndex === 0 ? session.hostUserId : session.joinUserId;
+          await setGameWinnerUser(db, gameId, winnerUserId);
+        }
       }
+      return;
+    }
+    if (isDraw) {
+      const dH = eloDelta(host.elo, join.elo, 0.5);
+      const dJ = eloDelta(join.elo, host.elo, 0.5);
+      await Promise.all([
+        recordEloChange(db, {
+          userId: host.id, gameId, opponentId: join.id,
+          eloBefore: host.elo, eloAfter: host.elo + dH, result: 'draw',
+        }),
+        recordEloChange(db, {
+          userId: join.id, gameId, opponentId: host.id,
+          eloBefore: join.elo, eloAfter: join.elo + dJ, result: 'draw',
+        }),
+      ]);
       return;
     }
     const state = engine.viewerState(session, -1);
@@ -180,7 +197,8 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
       }
       await broadcastEvent(session.gameId, result.event, session);
       if (result.endedNow) {
-        try { await applyEloOnEnd(session, session.gameId, result.event.winner); }
+        const isDraw = result.event.action?.kind === 'accept_draw';
+        try { await applyEloOnEnd(session, session.gameId, result.event.winner, isDraw); }
         catch (e) { console.error('elo update failed:', e); }
       }
     });
