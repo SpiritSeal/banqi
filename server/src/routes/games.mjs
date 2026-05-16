@@ -117,6 +117,8 @@ function decorate(myUserId) {
     status:            g.status,
     mode:              g.mode || 'standard',
     first_mover_index: g.first_mover_index ?? null,
+    time_limit_ms:     g.time_limit_ms ?? null,
+    increment_ms:      g.increment_ms ?? 0,
     host_user_id:      g.host_user_id,
     join_user_id:      g.join_user_id,
     host_name:         g.host_name,

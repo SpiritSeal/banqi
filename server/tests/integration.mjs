@@ -497,6 +497,62 @@ describe('friends + match requests', () => {
     assert.equal(game.first_mover_index, 1, 'opponent → seat 1');
   });
 
+  it('time control round-trips through the route and onto the game', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    const r = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id,
+        time_limit_ms: 600_000,
+        increment_ms: 5_000,
+      }),
+    });
+    assert.equal(r.status, 200);
+    const created = await r.json();
+    assert.equal(created.time_limit_ms, 600_000);
+    assert.equal(created.increment_ms,  5_000);
+
+    // Both sides see the TC fields on their list.
+    const reqs = await (await authedFetch(bob, '/api/match-requests')).json();
+    const pending = reqs.incoming.find(r => r.id === created.id);
+    assert.equal(pending.time_limit_ms, 600_000);
+    assert.equal(pending.increment_ms,  5_000);
+
+    const accept = await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    });
+    const accepted = await accept.json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+    assert.equal(game.time_limit_ms, 600_000);
+    assert.equal(game.increment_ms,  5_000);
+  });
+
+  it('invalid time control values return 400', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    // Below the 30s floor.
+    const tooShort = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({ to_user_id: meB.id, time_limit_ms: 5_000 }),
+    });
+    assert.equal(tooShort.status, 400);
+
+    // Above the 60s increment ceiling.
+    const tooBigInc = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({ to_user_id: meB.id, time_limit_ms: 300_000, increment_ms: 999_999 }),
+    });
+    assert.equal(tooBigInc.status, 400);
+  });
+
   it('message over 280 chars is rejected with 400', async () => {
     const alice = await signInAs('Alice');
     const bob   = await signInAs('Bob');

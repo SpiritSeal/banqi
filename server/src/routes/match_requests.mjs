@@ -15,7 +15,8 @@ import {
   createMatchRequest, listIncomingMatchRequests, listOutgoingMatchRequests,
   cancelMatchRequest, declineMatchRequest, acceptMatchRequest,
   isMatchEligible, getMatchRequest, getUser, normalizeMode,
-  normalizeFirstMoverPref,
+  normalizeFirstMoverPref, normalizeTimeControl,
+  TIME_LIMIT_MIN_MS, TIME_LIMIT_MAX_MS, INCREMENT_MAX_MS,
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 import { newRoomCode } from '../rooms.mjs';
@@ -68,8 +69,31 @@ export function matchRequestsRouter({ db, engine }) {
     if (message === BAD_MESSAGE) {
       return res.status(400).json({ error: 'message too long (max 280 chars)' });
     }
+    // Time control: validate strictly so the challenger gets a clear error
+    // rather than a silently-dropped value. null/missing → unlimited.
+    const rawT = req.body?.time_limit_ms;
+    const rawInc = req.body?.increment_ms;
+    if (rawT != null) {
+      if (!Number.isInteger(rawT) || rawT < TIME_LIMIT_MIN_MS || rawT > TIME_LIMIT_MAX_MS) {
+        return res.status(400).json({
+          error: `time_limit_ms must be an integer in [${TIME_LIMIT_MIN_MS}, ${TIME_LIMIT_MAX_MS}] or null`,
+        });
+      }
+    }
+    if (rawInc != null) {
+      if (!Number.isInteger(rawInc) || rawInc < 0 || rawInc > INCREMENT_MAX_MS) {
+        return res.status(400).json({
+          error: `increment_ms must be an integer in [0, ${INCREMENT_MAX_MS}]`,
+        });
+      }
+    }
+    const tc = normalizeTimeControl({
+      timeLimitMs: rawT ?? null,
+      incrementMs: rawInc ?? 0,
+    });
     const created = await createMatchRequest(db, {
       fromUserId: req.user.id, toUserId, mode, firstMoverPref, message,
+      timeLimitMs: tc.timeLimitMs, incrementMs: tc.incrementMs,
     });
     res.json(created);
   }));
@@ -90,7 +114,8 @@ export function matchRequestsRouter({ db, engine }) {
     }
     // Seed the in-memory engine session for the just-created game. The host
     // is the request sender; the acceptor is already auto-joined in SQL.
-    // first_mover_index pins which seat must make the opening flip.
+    // first_mover_index pins the opening flip; the TC is read off the games
+    // row by the engine session itself when clocks are enforced.
     await engine.createGame(
       result.game.id, result.game.host_user_id, result.game.mode,
       result.game.first_mover_index,

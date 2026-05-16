@@ -11,6 +11,8 @@ import {
   createMatchRequest, acceptMatchRequest,
   listIncomingMatchRequests, listOutgoingMatchRequests,
   normalizeFirstMoverPref, resolveFirstMoverIndex,
+  normalizeTimeControl,
+  TIME_LIMIT_MIN_MS, TIME_LIMIT_MAX_MS, INCREMENT_MAX_MS,
 } from '../src/db.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql:///banqi_test';
@@ -106,6 +108,81 @@ describe('createMatchRequest persists the new rule fields', () => {
     assert.equal(typeof out.first_mover_pref, 'string');
     assert.ok('message' in inc);
     assert.ok('message' in out);
+  });
+});
+
+describe('normalizeTimeControl', () => {
+  it('null timeLimitMs → unlimited (null + 0 increment)', () => {
+    assert.deepEqual(normalizeTimeControl({}),                              { timeLimitMs: null, incrementMs: 0 });
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: null }),           { timeLimitMs: null, incrementMs: 0 });
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: null, incrementMs: 5000 }),
+                                                                            { timeLimitMs: null, incrementMs: 0 });
+  });
+
+  it('out-of-bounds timeLimitMs collapses to null', () => {
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: TIME_LIMIT_MIN_MS - 1 }), { timeLimitMs: null, incrementMs: 0 });
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: TIME_LIMIT_MAX_MS + 1 }), { timeLimitMs: null, incrementMs: 0 });
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: 'nope' }),                { timeLimitMs: null, incrementMs: 0 });
+  });
+
+  it('valid (timeLimitMs, incrementMs) round-trips', () => {
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: 300_000, incrementMs: 3000 }),
+                                                                            { timeLimitMs: 300_000, incrementMs: 3000 });
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: TIME_LIMIT_MIN_MS, incrementMs: INCREMENT_MAX_MS }),
+                                                                            { timeLimitMs: TIME_LIMIT_MIN_MS, incrementMs: INCREMENT_MAX_MS });
+  });
+
+  it('out-of-bounds incrementMs collapses to 0 (keeps time limit)', () => {
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: 300_000, incrementMs: -1 }),
+                                                                            { timeLimitMs: 300_000, incrementMs: 0 });
+    assert.deepEqual(normalizeTimeControl({ timeLimitMs: 300_000, incrementMs: INCREMENT_MAX_MS + 1 }),
+                                                                            { timeLimitMs: 300_000, incrementMs: 0 });
+  });
+});
+
+describe('createMatchRequest persists time control', () => {
+  it('stores time_limit_ms + increment_ms', async () => {
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const req = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+      timeLimitMs: 300_000, incrementMs: 3000,
+    });
+    assert.equal(req.time_limit_ms, 300_000);
+    assert.equal(req.increment_ms,  3000);
+  });
+
+  it('null timeLimitMs persists as NULL (unlimited)', async () => {
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const req = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+    });
+    assert.equal(req.time_limit_ms, null);
+    assert.equal(req.increment_ms,  0);
+  });
+});
+
+describe('acceptMatchRequest carries TC onto the game row', () => {
+  it('TC propagates from match_request → game', async () => {
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const req = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+      timeLimitMs: 600_000, incrementMs: 5000,
+    });
+    const result = await acceptMatchRequest(db, bob, req.id, freshRoomCode);
+    assert.ok(result);
+    assert.equal(result.game.time_limit_ms, 600_000);
+    assert.equal(result.game.increment_ms,  5000);
+  });
+
+  it('unlimited TC produces NULL game.time_limit_ms', async () => {
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const req = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+    });
+    const result = await acceptMatchRequest(db, bob, req.id, freshRoomCode);
+    assert.ok(result);
+    assert.equal(result.game.time_limit_ms, null);
+    assert.equal(result.game.increment_ms,  0);
   });
 });
 

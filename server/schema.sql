@@ -145,3 +145,12 @@ ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT '
 ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS first_mover_pref TEXT NOT NULL DEFAULT 'random';
 ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS message          TEXT;
 ALTER TABLE games          ADD COLUMN IF NOT EXISTS first_mover_index INTEGER;
+
+-- Optional chess-style time control. NULL time_limit_ms = unlimited (no clock
+-- runs). increment_ms is the per-move bonus added after a player's move
+-- completes (Fischer style). Both fields ride from the match request onto
+-- the games row at accept time.
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS time_limit_ms INTEGER;
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS increment_ms  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE games          ADD COLUMN IF NOT EXISTS time_limit_ms INTEGER;
+ALTER TABLE games          ADD COLUMN IF NOT EXISTS increment_ms  INTEGER NOT NULL DEFAULT 0;

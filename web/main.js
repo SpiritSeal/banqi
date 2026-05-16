@@ -598,6 +598,7 @@ function refreshGame() {
           <span class="meta-label">Room</span>
           <code>${escapeHtml(active.info.room_code)}</code>
           <span class="mode-chip" aria-label="Win condition: ${escapeHtml(modeLabel(active.info.mode || liveState.mode))}">${escapeHtml(modeLabel(active.info.mode || liveState.mode))}</span>
+          ${active.info.time_limit_ms != null ? `<span class="mode-chip" aria-label="Time control: ${escapeHtml(timeControlLabel(active.info.time_limit_ms, active.info.increment_ms || 0))}">${escapeHtml(timeControlLabel(active.info.time_limit_ms, active.info.increment_ms || 0))}</span>` : ''}
           <button id="btn-copy-link" class="link-btn" type="button" aria-label="Copy invite link">Copy invite link</button>
         </div>
         <div class="meta-row-right">
@@ -1610,6 +1611,10 @@ async function challengePlayer(toUserId, opts = {}) {
     first_mover_pref: firstMoverPref,
   };
   if (message) body.message = message;
+  if (Number.isInteger(opts.time_limit_ms)) body.time_limit_ms = opts.time_limit_ms;
+  if (Number.isInteger(opts.increment_ms) && opts.increment_ms > 0) {
+    body.increment_ms = opts.increment_ms;
+  }
   const res = await fetch('/api/match-requests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1624,13 +1629,40 @@ async function challengePlayer(toUserId, opts = {}) {
     toast(responseBody.error || 'Could not send challenge.', { kind: 'error' });
     return null;
   }
-  toast(`Challenge sent (${modeLabel(mode)}).`, { kind: 'success' });
+  const tcChip = body.time_limit_ms ? ` · ${timeControlLabel(body.time_limit_ms, body.increment_ms || 0)}` : '';
+  toast(`Challenge sent (${modeLabel(mode)}${tcChip}).`, { kind: 'success' });
   return responseBody;
 }
 
 const FIRST_MOVER_PREFS = ['challenger', 'opponent', 'random'];
 function normFirstMoverPref(p) {
   return FIRST_MOVER_PREFS.includes(p) ? p : 'random';
+}
+
+// Time-control presets surfaced in the challenge picker. value === '' is
+// the special "unlimited" sentinel; 'custom' opens the inline number inputs.
+// Each preset is { base_min, inc_sec } in human units.
+const TIME_CONTROL_PRESETS = [
+  { value: '',         label: 'Unlimited' },
+  { value: '1+0',      label: '1 + 0',   base_min: 1,  inc_sec: 0  },
+  { value: '3+0',      label: '3 + 0',   base_min: 3,  inc_sec: 0  },
+  { value: '3+2',      label: '3 + 2',   base_min: 3,  inc_sec: 2  },
+  { value: '5+0',      label: '5 + 0',   base_min: 5,  inc_sec: 0  },
+  { value: '5+3',      label: '5 + 3',   base_min: 5,  inc_sec: 3  },
+  { value: '10+0',     label: '10 + 0',  base_min: 10, inc_sec: 0  },
+  { value: '10+5',     label: '10 + 5',  base_min: 10, inc_sec: 5  },
+  { value: '15+10',    label: '15 + 10', base_min: 15, inc_sec: 10 },
+  { value: '30+0',     label: '30 + 0',  base_min: 30, inc_sec: 0  },
+  { value: 'custom',   label: 'Custom…' },
+];
+
+// Render a human label for a (time_limit_ms, increment_ms) pair. Returns
+// 'Unlimited' when there's no clock, otherwise 'minutes+seconds'.
+function timeControlLabel(timeLimitMs, incrementMs = 0) {
+  if (timeLimitMs == null) return 'Unlimited';
+  const baseMin = Math.round(timeLimitMs / 60000);
+  const incSec  = Math.round((incrementMs || 0) / 1000);
+  return `${baseMin}+${incSec}`;
 }
 
 // Per-perspective chip text. Outgoing = the viewer is the challenger;
@@ -1650,6 +1682,11 @@ function matchRequestChips(req, perspective) {
   ];
   const fm = firstMoverChipText(req.first_mover_pref, perspective);
   if (fm) parts.push(`<span class="mode-chip small">${escapeHtml(fm)}</span>`);
+  // Only show a TC chip when there's actually a clock; "Unlimited" is the
+  // default and would clutter every row.
+  if (req.time_limit_ms != null) {
+    parts.push(`<span class="mode-chip small">${escapeHtml(timeControlLabel(req.time_limit_ms, req.increment_ms || 0))}</span>`);
+  }
   return parts.join(' ');
 }
 
@@ -1716,6 +1753,25 @@ async function renderChallengeDetails(targetUserId) {
       </fieldset>
 
       <fieldset class="challenge-section">
+        <legend>Time control</legend>
+        <div class="row">
+          <label for="cd-tc-preset">Pace</label>
+          <select id="cd-tc-preset">
+            ${TIME_CONTROL_PRESETS.map(p =>
+              `<option value="${escapeHtml(p.value)}"${p.value === '' ? ' selected' : ''}>${escapeHtml(p.label)}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div id="cd-tc-custom" class="row hidden" style="margin-top:8px">
+          <label for="cd-tc-base">Base minutes</label>
+          <input id="cd-tc-base" type="number" min="1" max="180" step="1" value="5" inputmode="numeric">
+          <label for="cd-tc-inc">Increment seconds</label>
+          <input id="cd-tc-inc"  type="number" min="0" max="60"  step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="muted small" id="cd-tc-help">No clock — players take as long as they want.</div>
+      </fieldset>
+
+      <fieldset class="challenge-section">
         <legend>Message <span class="muted small">(optional)</span></legend>
         <textarea id="cd-message" maxlength="280" rows="3"
                   placeholder="Add a note for your opponent — they'll see it on their incoming request."></textarea>
@@ -1734,6 +1790,43 @@ async function renderChallengeDetails(targetUserId) {
     countEl.textContent = String(messageEl.value.length);
   });
 
+  const tcPresetEl = $('cd-tc-preset');
+  const tcCustomEl = $('cd-tc-custom');
+  const tcBaseEl   = $('cd-tc-base');
+  const tcIncEl    = $('cd-tc-inc');
+  const tcHelpEl   = $('cd-tc-help');
+  const refreshTcUI = () => {
+    const v = tcPresetEl.value;
+    tcCustomEl.classList.toggle('hidden', v !== 'custom');
+    const tc = readTcFromPicker();
+    if (tc.time_limit_ms == null) {
+      tcHelpEl.textContent = 'No clock — players take as long as they want.';
+    } else {
+      const baseMin = Math.round(tc.time_limit_ms / 60000);
+      const incSec  = Math.round(tc.increment_ms / 1000);
+      tcHelpEl.textContent = `${baseMin} minute${baseMin === 1 ? '' : 's'} per side, +${incSec}s per move.`;
+    }
+  };
+  function readTcFromPicker() {
+    const v = tcPresetEl.value;
+    if (v === '') return { time_limit_ms: null, increment_ms: 0 };
+    if (v === 'custom') {
+      const baseMin = Math.max(1, Math.min(180, parseInt(tcBaseEl.value, 10) || 0));
+      const incSec  = Math.max(0, Math.min(60,  parseInt(tcIncEl.value,  10) || 0));
+      return { time_limit_ms: baseMin * 60000, increment_ms: incSec * 1000 };
+    }
+    const preset = TIME_CONTROL_PRESETS.find(p => p.value === v);
+    if (!preset) return { time_limit_ms: null, increment_ms: 0 };
+    return {
+      time_limit_ms: preset.base_min * 60000,
+      increment_ms:  preset.inc_sec  * 1000,
+    };
+  }
+  tcPresetEl.addEventListener('change', refreshTcUI);
+  tcBaseEl.addEventListener('input', refreshTcUI);
+  tcIncEl.addEventListener('input', refreshTcUI);
+  refreshTcUI();
+
   $('cd-cancel').addEventListener('click', () => {
     if (history.length > 1) history.back();
     else location.hash = `#/profile/${targetUserId}`;
@@ -1745,8 +1838,10 @@ async function renderChallengeDetails(targetUserId) {
     const mode = body.querySelector('input[name="cd-mode"]:checked')?.value || 'standard';
     const firstMoverPref = body.querySelector('input[name="cd-first"]:checked')?.value || 'random';
     const message = messageEl.value || '';
+    const tc = readTcFromPicker();
     const result = await challengePlayer(targetUserId, {
       mode, first_mover_pref: firstMoverPref, message,
+      time_limit_ms: tc.time_limit_ms, increment_ms: tc.increment_ms,
     });
     if (!result) {
       sendBtn.disabled = false;

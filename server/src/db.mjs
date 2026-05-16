@@ -98,6 +98,27 @@ export function resolveFirstMoverIndex(pref) {
   return Math.random() < 0.5 ? 0 : 1;
 }
 
+// Time-control bounds. A game with a base time below 30s is unplayable; a
+// per-move increment beyond 60s isn't a chess clock anymore. Outside this
+// box → returns null/0 (no clock); the caller decides whether to 400 or
+// just silently drop. NULL/missing time_limit_ms means "unlimited", in
+// which case increment_ms is also forced to 0 (no clock to increment).
+export const TIME_LIMIT_MIN_MS = 30_000;        //   30s
+export const TIME_LIMIT_MAX_MS = 3 * 60 * 60_000; //   3h
+export const INCREMENT_MAX_MS  = 60_000;        //   60s
+export function normalizeTimeControl({ timeLimitMs, incrementMs } = {}) {
+  const t = Number.isInteger(timeLimitMs) ? timeLimitMs : null;
+  const inc = Number.isInteger(incrementMs) ? incrementMs : 0;
+  if (t == null) return { timeLimitMs: null, incrementMs: 0 };
+  if (t < TIME_LIMIT_MIN_MS || t > TIME_LIMIT_MAX_MS) {
+    return { timeLimitMs: null, incrementMs: 0 };
+  }
+  if (inc < 0 || inc > INCREMENT_MAX_MS) {
+    return { timeLimitMs: t, incrementMs: 0 };
+  }
+  return { timeLimitMs: t, incrementMs: inc };
+}
+
 export async function findGameByRoom(db, roomCode) {
   const { rows } = await db.query('SELECT * FROM games WHERE room_code = $1', [roomCode]);
   return rows[0] || null;
@@ -348,9 +369,11 @@ const MATCH_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export async function createMatchRequest(db, {
   fromUserId, toUserId,
   mode = 'standard', firstMoverPref = 'random', message = null,
+  timeLimitMs = null, incrementMs = 0,
 }) {
   const now = Date.now();
   const expires = now + MATCH_REQUEST_TTL_MS;
+  const tc = normalizeTimeControl({ timeLimitMs, incrementMs });
   const { rows: existing } = await db.query(`
     SELECT * FROM match_requests
      WHERE from_user_id = $1 AND to_user_id = $2
@@ -361,11 +384,14 @@ export async function createMatchRequest(db, {
   const { rows } = await db.query(`
     INSERT INTO match_requests
       (from_user_id, to_user_id, status, mode, first_mover_pref, message,
+       time_limit_ms, increment_ms,
        created_at, expires_at)
-    VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7)
+    VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8, $9)
     RETURNING *
   `, [fromUserId, toUserId, normalizeMode(mode),
-      normalizeFirstMoverPref(firstMoverPref), message, now, expires]);
+      normalizeFirstMoverPref(firstMoverPref), message,
+      tc.timeLimitMs, tc.incrementMs,
+      now, expires]);
   return rows[0];
 }
 
@@ -448,22 +474,27 @@ export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode
       return null;
     }
     // Allocate a room code with the same 5-retry pattern as routes/games.mjs.
-    // The accepted game inherits the mode + first-mover preference chosen by
-    // the sender on the request. 'random' is resolved to a concrete seat
-    // index here so reconnects always see the same first-mover.
+    // The accepted game inherits the mode + first-mover preference + time
+    // control chosen by the sender on the request. 'random' first-mover is
+    // resolved to a concrete seat index here so reconnects always see the
+    // same first-mover.
     const mode             = normalizeMode(req.mode);
     const firstMoverIndex  = resolveFirstMoverIndex(
       normalizeFirstMoverPref(req.first_mover_pref)
     );
+    const timeLimitMs = req.time_limit_ms ?? null;
+    const incrementMs = req.increment_ms ?? 0;
     let game = null;
     for (let i = 0; i < 5; ++i) {
       try {
         const { rows: gRows } = await client.query(`
           INSERT INTO games
-            (room_code, host_user_id, status, mode, first_mover_index, created_at)
-          VALUES ($1, $2, 'waiting', $3, $4, $5)
+            (room_code, host_user_id, status, mode, first_mover_index,
+             time_limit_ms, increment_ms, created_at)
+          VALUES ($1, $2, 'waiting', $3, $4, $5, $6, $7)
           RETURNING *
-        `, [allocateRoomCode(), req.from_user_id, mode, firstMoverIndex, now]);
+        `, [allocateRoomCode(), req.from_user_id, mode, firstMoverIndex,
+            timeLimitMs, incrementMs, now]);
         game = gRows[0];
         break;
       } catch (e) {
