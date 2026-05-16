@@ -301,7 +301,7 @@ export async function headToHead(db, userId) {
       JOIN users u ON u.id = e.opponent_id
      WHERE e.user_id = $1
      GROUP BY e.opponent_id, u.display_name
-     ORDER BY wins + losses + draws DESC
+     ORDER BY COUNT(*) DESC
   `, [userId]);
   return rows;
 }
