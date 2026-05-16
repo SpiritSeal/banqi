@@ -7,6 +7,11 @@
 //   * game-over: synthesized chime.
 // AudioContext is created lazily on the first move; sample bytes are
 // pre-fetched at module load so the first move doesn't wait on the network.
+//
+// All sounds are gated on the user's sound setting (settings.js). When sound
+// is off, playMoveSound is a no-op.
+
+import { isSoundEnabled } from './settings.js';
 
 let ctx = null;
 let sampleBytes = null;
@@ -89,6 +94,7 @@ function chime(ac, frequencies, noteDuration) {
 }
 
 export function playMoveSound(event) {
+  if (!isSoundEnabled()) return;
   try {
     const ac = getCtx();
     const kind = event.action?.kind;
