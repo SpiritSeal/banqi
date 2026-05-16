@@ -532,6 +532,98 @@ describe('friends + match requests', () => {
     assert.equal(game.increment_ms,  5_000);
   });
 
+  it('TC game: active side moving past flag → server fires timeout (real WASM, mocked time)', async (t) => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    // 30s base, no increment, Alice (challenger) flips first.
+    const created = await (await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id,
+        time_limit_ms: 30_000, increment_ms: 0,
+        first_mover_pref: 'challenger',
+      }),
+    })).json();
+    const accepted = await (await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    })).json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+
+    // Drive the engine's clock via Date.now. t.mock auto-restores on test end.
+    let clockMs = Date.now();
+    t.mock.method(Date, 'now', () => clockMs);
+
+    a.send({ kind: 'flip', cell: 0 });
+    await a.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'flip');
+    await b.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'flip');
+
+    // Bob deliberates for 31s, then tries to flip. Server should reject the
+    // flip and broadcast a timeout event instead.
+    clockMs += 31_000;
+    b.send({ kind: 'flip', cell: 1 });
+    const ev = await b.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'timeout');
+    assert.equal(ev.event.mover, 1, 'Bob (seat 1) ran out');
+    assert.equal(ev.event.game_over, true);
+    assert.equal(ev.event.clocks_after[1], 0);
+
+    // Alice sees the same terminal event.
+    const evA = await a.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'timeout');
+    assert.equal(evA.event.mover, 1);
+
+    a.close(); b.close();
+  });
+
+  it('TC game: opponent can claim a win on time via HTTP endpoint', async (t) => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    const created = await (await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id, time_limit_ms: 30_000, increment_ms: 0,
+        first_mover_pref: 'challenger',
+      }),
+    })).json();
+    const accepted = await (await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    })).json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+
+    let clockMs = Date.now();
+    t.mock.method(Date, 'now', () => clockMs);
+
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+    a.send({ kind: 'flip', cell: 0 });
+    await a.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'flip');
+
+    // Bob disappears; Alice waits past the flag and claims.
+    clockMs += 31_000;
+    const claim = await authedFetch(alice, `/api/games/${game.id}/claim-timeout`, {
+      method: 'POST',
+    });
+    assert.equal(claim.status, 200);
+    const body = await claim.json();
+    assert.equal(body.event.action.kind, 'timeout');
+    assert.equal(body.event.mover, 1);
+
+    // Bob's WS sees the same terminal event.
+    const evB = await b.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'timeout');
+    assert.equal(evB.event.game_over, true);
+
+    a.close(); b.close();
+  });
+
   it('TC game: WS snapshot carries clocks; first flip starts opponent clock', async () => {
     const alice = await signInAs('Alice');
     const bob   = await signInAs('Bob');

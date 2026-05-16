@@ -7,18 +7,21 @@
 // Concurrency: each game's apply path is serialized via a per-game mutex so
 // two simultaneous intents from the same player can't race the WASM state.
 
-import createBanqi from '../../web/banqi.js';
 import {
   findGameById, saveGameState, loadGameState,
   appendGameEvent, listGameEvents, markGameEnded,
   saveClockState,
 } from './db.mjs';
 
-let _Module = null;
-async function getModule() {
-  if (_Module) return _Module;
-  _Module = await createBanqi();
-  return _Module;
+// Default WASM loader. Imported dynamically so this file can be loaded in
+// test contexts that pass an injected fake module — the real banqi.js +
+// banqi.wasm only need to exist on disk when nobody supplies a substitute.
+let _defaultModule = null;
+async function getDefaultModule() {
+  if (_defaultModule) return _defaultModule;
+  const { default: createBanqi } = await import('../../web/banqi.js');
+  _defaultModule = await createBanqi();
+  return _defaultModule;
 }
 
 class Session {
@@ -81,8 +84,13 @@ class Session {
 // Time after which an idle session is evicted from the in-memory cache.
 const IDLE_MS = 30 * 60 * 1000;   // 30 minutes
 
-export async function createGameEngine({ db }) {
-  const Module = await getModule();
+// Build an engine. `banqiModule` is the WASM-backed (or fake) rules module;
+// when omitted the real WASM is loaded from web/banqi.js. Tests can pass a
+// fake module exposing the same `Game.create / createWithMode / fromSnapshot`
+// surface (see tests/fixtures/fake_banqi.mjs) to exercise engine logic
+// without a built WASM.
+export async function createGameEngine({ db, banqiModule = null } = {}) {
+  const Module = banqiModule || await getDefaultModule();
   const cache = new Map();   // gameId → Session
 
   function evictIdle() {
