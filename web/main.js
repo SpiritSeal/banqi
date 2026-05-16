@@ -877,41 +877,72 @@ function scheduleAIMove() {
 
 // ---- shared rendering ----
 const PIECE_NAMES = ['', 'Soldier', 'Cannon', 'Horse', 'Chariot', 'Elephant', 'Advisor', 'General'];
+const PIECE_TYPE_TOTALS = [0, 5, 2, 2, 2, 2, 2, 1]; // count of each type per color (index = type rank)
+const PIECE_GLYPHS = {
+  1: ['', '兵', '炮', '傌', '俥', '相', '仕', '帥'],
+  2: ['', '卒', '砲', '馬', '車', '象', '士', '將'],
+};
+// Display order: General → Soldier (rank high to low).
+const PIECE_TYPE_DISPLAY_ORDER = [7, 6, 5, 4, 3, 2, 1];
 
 function pieceCounts(cells, replay) {
-  let shown_red = 0, shown_black = 0;
+  const shown = { 1: [0, 0, 0, 0, 0, 0, 0, 0], 2: [0, 0, 0, 0, 0, 0, 0, 0] };
   for (const c of cells) {
-    if (c.state === 'faceup') {
-      if (c.color === 1) shown_red++;
-      else if (c.color === 2) shown_black++;
+    if (c.state === 'faceup' && (c.color === 1 || c.color === 2) && c.type >= 1 && c.type <= 7) {
+      shown[c.color][c.type]++;
     }
   }
-  let captured_red = 0, captured_black = 0;
+  const captured = { 1: [0, 0, 0, 0, 0, 0, 0, 0], 2: [0, 0, 0, 0, 0, 0, 0, 0] };
   if (replay) {
     const upTo = replay.isLive()
       ? replay.snapshots.length
       : (replay.viewIndex >= 0 ? replay.viewIndex + 1 : 0);
     for (let i = 0; i < upTo; i++) {
       const cap = replay.snapshots[i]?.capture;
-      if (cap?.color === 1) captured_red++;
-      else if (cap?.color === 2) captured_black++;
+      if (cap && (cap.color === 1 || cap.color === 2) && cap.type >= 1 && cap.type <= 7) {
+        captured[cap.color][cap.type]++;
+      }
     }
   }
-  return {
-    red:   { shown: shown_red,   hidden: 16 - shown_red   - captured_red,   captured: captured_red   },
-    black: { shown: shown_black, hidden: 16 - shown_black - captured_black, captured: captured_black },
+  const build = (color) => {
+    const byType = {};
+    let shownTotal = 0, hiddenTotal = 0, capturedTotal = 0;
+    for (let t = 1; t <= 7; t++) {
+      const s = shown[color][t];
+      const cap = captured[color][t];
+      const h = Math.max(0, PIECE_TYPE_TOTALS[t] - s - cap);
+      byType[t] = { shown: s, hidden: h, captured: cap };
+      shownTotal += s; hiddenTotal += h; capturedTotal += cap;
+    }
+    return { shown: shownTotal, hidden: hiddenTotal, captured: capturedTotal, byType };
   };
+  return { red: build(1), black: build(2) };
 }
 
 function renderPieceCountsHtml(counts) {
-  const row = (label, cls, c) =>
-    `<div class="pc-row">
+  const breakdown = (colorVal, byType, category) => {
+    const glyphs = PIECE_GLYPHS[colorVal];
+    const parts = [];
+    for (const t of PIECE_TYPE_DISPLAY_ORDER) {
+      const n = byType[t][category];
+      if (n > 0) {
+        const name = PIECE_NAMES[t];
+        const label = `${name} ${category}: ${n}`;
+        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}">${glyphs[t]}<span class="pc-chip-n">${n}</span></span>`);
+      }
+    }
+    return parts.length
+      ? `<span class="pc-breakdown" aria-hidden="false">${parts.join('')}</span>`
+      : '';
+  };
+  const row = (label, cls, colorVal, c) =>
+    `<div class="pc-row pc-row-${cls}">
       <span class="pc-side ${cls}">${label}</span>
-      <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}</span>
-      <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}</span>
-      <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}</span>
+      <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}${breakdown(colorVal, c.byType, 'shown')}</span>
+      <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}${breakdown(colorVal, c.byType, 'hidden')}</span>
+      <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}${breakdown(colorVal, c.byType, 'captured')}</span>
     </div>`;
-  return `<div class="piece-counts">${row('Red', 'red', counts.red)}${row('Black', 'black', counts.black)}</div>`;
+  return `<div class="piece-counts">${row('Red', 'red', 1, counts.red)}${row('Black', 'black', 2, counts.black)}</div>`;
 }
 
 function cellAriaLabel(idx, cell, opts = {}) {
