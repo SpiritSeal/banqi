@@ -1,6 +1,7 @@
 build/
 *.o
 *.d
+a.out
 tests/run_tests
 emsdk/
 .DS_Store
