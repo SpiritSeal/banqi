@@ -113,6 +113,76 @@ TEST_CASE("Game: full game with greedy heuristic remains consistent") {
     CHECK(captures >= 4);   // any reasonable play makes progress
 }
 
+// Lightweight in-process fuzzer: random games, deep invariant checks
+// after every move. Distinct from the playtest_ai smoke (which is
+// node/WASM-based) — this one runs in the doctest suite to catch any
+// regression in core engine invariants on every CI run.
+TEST_CASE("Game: random play preserves engine invariants") {
+    auto check = [](const Game& g) {
+        const auto& r = g.rules();
+        int stm = r.side_to_move_player();
+        REQUIRE((stm == 0 || stm == 1));
+
+        // After game_over, side-to-move has no legal moves and the opponent
+        // doesn't either.
+        if (g.game_over()) {
+            CHECK(r.legal_moves(0).empty());
+            CHECK(r.legal_moves(1).empty());
+        } else {
+            // The non-side-to-move player never has legal moves.
+            CHECK(r.legal_moves(1 - stm).empty());
+        }
+
+        // first_flip_done iff both players have a valid color
+        if (r.first_flip_done()) {
+            CHECK(r.color_for_player(0) != Color::None);
+            CHECK(r.color_for_player(1) != Color::None);
+            CHECK(r.color_for_player(0) != r.color_for_player(1));
+        }
+
+        // Cells sum to exactly 32 and faceup pieces always have an identity.
+        int n_empty=0, n_fd=0, n_fu=0;
+        for (int i = 0; i < BanqiRules::CELLS; ++i) {
+            auto c = r.at(i);
+            if (c.state == Cell::State::Empty) ++n_empty;
+            else if (c.state == Cell::State::FaceDown) ++n_fd;
+            else {
+                ++n_fu;
+                CHECK(c.piece.color != Color::None);
+                CHECK(c.piece.type  != PieceType::None);
+            }
+        }
+        CHECK(n_empty + n_fd + n_fu == 32);
+
+        // Snapshot round-trip is byte-identity.
+        auto s1 = g.snapshot_json();
+        auto s2 = Game::from_snapshot_json(s1).snapshot_json();
+        CHECK(s1 == s2);
+    };
+
+    // A handful of seeds, each playing to completion or to a step cap.
+    for (uint64_t seed = 1; seed <= 20; ++seed) {
+        MockPrng prng(seed);
+        auto g = Game::create(prng);
+        check(g);
+        for (int step = 0; step < 200 && !g.game_over(); ++step) {
+            int stm = g.side_to_move_player();
+            auto moves = g.rules().legal_moves(stm);
+            REQUIRE_FALSE(moves.empty());
+            // Pick a capture if available, else any move
+            Move pick = moves[0];
+            for (const auto& m : moves) {
+                if (!m.is_flip() && g.rules().at(m.to).state == Cell::State::FaceUp) {
+                    pick = m; break;
+                }
+            }
+            if (pick.is_flip()) g.apply_flip(stm, pick.to);
+            else                g.apply_move(stm, pick.from, pick.to);
+            check(g);
+        }
+    }
+}
+
 TEST_CASE("Game: resign before first flip is allowed; no winner color") {
     MockPrng p(13);
     auto g = Game::create(p);
