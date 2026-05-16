@@ -49,6 +49,40 @@ export async function getUser(db, id) {
   return rows[0] || null;
 }
 
+// AI opponents. One row per difficulty, seeded at server boot with a
+// per-difficulty starting Elo. Re-runs must NOT clobber the Elo column —
+// AI ratings evolve like human ones once games start being played.
+export const AI_DIFFICULTIES = ['easy', 'medium', 'hard', 'expert', 'master'];
+
+const AI_USER_SEED = {
+  easy:   { displayName: 'Banqi AI · Easy',   elo:  900 },
+  medium: { displayName: 'Banqi AI · Medium', elo: 1100 },
+  hard:   { displayName: 'Banqi AI · Hard',   elo: 1300 },
+  expert: { displayName: 'Banqi AI · Expert', elo: 1500 },
+  master: { displayName: 'Banqi AI · Master', elo: 1700 },
+};
+
+export async function ensureAiUsers(db) {
+  const now = Date.now();
+  for (const difficulty of AI_DIFFICULTIES) {
+    const seed = AI_USER_SEED[difficulty];
+    await db.query(`
+      INSERT INTO users (provider, provider_id, display_name, avatar_url, elo, created_at)
+      VALUES ('ai', $1, $2, NULL, $3, $4)
+      ON CONFLICT (provider, provider_id) DO NOTHING
+    `, [difficulty, seed.displayName, seed.elo, now]);
+  }
+}
+
+export async function getAiUserByDifficulty(db, difficulty) {
+  if (!AI_DIFFICULTIES.includes(difficulty)) return null;
+  const { rows } = await db.query(
+    "SELECT * FROM users WHERE provider = 'ai' AND provider_id = $1",
+    [difficulty]
+  );
+  return rows[0] || null;
+}
+
 // Anonymize, don't hard-delete. The users table is referenced by games and
 // elo_history; wiping a row would orphan opponents' rating history. Strip
 // PII (display name + avatar) and rotate the OAuth tuple so the same provider
@@ -67,13 +101,19 @@ export async function deleteUser(db, id) {
 
 // ---------- Games ----------
 
-export async function createGame(db, { roomCode, hostUserId, mode = 'standard' }) {
+export async function createGame(db, { roomCode, hostUserId, mode = 'standard',
+                                       joinUserId = null }) {
   const now = Date.now();
+  // If a join user is provided up-front (e.g. AI opponent), the game starts
+  // directly in 'playing' — no waiting room needed.
+  const status = joinUserId == null ? 'waiting' : 'playing';
   const { rows } = await db.query(`
-    INSERT INTO games (room_code, host_user_id, status, mode, created_at)
-    VALUES ($1, $2, 'waiting', $3, $4)
+    INSERT INTO games (room_code, host_user_id, join_user_id, status, mode,
+                       created_at, last_move_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *
-  `, [roomCode, hostUserId, normalizeMode(mode), now]);
+  `, [roomCode, hostUserId, joinUserId, status, normalizeMode(mode), now,
+      joinUserId == null ? null : now]);
   return rows[0];
 }
 
@@ -106,7 +146,12 @@ export async function joinGame(db, gameId, joinUserId) {
 export async function listGamesForUser(db, userId, { status, limit = 50 } = {}) {
   const params = [userId, userId];
   let sql = `
-    SELECT g.*, hu.display_name AS host_name, ju.display_name AS join_name
+    SELECT g.*,
+           hu.display_name AS host_name, ju.display_name AS join_name,
+           hu.provider     AS host_provider,
+           ju.provider     AS join_provider,
+           hu.provider_id  AS host_provider_id,
+           ju.provider_id  AS join_provider_id
       FROM games g
       JOIN users hu ON hu.id = g.host_user_id
       LEFT JOIN users ju ON ju.id = g.join_user_id
