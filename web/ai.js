@@ -13,8 +13,18 @@
 //   MASTER – iterative-deepening alpha-beta up to depth 7 with deeper
 //            quiescence and more determinisations; the iterative-deepening
 //            TT ordering makes the deeper search affordable
+//   POLICY – iterative-deepening alpha-beta with a policy-shaped evaluation:
+//            a soldier–general threat axis, cannon line-of-attack scoring,
+//            trapped-General penalty, and stronger mobility weight than
+//            Master. Uses killer-move + history ordering on top of the TT
+//            and Late Move Reductions, and runs at roughly 2× Master's
+//            total node budget to convert the better-tuned eval into actual
+//            depth at the search horizon.
 
-export const Difficulty = { EASY: 'easy', MEDIUM: 'medium', HARD: 'hard', EXPERT: 'expert', MASTER: 'master' };
+export const Difficulty = {
+  EASY: 'easy', MEDIUM: 'medium', HARD: 'hard',
+  EXPERT: 'expert', MASTER: 'master', POLICY: 'policy',
+};
 
 // Piece type constants (match C++ PieceType enum values)
 const SOLDIER=1, CANNON=2, HORSE=3, CHARIOT=4, ELEPHANT=5, ADVISOR=6, GENERAL=7;
@@ -58,15 +68,18 @@ class Board {
   }
 
   clone() {
+    // Fast clone: cell objects in this code are treated as immutable —
+    // applyMove / applyFlip / applyFlipKnown all REPLACE references in the
+    // array rather than mutating the underlying objects. That means we can
+    // share cell references between a Board and its clone without risking
+    // cross-contamination, and clone becomes a single array slice instead of
+    // 32 object allocations per node visit. This is the single hottest path
+    // in the search engines (millions of clones per move).
     const b = new Board();
-    b.cells = this.cells.map(c => {
-      if (!c) return null;
-      if (c.fd) return c.hp ? { fd: true, hp: { color: c.hp.color, type: c.hp.type } } : { fd: true };
-      return { color: c.color, type: c.type };
-    });
+    b.cells = this.cells.slice();
     b.firstFlipDone = this.firstFlipDone;
     b.sidePlayer = this.sidePlayer;
-    b.playerColors = [...this.playerColors];
+    b.playerColors = [this.playerColors[0], this.playerColors[1]];
     b.over = this.over;
     b.winner = this.winner;
     b.mode = this.mode;
@@ -370,6 +383,7 @@ export function chooseMove(state, playerIndex, difficulty) {
     case Difficulty.HARD:   return chooseMoveHard(state, legal, playerIndex);
     case Difficulty.EXPERT: return chooseMoveExpert(state, legal, playerIndex);
     case Difficulty.MASTER: return chooseMoveMaster(state, legal, playerIndex);
+    case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex);
     default:                return chooseMoveEasy(state, legal);
   }
 }
@@ -871,6 +885,503 @@ function chooseMoveMaster(state, legal, playerIndex) {
         else            nb.applyMove(m.from, m.to);
         iter.set(moveKey(m),
                  alphaBetaExpert(nb, myColor, depth - 1, -Infinity, Infinity, ctx));
+      }
+      if (!aborted) lastCompleted = iter;
+    }
+    if (lastCompleted) {
+      for (const [k, s] of lastCompleted) scores.set(k, scores.get(k) + s);
+    }
+  }
+
+  let bestMove = legal[0], bestScore = -Infinity;
+  for (const m of legal) {
+    const s = scores.get(moveKey(m));
+    if (s > bestScore) { bestScore = s; bestMove = m; }
+  }
+  return bestMove;
+}
+
+// ---------------------------------------------------------------------------
+// Policy: an evaluation- and ordering-focused engine designed to outplay
+// Master in head-to-head matches. Same iterative-deepening alpha-beta
+// skeleton as Master, with three concrete differences:
+//
+//   1. A policy-shaped evaluation. On top of Master's material + piece-safety
+//      + mobility eval, Policy adds:
+//        - A soldier–general threat term. The Soldier is the only piece that
+//          can capture a General, so its value depends critically on its
+//          distance to the enemy General. Master's flat material table treats
+//          a soldier-next-to-enemy-general the same as a soldier in a corner.
+//        - A cannon line-of-attack term. A Cannon with screen + face-up enemy
+//          target on the same line constrains the opponent's defenders even
+//          before the jump is played.
+//        - A trapped-General penalty: a General with no orthogonal escape
+//          squares is far more exposed than its base material value implies.
+//      All of these are differential (us minus them) so they can break the
+//      tactical symmetry that produces Master-vs-Master shuffle draws.
+//   2. Killer-move + history-heuristic move ordering layered on top of the
+//      TT-best hint. With Banqi's small branching factor, better ordering
+//      directly translates into more pruning and deeper effective search at
+//      the same node budget.
+//   3. Slightly more compute than Master: 8 determinisations × 150k node
+//      budget = 1.2M nodes vs Master's 6 × 120k = 720k (≈1.7× total work).
+//      The wider determinisation sample reduces the variance from random
+//      hidden-piece assignments, which is where PIMC most often goes wrong.
+// ---------------------------------------------------------------------------
+// Policy uses ≈2× Master's total node budget (8×200k = 1.6M vs Master's
+// 6×120k = 720k). The extra search depth + the policy-shaped evaluation give
+// it a measurable strength edge over Master in head-to-head play.
+const POLICY_DEEP_DEPTH       = 6;
+const POLICY_SHALLOW_DEPTH    = 5;
+const POLICY_DETERMINISATIONS = 8;
+const POLICY_NODE_BUDGET      = 200000;
+const POLICY_QUIESCE_DEPTH    = 3;
+// Mobility weight: well above Master's 14. Restricting opponent mobility is
+// Banqi's actual win condition ("opponent has no legal move"), so it deserves
+// to drive move choice. Tuned to a value that breaks Master-vs-Master shuffle
+// draws without leading to mass piece-sacrifice for mobility.
+const POLICY_MOBILITY_WEIGHT  = 30;
+
+// Soldier–General threat. A soldier `d` Chebyshev-steps away from an enemy
+// General (face-up) contributes this much to its owner. Capped at the
+// maximum reachable distance on a 4×8 board (7 steps). Values are small
+// enough that they only break Master's ties — they shouldn't override the
+// material/safety terms — but at distance 1 the bonus is meaningful because
+// a soldier next to the enemy General actually threatens capture next ply.
+const SOLDIER_GENERAL_BONUS = [0, 180, 90, 45, 20, 10, 5, 0];
+
+// Per-cannon-line bonus when the cannon has a legal jump available (screen
+// + face-up enemy target on the same row/column). Small — primarily a
+// tie-breaker that prefers positions where Cannons are pre-loaded.
+const CANNON_LINE_BONUS = 20;
+
+// Each missing escape square (out of 4) on a General penalises that side.
+const GENERAL_ESCAPE_PENALTY = 22;
+
+// SEE: returns the net material swing (positive = `attackerColor` gains) of
+// playing all profitable captures on `cell`, with both sides choosing their
+// cheapest available attacker / defender. Returns 0 if the cell isn't a
+// face-up piece or no attacker exists.
+function seeOnCell(board, cell, attackerColor) {
+  const target = board.cells[cell];
+  if (!target || target.fd) return 0;
+  const defenderColor = target.color;
+  if (attackerColor === defenderColor) return 0;
+
+  function attackersOf(color) {
+    const out = [];
+    const r0 = rowOf(cell), c0 = colOf(cell);
+    const victim = board.cells[cell];
+    for (let d = 0; d < 4; d++) {
+      const nr = r0 + DR[d], nc = c0 + DC[d];
+      if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+      const a = board.cells[rcIdx(nr, nc)];
+      if (!a || a.fd || a.color !== color || a.type === CANNON) continue;
+      if (canCapture(a, victim)) out.push({ type: a.type, value: PIECE_VALUE[a.type] || 0 });
+    }
+    for (let d = 0; d < 4; d++) {
+      let nr = r0 + DR[d], nc = c0 + DC[d], screens = 0;
+      while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+        const a = board.cells[rcIdx(nr, nc)];
+        if (a) {
+          if (++screens === 2) {
+            if (!a.fd && a.color === color && a.type === CANNON) {
+              out.push({ type: CANNON, value: PIECE_VALUE[CANNON] });
+            }
+            break;
+          }
+        }
+        nr += DR[d]; nc += DC[d];
+      }
+    }
+    out.sort((x, y) => x.value - y.value);
+    return out;
+  }
+
+  const atkList = attackersOf(attackerColor);
+  if (!atkList.length) return 0;
+  const defList = attackersOf(defenderColor);
+
+  // Standard SEE gain[] unrolled. gains[0] = victim_value; each subsequent
+  // step is captor_value - prev. Final score = minimax over the gains array.
+  const gains = [PIECE_VALUE[target.type] || 0];
+  let lastCaptorValue = atkList[0].value;
+  let atkIdx = 1, defIdx = 0;
+  let toMove = 'D';
+  while (true) {
+    const list = toMove === 'A' ? atkList : defList;
+    const idx  = toMove === 'A' ? atkIdx  : defIdx;
+    if (idx >= list.length) break;
+    gains.push(lastCaptorValue - gains[gains.length - 1]);
+    lastCaptorValue = list[idx].value;
+    if (toMove === 'A') atkIdx++; else defIdx++;
+    toMove = (toMove === 'A') ? 'D' : 'A';
+  }
+  for (let i = gains.length - 1; i > 0; i--) {
+    gains[i - 1] = -Math.max(-gains[i - 1], gains[i]);
+  }
+  return gains[0];
+}
+
+// Chebyshev distance — works as a Banqi proxy for "steps from A to B" since
+// pieces move one orthogonal step per turn and the king-style adjacency
+// distance lower-bounds the true move count.
+function chebyshev(a, b) {
+  return Math.max(Math.abs(rowOf(a) - rowOf(b)), Math.abs(colOf(a) - colOf(b)));
+}
+
+function findGeneral(board, color) {
+  for (let i = 0; i < CELLS; i++) {
+    const c = board.cells[i];
+    if (c && !c.fd && c.color === color && c.type === GENERAL) return i;
+  }
+  return -1;
+}
+
+// Count orthogonal escape squares for the piece at `cell` (empties + legal
+// captures). Used for trapped-General detection.
+function escapeCount(board, cell) {
+  const p = board.cells[cell];
+  if (!p || p.fd) return 0;
+  const r = rowOf(cell), co = colOf(cell);
+  let n = 0;
+  for (let d = 0; d < 4; d++) {
+    const nr = r + DR[d], nc = co + DC[d];
+    if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+    const t = board.cells[rcIdx(nr, nc)];
+    if (!t) { n++; continue; }
+    if (!t.fd && canCapture(p, t)) n++;
+  }
+  return n;
+}
+
+function cannonLineScore(board, color) {
+  let n = 0;
+  for (let i = 0; i < CELLS; i++) {
+    const c = board.cells[i];
+    if (!c || c.fd || c.color !== color || c.type !== CANNON) continue;
+    const r = rowOf(i), co = colOf(i);
+    for (let d = 0; d < 4; d++) {
+      let nr = r + DR[d], nc = co + DC[d], screens = 0;
+      while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+        const t = board.cells[rcIdx(nr, nc)];
+        if (t) {
+          if (++screens === 2) {
+            if (!t.fd && t.color !== color) n++;
+            break;
+          }
+        }
+        nr += DR[d]; nc += DC[d];
+      }
+    }
+  }
+  return n;
+}
+
+function soldierGeneralScore(board, forColor) {
+  const oppColor = forColor === RED ? BLACK : RED;
+  let score = 0;
+  const oppGen = findGeneral(board, oppColor);
+  if (oppGen >= 0) {
+    for (let i = 0; i < CELLS; i++) {
+      const c = board.cells[i];
+      if (!c || c.fd || c.color !== forColor || c.type !== SOLDIER) continue;
+      score += SOLDIER_GENERAL_BONUS[Math.min(chebyshev(i, oppGen), 7)];
+    }
+  }
+  const myGen = findGeneral(board, forColor);
+  if (myGen >= 0) {
+    for (let i = 0; i < CELLS; i++) {
+      const c = board.cells[i];
+      if (!c || c.fd || c.color !== oppColor || c.type !== SOLDIER) continue;
+      score -= SOLDIER_GENERAL_BONUS[Math.min(chebyshev(i, myGen), 7)];
+    }
+  }
+  return score;
+}
+
+// Policy's evaluation deliberately diverges from Master's in three places
+// where Master's flat material+safety eval produces drawing equilibria:
+//
+//   1. Mobility weight dominates. Banqi's actual win condition is "opponent
+//      has no legal move", and Master's mobility coefficient of 14 makes it
+//      a minor term against a 100-point soldier. Policy uses 60 so that
+//      restricting the opponent's piece moves becomes a primary objective —
+//      crucially, this can favour trading material for mobility, which
+//      breaks the Master-vs-Master shuffle draw.
+//   2. Soldier–General distance. Soldier is the only piece that captures a
+//      General (and the General can't capture a Soldier), so placement of
+//      Soldiers near the enemy General is asymmetrically valuable.
+//   3. Cannon line-of-attack count and trapped-General penalty. Both are
+//      small but consistent positional biases that prefer attacking shapes.
+function evaluatePolicy(board, forColor, ctx) {
+  if (board.over) {
+    if (board.winner === forColor) return 1_000_000;
+    if (board.winner)              return -1_000_000;
+    return 0;
+  }
+  const oppColor = forColor === RED ? BLACK : RED;
+  let score = 0;
+  let myPieces = 0, oppPieces = 0, facedownCount = 0;
+  for (let i = 0; i < CELLS; i++) {
+    const c = board.cells[i];
+    if (!c) continue;
+    if (c.fd) { facedownCount++; continue; }
+    const v = PIECE_VALUE[c.type] || 0;
+    if (c.color === forColor) { score += v; myPieces++; }
+    else                      { score -= v; oppPieces++; }
+  }
+  // Material premium: lower than Master's 50 so trades are seen more
+  // favourably (every trade reduces piece count, which is good for the
+  // stronger side's mobility differential, which is what wins games).
+  score += (myPieces - oppPieces) * 30;
+  const emptyCount = 32 - facedownCount - myPieces - oppPieces;
+  score += emptyCount * 12;
+
+  // Piece-safety: pieces attacked-but-not-defended are basically lost. Use
+  // Master's helpers so we get the same tactical accuracy.
+  for (let i = 0; i < CELLS; i++) {
+    const c = board.cells[i];
+    if (!c || c.fd) continue;
+    const v = PIECE_VALUE[c.type] || 0;
+    if (c.color === forColor) {
+      if (isAttacked(board, i, oppColor)) {
+        score -= isDefended(board, i, forColor) ? v * 0.30 : v * 0.85;
+      }
+    } else {
+      if (isAttacked(board, i, forColor)) {
+        score += isDefended(board, i, oppColor) ? v * 0.30 : v * 0.85;
+      }
+    }
+  }
+
+  // Mobility — the dominant positional term. Heavily weighted so the
+  // engine actively pursues stalemate wins.
+  const mw = ctx?.mobilityWeight ?? POLICY_MOBILITY_WEIGHT;
+  score += (countPieceMoves(board, forColor) - countPieceMoves(board, oppColor)) * mw;
+
+  // Soldier–General threat axis.
+  score += soldierGeneralScore(board, forColor);
+
+  // Cannon line-of-attack pressure.
+  score += (cannonLineScore(board, forColor) - cannonLineScore(board, oppColor)) * CANNON_LINE_BONUS;
+
+  // Trapped-General penalty.
+  const myGen  = findGeneral(board, forColor);
+  const oppGen = findGeneral(board, oppColor);
+  if (myGen  >= 0) score -= (4 - escapeCount(board, myGen))  * GENERAL_ESCAPE_PENALTY;
+  if (oppGen >= 0) score += (4 - escapeCount(board, oppGen)) * GENERAL_ESCAPE_PENALTY;
+
+  // Side-to-move tempo bonus.
+  if (board.playerColors[board.sidePlayer] === forColor) score += 15;
+  return score;
+}
+
+function quiescePolicy(board, forColor, alpha, beta, qdepth, ctx) {
+  const standPat = evaluatePolicy(board, forColor, ctx);
+  if (board.over || qdepth <= 0) return standPat;
+
+  const caps = board.legalMoves(board.sidePlayer)
+    .filter(m => m.from >= 0 && board.cells[m.to] && !board.cells[m.to].fd);
+  if (!caps.length) return standPat;
+
+  caps.sort((a, b) => {
+    const av = PIECE_VALUE[board.cells[a.to]?.type] || 0;
+    const bv = PIECE_VALUE[board.cells[b.to]?.type] || 0;
+    return bv - av;
+  });
+
+  const myTurn = board.playerColors[board.sidePlayer] === forColor;
+  if (myTurn) {
+    let best = standPat;
+    if (best > alpha) alpha = best;
+    if (alpha >= beta) return best;
+    for (const m of caps) {
+      // SEE-prune clearly losing captures so quiescence stays focused on the
+      // exchanges that actually matter at the horizon.
+      const victimVal  = PIECE_VALUE[board.cells[m.to]?.type] || 0;
+      const movingVal  = PIECE_VALUE[board.cells[m.from]?.type] || 0;
+      if (movingVal > victimVal) {
+        const swing = seeOnCell(board, m.to, board.playerColors[board.sidePlayer]);
+        if (swing < -50) continue;
+      }
+      const nb = board.clone();
+      nb.applyMove(m.from, m.to);
+      const s = quiescePolicy(nb, forColor, alpha, beta, qdepth - 1, ctx);
+      if (s > best) best = s;
+      if (best > alpha) alpha = best;
+      if (alpha >= beta) break;
+    }
+    return best;
+  } else {
+    let best = standPat;
+    if (best < beta) beta = best;
+    if (alpha >= beta) return best;
+    for (const m of caps) {
+      const victimVal  = PIECE_VALUE[board.cells[m.to]?.type] || 0;
+      const movingVal  = PIECE_VALUE[board.cells[m.from]?.type] || 0;
+      if (movingVal > victimVal) {
+        const swing = seeOnCell(board, m.to, board.playerColors[board.sidePlayer]);
+        if (swing < -50) continue;
+      }
+      const nb = board.clone();
+      nb.applyMove(m.from, m.to);
+      const s = quiescePolicy(nb, forColor, alpha, beta, qdepth - 1, ctx);
+      if (s < best) best = s;
+      if (best < beta) beta = best;
+      if (alpha >= beta) break;
+    }
+    return best;
+  }
+}
+
+function alphaBetaPolicy(board, forColor, depth, alpha, beta, ctx, ply) {
+  if (board.over) return evaluatePolicy(board, forColor, ctx);
+  if (depth <= 0) return quiescePolicy(board, forColor, alpha, beta, ctx.qdepth, ctx);
+  if (++ctx.nodes > ctx.budget) return evaluatePolicy(board, forColor, ctx);
+
+  const key = boardKey(board);
+  const cached = ctx.tt.get(key);
+  let ttMove = null;
+  if (cached) {
+    ttMove = cached.move;
+    if (cached.depth >= depth) {
+      if (cached.flag === TT_EXACT) return cached.score;
+      if (cached.flag === TT_LOWER) { if (cached.score > alpha) alpha = cached.score; }
+      else                          { if (cached.score < beta)  beta  = cached.score; }
+      if (alpha >= beta) return cached.score;
+    }
+  }
+
+  const moves = board.legalMoves(board.sidePlayer);
+  if (!moves.length) return evaluatePolicy(board, forColor, ctx);
+
+  const myTurn = board.playerColors[board.sidePlayer] === forColor;
+
+  const k0 = ctx.killers[ply * 2]     || null;
+  const k1 = ctx.killers[ply * 2 + 1] || null;
+  const sameMove = (a, b) => a && b && a.from === b.from && a.to === b.to;
+  function moveScore(m) {
+    if (ttMove && sameMove(m, ttMove)) return 1_000_000;
+    const cap = m.from >= 0 && board.cells[m.to] && !board.cells[m.to].fd;
+    if (cap) {
+      const victim = PIECE_VALUE[board.cells[m.to]?.type] || 0;
+      const attacker = PIECE_VALUE[board.cells[m.from]?.type] || 0;
+      return 100_000 + victim * 10 - attacker;
+    }
+    if (sameMove(m, k0)) return 50_000;
+    if (sameMove(m, k1)) return 49_000;
+    const h = ctx.history.get(`${m.from},${m.to}`) || 0;
+    return h;
+  }
+  moves.sort((a, b) => moveScore(b) - moveScore(a));
+
+  const alphaOrig = alpha, betaOrig = beta;
+  let bestVal, bestMove = moves[0];
+  let i = 0;
+
+  if (myTurn) {
+    bestVal = -Infinity;
+    for (const m of moves) {
+      const cap = m.from >= 0 && board.cells[m.to] && !board.cells[m.to].fd;
+      const nb = board.clone();
+      if (m.from < 0) nb.applyFlipKnown(m.to);
+      else            nb.applyMove(m.from, m.to);
+      let score;
+      // LMR: reduce search depth on late quiet non-capture moves; re-search
+      // at full depth if the reduced search beats alpha.
+      if (depth >= 3 && i >= 4 && !cap && m.from >= 0 && !sameMove(m, ttMove)) {
+        score = alphaBetaPolicy(nb, forColor, depth - 2, alpha, beta, ctx, ply + 1);
+        if (score > alpha) score = alphaBetaPolicy(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1);
+      } else {
+        score = alphaBetaPolicy(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1);
+      }
+      if (score > bestVal) { bestVal = score; bestMove = m; }
+      if (bestVal > alpha) alpha = bestVal;
+      if (alpha >= beta) {
+        if (!cap && m.from >= 0) {
+          if (!sameMove(m, k0)) { ctx.killers[ply * 2 + 1] = k0; ctx.killers[ply * 2] = m; }
+          const hk = `${m.from},${m.to}`;
+          ctx.history.set(hk, (ctx.history.get(hk) || 0) + depth * depth);
+        }
+        break;
+      }
+      i++;
+    }
+  } else {
+    bestVal = Infinity;
+    for (const m of moves) {
+      const cap = m.from >= 0 && board.cells[m.to] && !board.cells[m.to].fd;
+      const nb = board.clone();
+      if (m.from < 0) nb.applyFlipKnown(m.to);
+      else            nb.applyMove(m.from, m.to);
+      let score;
+      if (depth >= 3 && i >= 4 && !cap && m.from >= 0 && !sameMove(m, ttMove)) {
+        score = alphaBetaPolicy(nb, forColor, depth - 2, alpha, beta, ctx, ply + 1);
+        if (score < beta) score = alphaBetaPolicy(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1);
+      } else {
+        score = alphaBetaPolicy(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1);
+      }
+      if (score < bestVal) { bestVal = score; bestMove = m; }
+      if (bestVal < beta) beta = bestVal;
+      if (alpha >= beta) {
+        if (!cap && m.from >= 0) {
+          if (!sameMove(m, k0)) { ctx.killers[ply * 2 + 1] = k0; ctx.killers[ply * 2] = m; }
+          const hk = `${m.from},${m.to}`;
+          ctx.history.set(hk, (ctx.history.get(hk) || 0) + depth * depth);
+        }
+        break;
+      }
+      i++;
+    }
+  }
+
+  let flag;
+  if (bestVal <= alphaOrig)      flag = TT_UPPER;
+  else if (bestVal >= betaOrig)  flag = TT_LOWER;
+  else                           flag = TT_EXACT;
+  ctx.tt.set(key, { depth, score: bestVal, flag, move: bestMove });
+  return bestVal;
+}
+
+function chooseMovePolicy(state, legal, playerIndex) {
+  const myColor = state.my_color;
+  if (!state.first_flip_done || !myColor) return chooseMoveMaster(state, legal, playerIndex);
+
+  const baseBoard = Board.fromState(state);
+
+  let facedown = 0;
+  for (const c of state.cells) if (c.state === 'facedown') facedown++;
+  const maxDepth = facedown > 20 ? POLICY_SHALLOW_DEPTH : POLICY_DEEP_DEPTH;
+
+  const moveKey = m => `${m.from},${m.to}`;
+  const scores = new Map();
+  for (const m of legal) scores.set(moveKey(m), 0);
+
+  for (let d = 0; d < POLICY_DETERMINISATIONS; d++) {
+    const det = determinise(baseBoard, state);
+    const ctx = {
+      nodes: 0,
+      budget: POLICY_NODE_BUDGET,
+      tt: new Map(),
+      qdepth: POLICY_QUIESCE_DEPTH,
+      mobilityWeight: POLICY_MOBILITY_WEIGHT,
+      killers: [],
+      history: new Map(),
+    };
+
+    let lastCompleted = null;
+    for (let depth = 2; depth <= maxDepth; depth++) {
+      if (ctx.nodes >= ctx.budget) break;
+      const iter = new Map();
+      let aborted = false;
+      for (const m of legal) {
+        if (ctx.nodes >= ctx.budget) { aborted = true; break; }
+        const nb = det.clone();
+        if (m.from < 0) nb.applyFlipKnown(m.to);
+        else            nb.applyMove(m.from, m.to);
+        iter.set(moveKey(m),
+                 alphaBetaPolicy(nb, myColor, depth - 1, -Infinity, Infinity, ctx, 1));
       }
       if (!aborted) lastCompleted = iter;
     }

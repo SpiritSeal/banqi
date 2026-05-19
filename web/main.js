@@ -1196,7 +1196,7 @@ function refreshAI() {
     onLocalCellClick(idx, view, 'ai');
   });
 
-  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
+  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master', policy: 'Policy' }[active.difficulty] || '';
   const modeBadge = (active.mode && active.mode !== 'standard')
     ? ` · ${modeLabel(active.mode)}`
     : '';
@@ -1217,7 +1217,7 @@ function refreshAI() {
   }
   $('ai-banner').textContent = banner;
   $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
-  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'master', master: 'easy' }[active.difficulty] || 'medium';
+  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'master', master: 'policy', policy: 'easy' }[active.difficulty] || 'medium';
   $('ai-meta').innerHTML = `
     <span class="meta-label">Difficulty</span>
     <button id="ai-diff-chip" class="diff-chip" type="button"
@@ -1227,7 +1227,7 @@ function refreshAI() {
     active.difficulty = nextDiff;
     const sel = $('lobby-ai-difficulty');
     if (sel) sel.value = nextDiff;
-    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert', master:'Master'})[nextDiff]} on the next new game.`,
+    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert', master:'Master', policy:'Policy'})[nextDiff]} on the next new game.`,
           { kind: 'info', timeoutMs: 3000 });
     refreshAI();
   };
@@ -1239,7 +1239,7 @@ function refreshAI() {
   renderTranscript($('ai-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshAI(); },
     onExport: (replay) => {
-      const diff = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
+      const diff = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master', policy: 'Policy' }[active.difficulty] || '';
       const pgn = exportPgn(replay, {
         players: ['You', `AI (${diff || active.difficulty})`],
         event:   'Banqi (vs AI)',
