@@ -27,7 +27,7 @@ function pieceName(cell) {
   return `${colorWord(cell.color)} ${PIECE_NAME[cell.type] || ''}`.trim();
 }
 
-const ZH_GLYPH = {
+export const ZH_GLYPH = {
   1: { 1: '兵', 2: '炮', 3: '傌', 4: '俥', 5: '相', 6: '仕', 7: '帥' },
   2: { 1: '卒', 2: '砲', 3: '馬', 4: '車', 5: '象', 6: '士', 7: '將' },
 };

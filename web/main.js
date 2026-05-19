@@ -15,7 +15,7 @@
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
-import { Replay, renderTranscript } from './replay.js';
+import { Replay, renderTranscript, ZH_GLYPH } from './replay.js';
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
@@ -515,6 +515,7 @@ function refreshGame() {
       <div class="meta-row meta-row-counts">
         ${renderPieceCountsHtml(counts)}
       </div>
+      ${renderOnlineRematchRow(liveState, view)}
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
   $('btn-resign').onclick = async () => {
@@ -529,6 +530,7 @@ function refreshGame() {
     if (!ok) return;
     sendIntent({ kind: 'resign' });
   };
+  wireOnlineRematch();
   const retryBtn = $('btn-retry-conn');
   if (retryBtn) retryBtn.onclick = () => { active.conn?.reconnect?.(); };
 
@@ -540,6 +542,58 @@ function refreshGame() {
 function sendIntent(intent) {
   if (!active?.isOnline || !active.conn) return;
   active.conn.send({ type: 'intent', ...intent });
+}
+
+function opponentUserIdFor(info, meId) {
+  if (!info || !meId) return null;
+  if (info.host_user_id === meId) return info.join_user_id || null;
+  if (info.join_user_id === meId) return info.host_user_id || null;
+  return null;
+}
+
+function renderOnlineRematchRow(liveState, view) {
+  if (!liveState.game_over || view.replayViewing) return '';
+  const oppId = opponentUserIdFor(active?.info, me?.id);
+  if (!me || me.is_guest || !oppId) {
+    return `
+      <div class="meta-row meta-row-rematch">
+        <span class="meta-label">Game over</span>
+        <a class="primary" href="#/">Start a new game</a>
+      </div>`;
+  }
+  return `
+    <div class="meta-row meta-row-rematch">
+      <span class="meta-label">Game over</span>
+      <button id="btn-rematch" class="primary" type="button">Rematch</button>
+      <a class="link-btn" href="#/">Lobby</a>
+    </div>`;
+}
+
+function wireOnlineRematch() {
+  const btn = $('btn-rematch');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const oppId = opponentUserIdFor(active?.info, me?.id);
+    if (!oppId) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/match-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to_user_id: oppId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(body.error || 'Could not send rematch.', { kind: 'error' });
+        btn.disabled = false;
+        return;
+      }
+      toast('Rematch sent. Your opponent will see it in Friends.', { kind: 'success', timeoutMs: 4000 });
+    } catch (e) {
+      toast(`Could not send rematch: ${e.message || e}`, { kind: 'error' });
+      btn.disabled = false;
+    }
+  };
 }
 
 function turnLabel(state) {
@@ -621,6 +675,10 @@ function flashCopied(label = 'Copied!') {
 async function openOTB() {
   showView('otb');
   await _moduleReady;
+  _startOTBGame();
+}
+
+function _startOTBGame() {
   const game = Module.Game.create();
   active = {
     isOTB: true,
@@ -698,6 +756,9 @@ function refreshOTB() {
     catch (e) { toast(`Couldn't resign: ${e.message || e}`, { kind: 'error' }); }
     refreshOTB();
   };
+  const otbRematch = $('otb-rematch');
+  otbRematch.classList.toggle('hidden', !view.game_over || view.replayViewing);
+  otbRematch.onclick = () => { _startOTBGame(); };
 
   renderTranscript($('otb-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshOTB(); },
@@ -838,6 +899,7 @@ function refreshAI() {
   $('ai-resign').disabled = !liveState.first_flip_done || liveState.game_over
     || liveState.side_to_move !== 0 || view.replayViewing;
   $('ai-new-game').disabled = false;
+  $('ai-new-game').classList.toggle('btn-emphasis', !!view.game_over);
   $('ai-thinking').classList.toggle('hidden', !active.aiThinking);
 
   renderTranscript($('ai-transcript'), active.replay, {
@@ -886,30 +948,45 @@ function pieceCounts(cells, replay) {
       else if (c.color === 2) shown_black++;
     }
   }
-  let captured_red = 0, captured_black = 0;
+  const captured_red_pieces = [];
+  const captured_black_pieces = [];
   if (replay) {
     const upTo = replay.isLive()
       ? replay.snapshots.length
       : (replay.viewIndex >= 0 ? replay.viewIndex + 1 : 0);
     for (let i = 0; i < upTo; i++) {
       const cap = replay.snapshots[i]?.capture;
-      if (cap?.color === 1) captured_red++;
-      else if (cap?.color === 2) captured_black++;
+      if (!cap) continue;
+      const piece = { type: cap.type, glyph: cap.glyph || ZH_GLYPH[cap.color]?.[cap.type] || '?' };
+      if (cap.color === 1) captured_red_pieces.push(piece);
+      else if (cap.color === 2) captured_black_pieces.push(piece);
     }
   }
+  const captured_red = captured_red_pieces.length;
+  const captured_black = captured_black_pieces.length;
   return {
-    red:   { shown: shown_red,   hidden: 16 - shown_red   - captured_red,   captured: captured_red   },
-    black: { shown: shown_black, hidden: 16 - shown_black - captured_black, captured: captured_black },
+    red:   { shown: shown_red,   hidden: 16 - shown_red   - captured_red,   captured: captured_red,   capturedPieces: captured_red_pieces   },
+    black: { shown: shown_black, hidden: 16 - shown_black - captured_black, captured: captured_black, capturedPieces: captured_black_pieces },
   };
 }
 
 function renderPieceCountsHtml(counts) {
+  const graveyard = (cls, pieces) => {
+    if (!pieces.length) {
+      return `<span class="pc-graveyard pc-graveyard-empty" aria-label="Captured: 0">—</span>`;
+    }
+    const sorted = [...pieces].sort((a, b) => b.type - a.type);
+    const glyphs = sorted
+      .map(p => `<span class="pc-grave-glyph ${cls}">${p.glyph}</span>`)
+      .join('');
+    return `<span class="pc-graveyard" aria-label="Captured: ${pieces.length}">${glyphs}</span>`;
+  };
   const row = (label, cls, c) =>
     `<div class="pc-row">
       <span class="pc-side ${cls}">${label}</span>
       <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}</span>
       <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}</span>
-      <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}</span>
+      <span class="pc-stat pc-stat-grave"><span class="pc-label">Capt</span> ${graveyard(cls, c.capturedPieces)}</span>
     </div>`;
   return `<div class="piece-counts">${row('Red', 'red', counts.red)}${row('Black', 'black', counts.black)}</div>`;
 }
@@ -1548,6 +1625,70 @@ function toast(message, opts = {}) {
 }
 
 // ---- modal dialog ----
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  return !!el.isContentEditable;
+}
+
+function infoModal({ title, html, closeLabel = 'Close' } = {}) {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(); return; }
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal modal-info" role="dialog" aria-modal="true" aria-labelledby="modal-title"
+           aria-describedby="modal-body" tabindex="-1">
+        <h2 id="modal-title"></h2>
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-close primary"></button>
+        </div>
+      </div>`;
+    overlay.querySelector('#modal-title').textContent = title || '';
+    overlay.querySelector('#modal-body').innerHTML = html || '';
+    const btnClose = overlay.querySelector('.btn-close');
+    btnClose.textContent = closeLabel;
+
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+      if (e.key === 'Tab') { btnClose.focus(); e.preventDefault(); }
+    };
+    btnClose.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    btnClose.focus();
+  });
+}
+
+function showKeyboardHelp() {
+  if (document.querySelector('.modal-overlay')) return;
+  const html = `
+    <p class="muted small" style="margin-top:0">Shortcuts work anywhere unless you're typing in a text field.</p>
+    <dl class="kbd-help">
+      <dt><kbd>?</kbd></dt>            <dd>Show this help</dd>
+      <dt><kbd>Esc</kbd></dt>          <dd>Close a dialog</dd>
+      <dt><kbd>Tab</kbd></dt>          <dd>Move focus between controls</dd>
+    </dl>
+    <h3 class="kbd-help-section">Board (when a cell is focused)</h3>
+    <dl class="kbd-help">
+      <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move focus between cells</dd>
+      <dt><kbd>Home</kbd> / <kbd>End</kbd></dt><dd>Jump to row start / end</dd>
+      <dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Flip, select, or move to the focused cell</dd>
+    </dl>`;
+  infoModal({ title: 'Keyboard shortcuts', html });
+}
+
 function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = {}) {
   return new Promise((resolve) => {
     const root = document.getElementById('modal-root');
@@ -1613,6 +1754,18 @@ function initCribDefault() {
   details.open = !small.matches;
 }
 initCribDefault();
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== '?') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (isTypingTarget(e.target)) return;
+  if (document.querySelector('.modal-overlay')) return;
+  e.preventDefault();
+  showKeyboardHelp();
+});
+
+const btnHelp = document.getElementById('btn-keyboard-help');
+if (btnHelp) btnHelp.addEventListener('click', showKeyboardHelp);
 
 await refreshSession();
 route();

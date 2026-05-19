@@ -6,6 +6,8 @@
 // AudioContext is created lazily on the first move; sample bytes are
 // pre-fetched at module load so the first move doesn't wait on the network.
 
+import { getSettings } from './notifications.js';
+
 let ctx = null;
 let sampleBytes = null;
 let sampleBuffer = null;
@@ -86,7 +88,22 @@ function chime(ac, frequencies, noteDuration) {
   });
 }
 
+function vibrateFor(event) {
+  if (!('vibrate' in navigator)) return;
+  try {
+    if (!getSettings().sound) return;
+  } catch (_) { return; }
+  try {
+    const kind = event.action?.kind;
+    if (event.game_over) navigator.vibrate(40);
+    else if (event.capture) navigator.vibrate([12, 30, 22]);
+    else if (kind === 'flip') navigator.vibrate(10);
+    else if (kind === 'move') navigator.vibrate(10);
+  } catch (_) { /* no-op */ }
+}
+
 export function playMoveSound(event) {
+  vibrateFor(event);
   try {
     const ac = getCtx();
     const kind = event.action?.kind;
