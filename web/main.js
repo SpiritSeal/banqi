@@ -640,6 +640,7 @@ function refreshGame() {
       <div class="meta-row meta-row-counts">
         ${renderPieceCountsHtml(counts)}
       </div>
+      ${renderOnlineRematchRow(liveState, view)}
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
   const chkOfferDraw = $('chk-offer-draw');
@@ -658,6 +659,7 @@ function refreshGame() {
     if (!ok) return;
     sendIntent({ kind: 'resign' });
   };
+  wireOnlineRematch();
   const retryBtn = $('btn-retry-conn');
   if (retryBtn) retryBtn.onclick = () => { active.conn?.reconnect?.(); };
   const claimBtn = $('btn-claim-timeout');
@@ -730,6 +732,59 @@ function downloadPgn(text, filename) {
 function sendIntent(intent) {
   if (!active?.isOnline || !active.conn) return;
   active.conn.send({ type: 'intent', ...intent });
+}
+
+function opponentUserIdFor(info, meId) {
+  if (!info || !meId) return null;
+  if (info.host_user_id === meId) return info.join_user_id || null;
+  if (info.join_user_id === meId) return info.host_user_id || null;
+  return null;
+}
+
+function renderOnlineRematchRow(liveState, view) {
+  if (!liveState.game_over || view.replayViewing) return '';
+  if (active?.info?.opponent_is_ai) return '';
+  const oppId = opponentUserIdFor(active?.info, me?.id);
+  if (!me || me.is_guest || !oppId) {
+    return `
+      <div class="meta-row meta-row-rematch">
+        <span class="meta-label">Game over</span>
+        <a class="primary" href="#/">Start a new game</a>
+      </div>`;
+  }
+  return `
+    <div class="meta-row meta-row-rematch">
+      <span class="meta-label">Game over</span>
+      <button id="btn-rematch" class="primary" type="button">Rematch</button>
+      <a class="link-btn" href="#/">Lobby</a>
+    </div>`;
+}
+
+function wireOnlineRematch() {
+  const btn = $('btn-rematch');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const oppId = opponentUserIdFor(active?.info, me?.id);
+    if (!oppId) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/match-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to_user_id: oppId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(body.error || 'Could not send rematch.', { kind: 'error' });
+        btn.disabled = false;
+        return;
+      }
+      toast('Rematch sent. Your opponent will see it in Friends.', { kind: 'success', timeoutMs: 4000 });
+    } catch (e) {
+      toast(`Could not send rematch: ${e.message || e}`, { kind: 'error' });
+      btn.disabled = false;
+    }
+  };
 }
 
 function turnLabel(state) {
@@ -966,6 +1021,10 @@ async function openOTB() {
   showView('otb');
   await _moduleReady;
   const mode = normMode($('lobby-otb-mode')?.value);
+  _startOTBGame(mode);
+}
+
+function _startOTBGame(mode) {
   const game = mode === 'capture_general'
     ? Module.Game.createWithMode('capture_general')
     : Module.Game.create();
@@ -1049,6 +1108,9 @@ function refreshOTB() {
     catch (e) { toast(`Couldn't resign: ${e.message || e}`, { kind: 'error' }); }
     refreshOTB();
   };
+  const otbRematch = $('otb-rematch');
+  otbRematch.classList.toggle('hidden', !view.game_over || view.replayViewing);
+  otbRematch.onclick = () => { _startOTBGame(active.mode); };
 
   renderTranscript($('otb-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshOTB(); },
@@ -1234,6 +1296,7 @@ function refreshAI() {
   $('ai-resign').disabled = !liveState.first_flip_done || liveState.game_over
     || liveState.side_to_move !== 0 || view.replayViewing;
   $('ai-new-game').disabled = false;
+  $('ai-new-game').classList.toggle('btn-emphasis', !!view.game_over);
   $('ai-thinking').classList.toggle('hidden', !active.aiThinking);
 
   renderTranscript($('ai-transcript'), active.replay, {
@@ -2328,6 +2391,70 @@ function toast(message, opts = {}) {
 }
 
 // ---- modal dialog ----
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  return !!el.isContentEditable;
+}
+
+function infoModal({ title, html, closeLabel = 'Close' } = {}) {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(); return; }
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal modal-info" role="dialog" aria-modal="true" aria-labelledby="modal-title"
+           aria-describedby="modal-body" tabindex="-1">
+        <h2 id="modal-title"></h2>
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-close primary"></button>
+        </div>
+      </div>`;
+    overlay.querySelector('#modal-title').textContent = title || '';
+    overlay.querySelector('#modal-body').innerHTML = html || '';
+    const btnClose = overlay.querySelector('.btn-close');
+    btnClose.textContent = closeLabel;
+
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+      if (e.key === 'Tab') { btnClose.focus(); e.preventDefault(); }
+    };
+    btnClose.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    btnClose.focus();
+  });
+}
+
+function showKeyboardHelp() {
+  if (document.querySelector('.modal-overlay')) return;
+  const html = `
+    <p class="muted small" style="margin-top:0">Shortcuts work anywhere unless you're typing in a text field.</p>
+    <dl class="kbd-help">
+      <dt><kbd>?</kbd></dt>            <dd>Show this help</dd>
+      <dt><kbd>Esc</kbd></dt>          <dd>Close a dialog</dd>
+      <dt><kbd>Tab</kbd></dt>          <dd>Move focus between controls</dd>
+    </dl>
+    <h3 class="kbd-help-section">Board (when a cell is focused)</h3>
+    <dl class="kbd-help">
+      <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move focus between cells</dd>
+      <dt><kbd>Home</kbd> / <kbd>End</kbd></dt><dd>Jump to row start / end</dd>
+      <dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Flip, select, or move to the focused cell</dd>
+    </dl>`;
+  infoModal({ title: 'Keyboard shortcuts', html });
+}
+
 function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = {}) {
   return new Promise((resolve) => {
     const root = document.getElementById('modal-root');
@@ -2548,6 +2675,18 @@ function escapeHtml(s) {
 }
 
 // ---- boot ----
+document.addEventListener('keydown', (e) => {
+  if (e.key !== '?') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (isTypingTarget(e.target)) return;
+  if (document.querySelector('.modal-overlay')) return;
+  e.preventDefault();
+  showKeyboardHelp();
+});
+
+const btnHelp = document.getElementById('btn-keyboard-help');
+if (btnHelp) btnHelp.addEventListener('click', showKeyboardHelp);
+
 await refreshSession();
 applyNavAuthState();
 route();

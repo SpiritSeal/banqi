@@ -175,11 +175,35 @@ header {
   flex-direction: column;
   gap: 2px;
   margin-bottom: 8px;
+  position: relative;
 }
 header h1 { margin: 0; font-size: 28px; letter-spacing: -0.01em; }
 header .brand { color: inherit; text-decoration: none; border-bottom: none; }
 header .brand:hover { color: var(--accent); }
 .subtitle { color: var(--muted); font-size: 14px; }
+.header-help-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--surface-border);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.header-help-btn:hover, .header-help-btn:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .muted { color: var(--muted); }
 .muted.small { font-size: 12px; }
 .err { color: var(--err-fg); }
@@ -790,6 +814,15 @@ button.cell:disabled, button.cell[aria-disabled="true"] { cursor: default; }
 }
 .game-meta .meta-row-status { font-size: 13px; color: var(--fg); gap: 18px; }
 .game-meta .meta-row-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.game-meta .meta-row-rematch {
+  padding: 8px 10px;
+  margin-top: 4px;
+  background: rgba(110, 201, 110, 0.08);
+  border: 1px solid rgba(110, 201, 110, 0.25);
+  border-radius: 6px;
+}
+.game-meta .meta-row-rematch .meta-label { color: #93dc93; }
+.btn-emphasis { box-shadow: 0 0 0 2px rgba(255, 184, 76, 0.45); }
 .btn-danger-inline {
   background: transparent;
   color: #ff8c8c;
@@ -1234,6 +1267,24 @@ table a:hover { text-decoration: underline; }
   font-weight: 600;
 }
 .modal .btn-danger:hover:not([disabled]) { background: #b53535; border-color: #b53535; }
+.modal-info { max-width: 460px; }
+.modal-info .modal-body { color: var(--fg); }
+.kbd-help { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0 0 12px; }
+.kbd-help dt { margin: 0; }
+.kbd-help dd { margin: 0; color: var(--fg); align-self: center; }
+.kbd-help-section { margin: 12px 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface-0);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.2;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
 
 /* Game-over celebration modal. */
 .modal.game-over-modal {
