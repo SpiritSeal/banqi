@@ -35,10 +35,34 @@ function difficultyFromName(n) {
   throw new Error(`unknown difficulty: ${n}`);
 }
 
+// Compact board-state key for repetition detection. Mirrors the boardKey()
+// helper inside ai.js but operates on the WASM stateJson view — face-up
+// pieces are encoded distinctly, face-down cells with one symbol, empties
+// with another, and the side-to-move-player is appended so the same piece
+// layout with different sides to move counts as a different position.
+function stateKey(st) {
+  let s = '';
+  for (let i = 0; i < 32; i++) {
+    const c = st.cells[i];
+    if (c.state === 'empty')         s += '_';
+    else if (c.state === 'facedown') s += 'F';
+    else                             s += String.fromCharCode(65 + c.color * 8 + c.type);
+  }
+  return s + st.side_to_move;
+}
+
+// History window: 16 most recent positions. Larger than the typical
+// repetition cycle (which is 4 in Banqi shuffles) so we catch every
+// recent repeat, smaller than the game length so we don't penalise
+// genuinely new positions that happen to repeat a long-ago state.
+const HISTORY_WINDOW = 16;
+
 async function playOneGame(diffFirst, diffOther, firstAgentIsPlayer0) {
   const Module = await createBanqiModule();
   const g = Module.Game.create();
   const diffByPlayer = firstAgentIsPlayer0 ? [diffFirst, diffOther] : [diffOther, diffFirst];
+
+  const recentBoardKeys = [];
 
   let moves = 0;
   const totalMs = [0, 0];
@@ -50,11 +74,15 @@ async function playOneGame(diffFirst, diffOther, firstAgentIsPlayer0) {
     const legal = st.legal_moves_for_me;
     if (!legal.length) throw new Error(`empty legal moves at move ${moves}, stm=${stm}`);
     const t0 = performance.now();
-    const move = chooseMove(st, st.my_player_index, diffByPlayer[stm]);
+    const move = chooseMove(st, st.my_player_index, diffByPlayer[stm], { recentBoardKeys });
     totalMs[stm] += performance.now() - t0;
     if (!move) throw new Error(`null move @ ${moves}`);
     if (move.from < 0) g.applyFlip(stm, move.to);
     else               g.applyMove(stm, move.from, move.to);
+    // Record the resulting position so the next mover can detect repetitions.
+    const after = JSON.parse(g.stateJson(-1));
+    recentBoardKeys.push(stateKey(after));
+    if (recentBoardKeys.length > HISTORY_WINDOW) recentBoardKeys.shift();
     moves++;
   }
 

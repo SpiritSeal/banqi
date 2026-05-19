@@ -376,11 +376,17 @@ function alphaBeta(board, forColor, depth, alpha, beta) {
 //
 // `state`        – parsed stateJson() from the AI's Game object
 // `playerIndex`  – the AI's player index (usually 1)
-// `difficulty`   – Difficulty.EASY | MEDIUM | HARD
+// `difficulty`   – Difficulty.EASY | MEDIUM | HARD | EXPERT | MASTER | POLICY
+// `opts`         – optional { recentBoardKeys: string[] }. When provided,
+//                  Policy uses the recent-positions history to penalise moves
+//                  that lead back to a position the game has already visited
+//                  in the last few moves. This is what breaks the symmetric
+//                  shuffle-draws that Master-vs-Policy otherwise produces.
+//                  All other difficulties ignore opts.
 //
 // Returns a move object { from, to } where from < 0 means flip.
 // ---------------------------------------------------------------------------
-export function chooseMove(state, playerIndex, difficulty) {
+export function chooseMove(state, playerIndex, difficulty, opts) {
   const legal = state.legal_moves_for_me;
   if (!legal.length) return null;
 
@@ -390,7 +396,7 @@ export function chooseMove(state, playerIndex, difficulty) {
     case Difficulty.HARD:   return chooseMoveHard(state, legal, playerIndex);
     case Difficulty.EXPERT: return chooseMoveExpert(state, legal, playerIndex);
     case Difficulty.MASTER: return chooseMoveMaster(state, legal, playerIndex);
-    case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex);
+    case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex, opts);
     default:                return chooseMoveEasy(state, legal);
   }
 }
@@ -1351,7 +1357,7 @@ function alphaBetaPolicy(board, forColor, depth, alpha, beta, ctx, ply) {
   return bestVal;
 }
 
-function chooseMovePolicy(state, legal, playerIndex) {
+function chooseMovePolicy(state, legal, playerIndex, opts) {
   const myColor = state.my_color;
   if (!state.first_flip_done || !myColor) return chooseMoveMaster(state, legal, playerIndex);
 
@@ -1394,6 +1400,50 @@ function chooseMovePolicy(state, legal, playerIndex) {
     }
     if (lastCompleted) {
       for (const [k, s] of lastCompleted) scores.set(k, scores.get(k) + s);
+    }
+  }
+
+  // Repetition penalty: when the caller passes `opts.recentBoardKeys`, count
+  // how many of the recent positions a candidate move would re-enter and
+  // subtract a penalty per occurrence. Two strong PIMC engines in symmetric
+  // positions otherwise produce move-limit draws; pushing Policy away from
+  // previously-visited positions is what makes its eval's positional bias
+  // actually translate into wins. Captures and flips skip the penalty (they
+  // can't possibly produce the same board key — they change the piece set).
+  // Repetition penalty: the only thing that breaks Master-vs-Policy shuffle
+  // draws is forcing Policy to leave the equilibrium. Sized cautiously so
+  // Policy doesn't blunder pieces just to avoid a repeat — empirically a
+  // first-time-revisit penalty above a Soldier (100) makes Policy lose more
+  // games than it wins, while only penalising second-and-later revisits
+  // catches genuine shuffle loops without forcing material sacrifice on the
+  // first cycle.
+  const recent = opts?.recentBoardKeys;
+  if (recent && recent.length) {
+    const recentCount = new Map();
+    for (const k of recent) recentCount.set(k, (recentCount.get(k) || 0) + 1);
+    for (const m of legal) {
+      if (m.from < 0) continue;                  // flips always change the position
+      const dst = state.cells[m.to];
+      if (dst.state === 'faceup') continue;      // captures always change material
+      const nb = baseBoard.clone();
+      nb.applyMove(m.from, m.to);
+      const k = boardKey(nb);
+      const c = recentCount.get(k) || 0;
+      if (c >= 2) {
+        // Position seen at least twice in recent history → genuine shuffle.
+        // The penalty here is the search-space equivalent of a Cannon's
+        // value (200) per determinisation × 8 dets = 1600 per repeat, so
+        // Policy will trade up to a Cannon to break a 3rd repetition but
+        // won't sacrifice a Chariot or higher.
+        const penalty = 200 * c * POLICY_DETERMINISATIONS;
+        scores.set(moveKey(m), scores.get(moveKey(m)) - penalty);
+      } else if (c === 1) {
+        // First revisit gets only a token nudge — enough to prefer a fresh
+        // move when it's a near-equivalent option, not enough to abandon a
+        // genuinely better quiet move.
+        const penalty = 40 * POLICY_DETERMINISATIONS;
+        scores.set(moveKey(m), scores.get(moveKey(m)) - penalty);
+      }
     }
   }
 

@@ -48,12 +48,28 @@ function difficultyFromName(n) {
 const diffA = difficultyFromName(nameA);
 const diffB = difficultyFromName(nameB);
 
+// Encode the WASM stateJson view as a compact key for repetition tracking.
+// Must match the format ai.js's boardKey() uses for the same position.
+function stateKey(st) {
+  let s = '';
+  for (let i = 0; i < 32; i++) {
+    const c = st.cells[i];
+    if (c.state === 'empty')         s += '_';
+    else if (c.state === 'facedown') s += 'F';
+    else                             s += String.fromCharCode(65 + c.color * 8 + c.type);
+  }
+  return s + st.side_to_move;
+}
+const HISTORY_WINDOW = 16;
+
 // A wins by playing as "first agent" → returns +1 if first-agent wins, -1 if other, 0 if draw.
 async function playGame(firstAgentIsPlayer0, diffFirst, diffOther) {
   const g = Module.Game.create();
   // Player 0 always moves first.
   // diff per player index:
   const diffByPlayer = firstAgentIsPlayer0 ? [diffFirst, diffOther] : [diffOther, diffFirst];
+
+  const recentBoardKeys = [];
 
   let moves = 0;
   let totalMs = [0, 0];
@@ -68,11 +84,14 @@ async function playGame(firstAgentIsPlayer0, diffFirst, diffOther) {
       throw new Error(`empty legal moves @ move ${moves}, stm=${stm}`);
     }
     const t0 = performance.now();
-    const move = chooseMove(st, st.my_player_index, diffByPlayer[stm]);
+    const move = chooseMove(st, st.my_player_index, diffByPlayer[stm], { recentBoardKeys });
     totalMs[stm] += performance.now() - t0;
     if (!move) throw new Error(`null move @ ${moves}`);
     if (move.from < 0) g.applyFlip(stm, move.to);
     else               g.applyMove(stm, move.from, move.to);
+    const after = JSON.parse(g.stateJson(-1));
+    recentBoardKeys.push(stateKey(after));
+    if (recentBoardKeys.length > HISTORY_WINDOW) recentBoardKeys.shift();
     moves++;
   }
 
