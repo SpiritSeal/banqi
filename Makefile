@@ -10,12 +10,13 @@
 BUILD_DIR        := build
 SRC_DIR          := src
 TEST_DIR         := tests
+VERIFY_DIR       := verify
 THIRD_PARTY      := third_party
 WEB_DIR          := web
 
 CXX              ?= g++
 CXXFLAGS_COMMON  := -std=c++17 -Wall -Wextra -O2 \
-                    -I$(SRC_DIR) -I$(THIRD_PARTY) \
+                    -I$(SRC_DIR) -I$(THIRD_PARTY) -I$(VERIFY_DIR) \
                     -I$(THIRD_PARTY)/doctest -I$(THIRD_PARTY)/json \
                     -I$(THIRD_PARTY)/monocypher
 
@@ -32,13 +33,15 @@ CPP_SOURCES := \
 
 C_SOURCES := \
   $(THIRD_PARTY)/monocypher/monocypher.c \
-  $(THIRD_PARTY)/monocypher/monocypher-ed25519.c
+  $(THIRD_PARTY)/monocypher/monocypher-ed25519.c \
+  $(VERIFY_DIR)/banqi_model.c
 
 TEST_SOURCES := \
   $(TEST_DIR)/test_main.cpp \
   $(TEST_DIR)/test_hash.cpp \
   $(TEST_DIR)/test_prng.cpp \
   $(TEST_DIR)/test_banqi_rules.cpp \
+  $(TEST_DIR)/test_banqi_model_parity.cpp \
   $(TEST_DIR)/test_game.cpp
 
 # --- native build ---
@@ -136,6 +139,67 @@ server-test: server-install
 
 server-docker:
 	docker build -t banqi-relay -f server/Dockerfile .
+
+# --- CBMC bounded model checking of the rule engine ---
+# Verifies a C port of the engine (verify/banqi_model.c) against rule
+# invariants. The C port is held to behavioural parity with the C++
+# engine by tests/test_banqi_model_parity.cpp, so a CBMC proof on the
+# model transfers to the engine.
+#
+# Each harness gets its own invocation so failures pinpoint the
+# offending property. Loops are bounded: the largest engine loop is
+# 32-cell board traversal; the cannon scan is capped at the board edge
+# (8 cells), so --unwind 33 with an unwindset of 9 on the cannon loop
+# is tight without truncating reachable behaviour.
+VERIFY_DIR     ?= verify
+CBMC           ?= cbmc
+CBMC_FLAGS     := --slice-formula --unwinding-assertions \
+                  -I$(VERIFY_DIR) --unwind 33 \
+                  --unwindset bq_is_legal_cannon_jump.0:9
+VERIFY_HARNESSES := \
+  capture_rule \
+  flip_legality \
+  first_flip \
+  off_turn_empty \
+  terminal \
+  apply_move_invariants \
+  conservation \
+  normal_move_predicate \
+  cannon_predicate
+
+.PHONY: verify verify-harness verify-extended
+verify:
+	@command -v $(CBMC) >/dev/null || { \
+	  echo "cbmc not found; install with 'apt-get install cbmc' or set CBMC=path"; \
+	  exit 1; }
+	@set -e; for h in $(VERIFY_HARNESSES); do \
+	  printf '\n===== verify %s =====\n' "$$h"; \
+	  $(CBMC) $(CBMC_FLAGS) $(VERIFY_DIR)/banqi_model.c \
+	          $(VERIFY_DIR)/harness_$$h.c | \
+	    grep -E '(SUCCESS|FAILURE|VERIFICATION)'; \
+	done
+
+# Extended harnesses: full-board nondeterministic generator soundness /
+# completeness. These exercise bq_legal_moves under a maximally havoced
+# 32-cell board; the resulting SAT formula is large enough that CBMC's
+# default solver may take many minutes or fail to converge. Behavioural
+# coverage of these properties is already supplied by the parity test
+# (5000+ random is_legal comparisons and 2000+ random legal_moves
+# comparisons against the C++ engine), so this target is opt-in.
+VERIFY_EXTENDED_HARNESSES := \
+  generator_soundness \
+  generator_completeness
+
+verify-extended:
+	@command -v $(CBMC) >/dev/null || { \
+	  echo "cbmc not found; install with 'apt-get install cbmc' or set CBMC=path"; \
+	  exit 1; }
+	@set -e; for h in $(VERIFY_EXTENDED_HARNESSES); do \
+	  printf '\n===== verify-extended %s =====\n' "$$h"; \
+	  $(CBMC) $(CBMC_FLAGS) $(VERIFY_DIR)/banqi_model.c \
+	          $(VERIFY_DIR)/harness_$$h.c | \
+	    grep -E '(SUCCESS|FAILURE|VERIFICATION)'; \
+	done
 
 .PHONY: clean
 clean:

@@ -119,9 +119,11 @@ the renderer until a flip happens.
 
 ## Testing
 
-- `make test` — pure C++ unit + integration tests
+- `make test` — pure C++ unit + integration tests (incl. C-model parity)
 - `make wasm-test` — full WASM game through node + replay smoke
 - `make server-test` — server integration tests (requires Postgres)
+- `make verify` — CBMC bounded model checking of the rule engine
+  (see [`verify/README.md`](verify/README.md))
 
 ## License
 
