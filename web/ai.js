@@ -1094,14 +1094,6 @@ function cannonLineScore(board, color) {
   return n;
 }
 
-// Asymmetric soldier-general scoring: a soldier threatening our General
-// counts more than the same soldier threatening theirs. Without the
-// asymmetry, Policy's aggressive soldier-pushing exposes its own General to
-// Master's tactical reply (Policy was losing the games it lost this way in
-// 4-game matches). The defence-heavier weighting makes Policy defend its
-// own General first and attack second — net winrate goes up.
-const SOLDIER_GENERAL_DEFENCE_BONUS = [0, 380, 220, 130, 60, 30, 12, 0];
-
 function soldierGeneralScore(board, forColor) {
   const oppColor = forColor === RED ? BLACK : RED;
   let score = 0;
@@ -1118,8 +1110,7 @@ function soldierGeneralScore(board, forColor) {
     for (let i = 0; i < CELLS; i++) {
       const c = board.cells[i];
       if (!c || c.fd || c.color !== oppColor || c.type !== SOLDIER) continue;
-      // Defending our General is weighted more than threatening theirs.
-      score -= SOLDIER_GENERAL_DEFENCE_BONUS[Math.min(chebyshev(i, myGen), 7)];
+      score -= SOLDIER_GENERAL_BONUS[Math.min(chebyshev(i, myGen), 7)];
     }
   }
   return score;
@@ -1191,13 +1182,10 @@ function evaluatePolicy(board, forColor, ctx) {
   // Cannon line-of-attack pressure.
   score += (cannonLineScore(board, forColor) - cannonLineScore(board, oppColor)) * CANNON_LINE_BONUS;
 
-  // Trapped-General penalty. Heavier for our own General than the
-  // opponent's — being trapped means losing on "no legal move", so the
-  // defensive side of this matters more than the offensive side. The
-  // asymmetry matches the soldier-general defence asymmetry above.
+  // Trapped-General penalty.
   const myGen  = findGeneral(board, forColor);
   const oppGen = findGeneral(board, oppColor);
-  if (myGen  >= 0) score -= (4 - escapeCount(board, myGen))  * (GENERAL_ESCAPE_PENALTY * 1.6);
+  if (myGen  >= 0) score -= (4 - escapeCount(board, myGen))  * GENERAL_ESCAPE_PENALTY;
   if (oppGen >= 0) score += (4 - escapeCount(board, oppGen)) * GENERAL_ESCAPE_PENALTY;
 
   // Side-to-move tempo bonus.
