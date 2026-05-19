@@ -41,6 +41,9 @@ export function friendsRouter({ db, serverSecret, publicUrl }) {
     }
     const owner = await getUser(db, parsed.userId);
     if (!owner) return res.status(404).json({ error: 'user not found' });
+    if (owner.provider === 'ai') {
+      return res.status(400).json({ error: 'cannot friend an AI opponent' });
+    }
     const friend = await addFriend(db, req.user.id, parsed.userId);
     res.json({
       ok: true,

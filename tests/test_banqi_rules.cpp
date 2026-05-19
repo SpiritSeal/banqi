@@ -434,6 +434,80 @@ TEST_CASE("BanqiRules: same-color first flip does not affect legality of subsequ
     CHECK_FALSE(b.is_legal(Move{-1, 2}, 1));
 }
 
+TEST_CASE("BanqiRules: capture-general — capturing General ends the game; capturer wins") {
+    BanqiRules b;
+    b.clear();
+    b.set_mode(GameMode::CaptureGeneral);
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::Advisor});
+    b.set_faceup(1, Piece{Color::Black, PieceType::General});
+    CHECK_FALSE(b.game_over());
+    auto r = b.apply_move(0, 1);
+    CHECK(r.captured);
+    CHECK(r.captured_piece.type == PieceType::General);
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::Red);
+}
+
+TEST_CASE("BanqiRules: capture-general — Soldier capturing General also wins") {
+    BanqiRules b;
+    b.clear();
+    b.set_mode(GameMode::CaptureGeneral);
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::Soldier});
+    b.set_faceup(1, Piece{Color::Black, PieceType::General});
+    auto r = b.apply_move(0, 1);
+    CHECK(r.captured);
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::Red);
+}
+
+TEST_CASE("BanqiRules: capture-general — non-General captures don't end the game") {
+    BanqiRules b;
+    b.clear();
+    b.set_mode(GameMode::CaptureGeneral);
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(1, Piece{Color::Black, PieceType::Advisor});
+    b.set_faceup(8, Piece{Color::Black, PieceType::General});
+    auto r = b.apply_move(0, 1);
+    CHECK(r.captured);
+    CHECK(r.captured_piece.type == PieceType::Advisor);
+    CHECK_FALSE(b.game_over());
+}
+
+TEST_CASE("BanqiRules: capture-general — cannon jump that captures General also ends the game") {
+    BanqiRules b;
+    b.clear();
+    b.set_mode(GameMode::CaptureGeneral);
+    b.force_color_assignment(0, Color::Red);
+    // [RC, RS(screen), _, BG]
+    b.set_faceup(0, Piece{Color::Red,   PieceType::Cannon});
+    b.set_faceup(1, Piece{Color::Red,   PieceType::Soldier});
+    b.set_faceup(3, Piece{Color::Black, PieceType::General});
+    auto r = b.apply_move(0, 3);
+    CHECK(r.captured);
+    CHECK(r.captured_piece.type == PieceType::General);
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::Red);
+}
+
+TEST_CASE("BanqiRules: standard mode — capturing General does not end the game by itself") {
+    BanqiRules b;
+    b.clear();
+    // Default mode is Standard.
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::Advisor});
+    b.set_faceup(1, Piece{Color::Black, PieceType::General});
+    // Add a Black piece elsewhere so the game doesn't immediately end via
+    // the no-legal-moves rule.
+    b.set_faceup(16, Piece{Color::Black, PieceType::Soldier});
+    auto r = b.apply_move(0, 1);
+    CHECK(r.captured);
+    CHECK(r.captured_piece.type == PieceType::General);
+    CHECK_FALSE(b.game_over());
+}
+
 TEST_CASE("BanqiRules: legal_moves returns nothing if not your turn") {
     BanqiRules b;
     b.clear();
@@ -442,4 +516,131 @@ TEST_CASE("BanqiRules: legal_moves returns nothing if not your turn") {
     b.set_faceup(8, Piece{Color::Black, PieceType::Soldier});
     CHECK(!b.legal_moves(0).empty());
     CHECK(b.legal_moves(1).empty());
+}
+
+TEST_CASE("BanqiRules: apply_move rejects out-of-range / empty / face-down moves") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red, PieceType::General});
+    b.set_facedown(1);
+    CHECK_THROWS(b.apply_move(-1, 0));
+    CHECK_THROWS(b.apply_move(0, BanqiRules::CELLS));
+    CHECK_THROWS(b.apply_move(0, 0));                // from == to
+    CHECK_THROWS(b.apply_move(8, 0));                // source is empty
+    CHECK_THROWS(b.apply_move(0, 1));                // destination is face-down
+}
+
+TEST_CASE("BanqiRules: apply_flip rejects out-of-range cells") {
+    BanqiRules b;
+    b.set_all_facedown();
+    CHECK_THROWS(b.apply_flip(-1, Piece{Color::Red, PieceType::Advisor}));
+    CHECK_THROWS(b.apply_flip(BanqiRules::CELLS, Piece{Color::Red, PieceType::Advisor}));
+}
+
+TEST_CASE("BanqiRules: apply_flip rejects an empty / colorless piece") {
+    // Used to silently corrupt player color assignment: revealed.color == None
+    // → player_color_ = {None, None}, leaving the engine in an unplayable state.
+    BanqiRules b;
+    b.set_all_facedown();
+    CHECK_THROWS(b.apply_flip(0, Piece{}));
+    CHECK_THROWS(b.apply_flip(0, Piece{Color::None, PieceType::General}));
+    CHECK_THROWS(b.apply_flip(0, Piece{Color::Red,  PieceType::None}));
+    CHECK_FALSE(b.first_flip_done());
+}
+
+TEST_CASE("BanqiRules: queries with out-of-range player_index are safe") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red, PieceType::General});
+    // color_for_player used to read past the 2-slot player_color_ array.
+    CHECK(b.color_for_player(2)  == Color::None);
+    CHECK(b.color_for_player(-1) == Color::None);
+    CHECK(b.color_for_player(99) == Color::None);
+    // is_legal used to read player_color_[player_index] before validating.
+    CHECK_FALSE(b.is_legal(Move{0, 1},  2));
+    CHECK_FALSE(b.is_legal(Move{0, 1}, -1));
+    CHECK_FALSE(b.is_legal(Move{-1, 0}, 2));   // flip path
+    CHECK(b.legal_moves(2).empty());
+    CHECK(b.legal_moves(-1).empty());
+}
+
+TEST_CASE("BanqiRules: setters reject out-of-range cells") {
+    BanqiRules b;
+    b.clear();
+    CHECK_THROWS(b.set_facedown(-1));
+    CHECK_THROWS(b.set_facedown(BanqiRules::CELLS));
+    CHECK_THROWS(b.set_faceup(-1, Piece{Color::Red, PieceType::General}));
+    CHECK_THROWS(b.set_faceup(BanqiRules::CELLS, Piece{Color::Red, PieceType::General}));
+    CHECK_THROWS(b.set_empty(-1));
+    CHECK_THROWS(b.set_empty(BanqiRules::CELLS));
+}
+
+TEST_CASE("BanqiRules: set_faceup rejects an empty piece") {
+    BanqiRules b;
+    b.clear();
+    CHECK_THROWS(b.set_faceup(0, Piece{}));
+    CHECK_THROWS(b.set_faceup(0, Piece{Color::Red, PieceType::None}));
+    CHECK_THROWS(b.set_faceup(0, Piece{Color::None, PieceType::General}));
+}
+
+TEST_CASE("BanqiRules: set_initial_side and force_color_assignment reject bad args") {
+    BanqiRules b;
+    b.clear();
+    CHECK_THROWS(b.set_initial_side(2));
+    CHECK_THROWS(b.set_initial_side(-1));
+    CHECK_THROWS(b.force_color_assignment(2, Color::Red));
+    CHECK_THROWS(b.force_color_assignment(0, Color::None));
+}
+
+TEST_CASE("can_capture_orthogonal rejects an empty victim or attacker") {
+    Piece red_g{Color::Red, PieceType::General};
+    Piece empty{};
+    Piece bad_type{Color::Black, PieceType::None};
+    CHECK_FALSE(can_capture_orthogonal(red_g, empty));
+    CHECK_FALSE(can_capture_orthogonal(empty, red_g));
+    CHECK_FALSE(can_capture_orthogonal(red_g, bad_type));
+}
+
+TEST_CASE("BanqiRules: force_terminal forces game over and clears legal moves") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red, PieceType::General});
+    REQUIRE_FALSE(b.legal_moves(0).empty());
+    b.force_terminal(Color::Black);
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::Black);
+    CHECK(b.legal_moves(0).empty());
+    CHECK(b.legal_moves(1).empty());
+}
+
+TEST_CASE("BanqiRules: set_all_facedown fully resets state (no leftover colors)") {
+    BanqiRules b;
+    b.set_all_facedown();
+    b.apply_flip(0, Piece{Color::Red, PieceType::Advisor});  // assigns colors
+    REQUIRE(b.color_for_player(0) == Color::Red);
+    REQUIRE(b.side_to_move_player() == 1);
+    b.set_all_facedown();  // back to a fresh game
+    CHECK_FALSE(b.first_flip_done());
+    CHECK(b.color_for_player(0) == Color::None);
+    CHECK(b.color_for_player(1) == Color::None);
+    CHECK(b.side_to_move_player() == 0);
+    // P0 (the convention) must be able to start fresh.
+    CHECK(b.legal_moves(0).size() == 32);
+    CHECK(b.legal_moves(1).empty());
+}
+
+TEST_CASE("BanqiRules: apply_flip / apply_move refuse to mutate a terminal engine") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_facedown(0);
+    b.set_faceup(8, Piece{Color::Red, PieceType::General});
+    b.force_terminal(Color::Black);
+    CHECK_THROWS(b.apply_flip(0, Piece{Color::Red, PieceType::Advisor}));
+    CHECK_THROWS(b.apply_move(8, 0));
+    CHECK(b.at(0).state == Cell::State::FaceDown);
+    CHECK(b.at(8).state == Cell::State::FaceUp);
 }

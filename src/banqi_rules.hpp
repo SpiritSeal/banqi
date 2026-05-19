@@ -15,6 +15,13 @@
 
 namespace banqi {
 
+// Which win condition is in effect.
+//   Standard       — classic Taiwanese rule: side-to-move with no legal move loses.
+//   CaptureGeneral — capturing the opponent's General ends the game immediately
+//                    with the capturing side as the winner. The standard
+//                    "no legal moves loses" rule still applies as a fallback.
+enum class GameMode : uint8_t { Standard = 0, CaptureGeneral = 1 };
+
 struct Cell {
     enum class State : uint8_t { Empty, FaceDown, FaceUp };
     State state = State::Empty;
@@ -57,13 +64,23 @@ public:
     Color side_to_move() const { return side_to_move_; }
     // Player → assigned color (set after first flip). May return Color::None
     // before the first flip is committed.
-    Color color_for_player(int player_index) const { return player_color_[player_index]; }
+    Color color_for_player(int player_index) const {
+        if (player_index != 0 && player_index != 1) return Color::None;
+        return player_color_[player_index];
+    }
     bool game_over() const { return game_over_; }
     Color winner() const { return winner_; }
+    GameMode mode() const { return mode_; }
+    void set_mode(GameMode m) { mode_ = m; }
 
     // The two players are indexed 0 and 1. By convention player 0 (host)
     // moves first.
-    void set_initial_side(int player_index) { side_to_move_player_ = player_index; }
+    void set_initial_side(int player_index) {
+        if (player_index != 0 && player_index != 1) {
+            throw std::runtime_error("set_initial_side: player_index must be 0 or 1");
+        }
+        side_to_move_player_ = player_index;
+    }
     int  side_to_move_player() const { return side_to_move_player_; }
 
     // Bypass the normal first-flip flow: directly assign colors and the
@@ -75,6 +92,13 @@ public:
     // restoring a snapshot end up with correct terminal flags without having
     // to play a move.
     void recheck_terminal();
+
+    // Force the game into a terminal state with the given winner. Used by
+    // the Game layer to propagate resignations and by snapshot restore for
+    // win conditions (e.g. capture-general) that aren't recoverable from
+    // the board layout alone — both need legal_moves / state queries to stay
+    // consistent with game_over().
+    void force_terminal(Color winner) { game_over_ = true; winner_ = winner; }
 
     // ---- legality and generation ----
     // Returns true if the move is legal for the given side (player index).
@@ -103,6 +127,7 @@ private:
     std::array<Color, 2> player_color_{Color::None, Color::None};
     bool  game_over_ = false;
     Color winner_ = Color::None;
+    GameMode mode_ = GameMode::Standard;
 
     void recompute_terminal();
     void advance_turn();

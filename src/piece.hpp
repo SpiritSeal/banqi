@@ -81,6 +81,7 @@ inline std::array<int, 32> initial_deck() {
 //   * General cannot capture Soldier.
 inline bool can_capture_orthogonal(const Piece& attacker, const Piece& victim) {
     if (attacker.color == Color::None || victim.color == Color::None) return false;
+    if (attacker.type == PieceType::None || victim.type == PieceType::None) return false;
     if (attacker.color == victim.color) return false;
     if (attacker.type == PieceType::Cannon) return false;       // cannons capture only via jump
     if (attacker.type == PieceType::General && victim.type == PieceType::Soldier) return false;

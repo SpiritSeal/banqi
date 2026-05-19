@@ -49,6 +49,40 @@ export async function getUser(db, id) {
   return rows[0] || null;
 }
 
+// AI opponents. One row per difficulty, seeded at server boot with a
+// per-difficulty starting Elo. Re-runs must NOT clobber the Elo column —
+// AI ratings evolve like human ones once games start being played.
+export const AI_DIFFICULTIES = ['easy', 'medium', 'hard', 'expert', 'master'];
+
+const AI_USER_SEED = {
+  easy:   { displayName: 'Banqi AI · Easy',   elo:  900 },
+  medium: { displayName: 'Banqi AI · Medium', elo: 1100 },
+  hard:   { displayName: 'Banqi AI · Hard',   elo: 1300 },
+  expert: { displayName: 'Banqi AI · Expert', elo: 1500 },
+  master: { displayName: 'Banqi AI · Master', elo: 1700 },
+};
+
+export async function ensureAiUsers(db) {
+  const now = Date.now();
+  for (const difficulty of AI_DIFFICULTIES) {
+    const seed = AI_USER_SEED[difficulty];
+    await db.query(`
+      INSERT INTO users (provider, provider_id, display_name, avatar_url, elo, created_at)
+      VALUES ('ai', $1, $2, NULL, $3, $4)
+      ON CONFLICT (provider, provider_id) DO NOTHING
+    `, [difficulty, seed.displayName, seed.elo, now]);
+  }
+}
+
+export async function getAiUserByDifficulty(db, difficulty) {
+  if (!AI_DIFFICULTIES.includes(difficulty)) return null;
+  const { rows } = await db.query(
+    "SELECT * FROM users WHERE provider = 'ai' AND provider_id = $1",
+    [difficulty]
+  );
+  return rows[0] || null;
+}
+
 // Anonymize, don't hard-delete. The users table is referenced by games and
 // elo_history; wiping a row would orphan opponents' rating history. Strip
 // PII (display name + avatar) and rotate the OAuth tuple so the same provider
@@ -67,14 +101,62 @@ export async function deleteUser(db, id) {
 
 // ---------- Games ----------
 
-export async function createGame(db, { roomCode, hostUserId }) {
+export async function createGame(db, { roomCode, hostUserId, mode = 'standard',
+                                       joinUserId = null }) {
   const now = Date.now();
+  // If a join user is provided up-front (e.g. AI opponent), the game starts
+  // directly in 'playing' — no waiting room needed.
+  const status = joinUserId == null ? 'waiting' : 'playing';
   const { rows } = await db.query(`
-    INSERT INTO games (room_code, host_user_id, status, created_at)
-    VALUES ($1, $2, 'waiting', $3)
+    INSERT INTO games (room_code, host_user_id, join_user_id, status, mode,
+                       created_at, last_move_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *
-  `, [roomCode, hostUserId, now]);
+  `, [roomCode, hostUserId, joinUserId, status, normalizeMode(mode), now,
+      joinUserId == null ? null : now]);
   return rows[0];
+}
+
+// Whitelist the game-mode strings. Unknown / missing values collapse to
+// 'standard' so a client sending garbage doesn't poison the DB row.
+export function normalizeMode(m) {
+  return m === 'capture_general' ? 'capture_general' : 'standard';
+}
+
+// Whitelist the first-mover preference. Anything not 'challenger' or
+// 'opponent' collapses to 'random' so the row is always in {challenger,
+// opponent, random}.
+export function normalizeFirstMoverPref(p) {
+  return p === 'challenger' || p === 'opponent' ? p : 'random';
+}
+
+// Resolve 'random' to a concrete seat index (0 = host/challenger, 1 = join/
+// opponent). 'challenger' and 'opponent' map deterministically.
+export function resolveFirstMoverIndex(pref) {
+  if (pref === 'challenger') return 0;
+  if (pref === 'opponent')   return 1;
+  return Math.random() < 0.5 ? 0 : 1;
+}
+
+// Time-control bounds. A game with a base time below 30s is unplayable; a
+// per-move increment beyond 60s isn't a chess clock anymore. Outside this
+// box → returns null/0 (no clock); the caller decides whether to 400 or
+// just silently drop. NULL/missing time_limit_ms means "unlimited", in
+// which case increment_ms is also forced to 0 (no clock to increment).
+export const TIME_LIMIT_MIN_MS = 30_000;        //   30s
+export const TIME_LIMIT_MAX_MS = 3 * 60 * 60_000; //   3h
+export const INCREMENT_MAX_MS  = 60_000;        //   60s
+export function normalizeTimeControl({ timeLimitMs, incrementMs } = {}) {
+  const t = Number.isInteger(timeLimitMs) ? timeLimitMs : null;
+  const inc = Number.isInteger(incrementMs) ? incrementMs : 0;
+  if (t == null) return { timeLimitMs: null, incrementMs: 0 };
+  if (t < TIME_LIMIT_MIN_MS || t > TIME_LIMIT_MAX_MS) {
+    return { timeLimitMs: null, incrementMs: 0 };
+  }
+  if (inc < 0 || inc > INCREMENT_MAX_MS) {
+    return { timeLimitMs: t, incrementMs: 0 };
+  }
+  return { timeLimitMs: t, incrementMs: inc };
 }
 
 export async function findGameByRoom(db, roomCode) {
@@ -100,7 +182,12 @@ export async function joinGame(db, gameId, joinUserId) {
 export async function listGamesForUser(db, userId, { status, limit = 50 } = {}) {
   const params = [userId, userId];
   let sql = `
-    SELECT g.*, hu.display_name AS host_name, ju.display_name AS join_name
+    SELECT g.*,
+           hu.display_name AS host_name, ju.display_name AS join_name,
+           hu.provider     AS host_provider,
+           ju.provider     AS join_provider,
+           hu.provider_id  AS host_provider_id,
+           ju.provider_id  AS join_provider_id
       FROM games g
       JOIN users hu ON hu.id = g.host_user_id
       LEFT JOIN users ju ON ju.id = g.join_user_id
@@ -187,11 +274,21 @@ export async function appendGameEvent(db, gameId, event) {
     capture: event.capture,
     game_over: event.game_over,
     winner: event.winner,
+    draw_offered: event.draw_offered || false,
+    clocks_after: event.clocks_after || null,
   });
   await db.query(`
     INSERT INTO game_events (game_id, seq, ts, mover, payload_json)
     VALUES ($1, $2, $3, $4, $5)
   `, [gameId, event.seq, event.ts, event.mover, payload]);
+}
+
+// Persist the live clock state alongside the WASM snapshot. Called by the
+// engine on every event when a game has clocks enabled. NULL clears it
+// (e.g. for unlimited games — saves a row per write).
+export async function saveClockState(db, gameId, json) {
+  await db.query('UPDATE games SET clock_state_json = $1 WHERE id = $2',
+                 [json, gameId]);
 }
 
 export async function listGameEvents(db, gameId) {
@@ -210,13 +307,16 @@ export async function listGameEvents(db, gameId) {
 // ---------- Elo ----------
 
 export async function recordEloChange(db, { userId, gameId, opponentId,
-                                            eloBefore, eloAfter, result }) {
+                                            eloBefore, eloAfter, result,
+                                            lossReason = null }) {
   const now = Date.now();
   await db.query(`
     INSERT INTO elo_history
-      (user_id, game_id, opponent_id, elo_before, elo_after, delta, result, created_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-  `, [userId, gameId, opponentId, eloBefore, eloAfter, eloAfter - eloBefore, result, now]);
+      (user_id, game_id, opponent_id, elo_before, elo_after, delta,
+       result, loss_reason, created_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+  `, [userId, gameId, opponentId, eloBefore, eloAfter, eloAfter - eloBefore,
+      result, lossReason, now]);
   await db.query('UPDATE users SET elo = $1 WHERE id = $2', [eloAfter, userId]);
 }
 
@@ -249,7 +349,7 @@ export async function headToHead(db, userId) {
       JOIN users u ON u.id = e.opponent_id
      WHERE e.user_id = $1
      GROUP BY e.opponent_id, u.display_name
-     ORDER BY wins + losses + draws DESC
+     ORDER BY COUNT(*) DESC
   `, [userId]);
   return rows;
 }
@@ -321,10 +421,16 @@ export async function isMatchEligible(db, userId, otherId) {
 const MATCH_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Idempotent create: if a pending non-expired row already exists from→to,
-// returns it instead of inserting a duplicate.
-export async function createMatchRequest(db, { fromUserId, toUserId }) {
+// returns it instead of inserting a duplicate (regardless of the new rule
+// fields — a sender who wants different rules should cancel and resend).
+export async function createMatchRequest(db, {
+  fromUserId, toUserId,
+  mode = 'standard', firstMoverPref = 'random', message = null,
+  timeLimitMs = null, incrementMs = 0,
+}) {
   const now = Date.now();
   const expires = now + MATCH_REQUEST_TTL_MS;
+  const tc = normalizeTimeControl({ timeLimitMs, incrementMs });
   const { rows: existing } = await db.query(`
     SELECT * FROM match_requests
      WHERE from_user_id = $1 AND to_user_id = $2
@@ -334,10 +440,15 @@ export async function createMatchRequest(db, { fromUserId, toUserId }) {
   if (existing[0]) return existing[0];
   const { rows } = await db.query(`
     INSERT INTO match_requests
-      (from_user_id, to_user_id, status, created_at, expires_at)
-    VALUES ($1, $2, 'pending', $3, $4)
+      (from_user_id, to_user_id, status, mode, first_mover_pref, message,
+       time_limit_ms, increment_ms,
+       created_at, expires_at)
+    VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8, $9)
     RETURNING *
-  `, [fromUserId, toUserId, now, expires]);
+  `, [fromUserId, toUserId, normalizeMode(mode),
+      normalizeFirstMoverPref(firstMoverPref), message,
+      tc.timeLimitMs, tc.incrementMs,
+      now, expires]);
   return rows[0];
 }
 
@@ -420,14 +531,27 @@ export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode
       return null;
     }
     // Allocate a room code with the same 5-retry pattern as routes/games.mjs.
+    // The accepted game inherits the mode + first-mover preference + time
+    // control chosen by the sender on the request. 'random' first-mover is
+    // resolved to a concrete seat index here so reconnects always see the
+    // same first-mover.
+    const mode             = normalizeMode(req.mode);
+    const firstMoverIndex  = resolveFirstMoverIndex(
+      normalizeFirstMoverPref(req.first_mover_pref)
+    );
+    const timeLimitMs = req.time_limit_ms ?? null;
+    const incrementMs = req.increment_ms ?? 0;
     let game = null;
     for (let i = 0; i < 5; ++i) {
       try {
         const { rows: gRows } = await client.query(`
-          INSERT INTO games (room_code, host_user_id, status, created_at)
-          VALUES ($1, $2, 'waiting', $3)
+          INSERT INTO games
+            (room_code, host_user_id, status, mode, first_mover_index,
+             time_limit_ms, increment_ms, created_at)
+          VALUES ($1, $2, 'waiting', $3, $4, $5, $6, $7)
           RETURNING *
-        `, [allocateRoomCode(), req.from_user_id, now]);
+        `, [allocateRoomCode(), req.from_user_id, mode, firstMoverIndex,
+            timeLimitMs, incrementMs, now]);
         game = gRows[0];
         break;
       } catch (e) {

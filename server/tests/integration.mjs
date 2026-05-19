@@ -454,6 +454,262 @@ describe('friends + match requests', () => {
     assert.equal(after.incoming.find(r => r.id === created.id), undefined);
   });
 
+  it('challenge-details fields round-trip through the route', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+
+    // Reject any leftover pending so the idempotent guard doesn't return a stale row.
+    await db.query(
+      `UPDATE match_requests SET status='cancelled' WHERE status='pending'`
+    );
+
+    const r = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id,
+        mode: 'capture_general',
+        first_mover_pref: 'opponent',
+        message: '   gl hf   ',
+      }),
+    });
+    assert.equal(r.status, 200);
+    const created = await r.json();
+    assert.equal(created.mode, 'capture_general');
+    assert.equal(created.first_mover_pref, 'opponent');
+    assert.equal(created.message, 'gl hf');     // trimmed by the route
+
+    // The recipient sees the new fields on their incoming list.
+    const reqs = await (await authedFetch(bob, '/api/match-requests')).json();
+    const pending = reqs.incoming.find(r => r.id === created.id);
+    assert.ok(pending);
+    assert.equal(pending.first_mover_pref, 'opponent');
+    assert.equal(pending.message, 'gl hf');
+
+    // Accept and verify the game inherits a concrete first_mover_index.
+    const accept = await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    });
+    assert.equal(accept.status, 200);
+    const accepted = await accept.json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+    assert.equal(game.first_mover_index, 1, 'opponent → seat 1');
+  });
+
+  it('time control round-trips through the route and onto the game', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    const r = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id,
+        time_limit_ms: 600_000,
+        increment_ms: 5_000,
+      }),
+    });
+    assert.equal(r.status, 200);
+    const created = await r.json();
+    assert.equal(created.time_limit_ms, 600_000);
+    assert.equal(created.increment_ms,  5_000);
+
+    // Both sides see the TC fields on their list.
+    const reqs = await (await authedFetch(bob, '/api/match-requests')).json();
+    const pending = reqs.incoming.find(r => r.id === created.id);
+    assert.equal(pending.time_limit_ms, 600_000);
+    assert.equal(pending.increment_ms,  5_000);
+
+    const accept = await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    });
+    const accepted = await accept.json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+    assert.equal(game.time_limit_ms, 600_000);
+    assert.equal(game.increment_ms,  5_000);
+  });
+
+  it('TC game: active side moving past flag → server fires timeout (real WASM, mocked time)', async (t) => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    // 30s base, no increment, Alice (challenger) flips first.
+    const created = await (await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id,
+        time_limit_ms: 30_000, increment_ms: 0,
+        first_mover_pref: 'challenger',
+      }),
+    })).json();
+    const accepted = await (await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    })).json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+
+    // Drive the engine's clock via Date.now. t.mock auto-restores on test end.
+    let clockMs = Date.now();
+    t.mock.method(Date, 'now', () => clockMs);
+
+    a.send({ kind: 'flip', cell: 0 });
+    await a.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'flip');
+    await b.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'flip');
+
+    // Bob deliberates for 31s, then tries to flip. Server should reject the
+    // flip and broadcast a timeout event instead.
+    clockMs += 31_000;
+    b.send({ kind: 'flip', cell: 1 });
+    const ev = await b.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'timeout');
+    assert.equal(ev.event.mover, 1, 'Bob (seat 1) ran out');
+    assert.equal(ev.event.game_over, true);
+    assert.equal(ev.event.clocks_after[1], 0);
+
+    // Alice sees the same terminal event.
+    const evA = await a.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'timeout');
+    assert.equal(evA.event.mover, 1);
+
+    a.close(); b.close();
+  });
+
+  it('TC game: opponent can claim a win on time via HTTP endpoint', async (t) => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    const created = await (await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id, time_limit_ms: 30_000, increment_ms: 0,
+        first_mover_pref: 'challenger',
+      }),
+    })).json();
+    const accepted = await (await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    })).json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+
+    let clockMs = Date.now();
+    t.mock.method(Date, 'now', () => clockMs);
+
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+    a.send({ kind: 'flip', cell: 0 });
+    await a.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'flip');
+
+    // Bob disappears; Alice waits past the flag and claims.
+    clockMs += 31_000;
+    const claim = await authedFetch(alice, `/api/games/${game.id}/claim-timeout`, {
+      method: 'POST',
+    });
+    assert.equal(claim.status, 200);
+    const body = await claim.json();
+    assert.equal(body.event.action.kind, 'timeout');
+    assert.equal(body.event.mover, 1);
+
+    // Bob's WS sees the same terminal event.
+    const evB = await b.waitNext((f) => f.type === 'event' && f.event.action?.kind === 'timeout');
+    assert.equal(evB.event.game_over, true);
+
+    a.close(); b.close();
+  });
+
+  it('TC game: WS snapshot carries clocks; first flip starts opponent clock', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    const created = await (await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id, time_limit_ms: 300_000, increment_ms: 3000,
+        first_mover_pref: 'challenger',
+      }),
+    })).json();
+    const accepted = await (await authedFetch(bob, `/api/match-requests/${created.id}/accept`, {
+      method: 'POST',
+    })).json();
+    const game = await (await authedFetch(bob,
+      `/api/games/by-room/${accepted.room_code}`)).json();
+
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+
+    // Pre-first-flip snapshot: clocks present, active_index null.
+    assert.equal(a.snap.state.time_limit_ms, 300_000);
+    assert.equal(a.snap.state.increment_ms,  3000);
+    assert.equal(a.snap.state.clocks[0], 300_000);
+    assert.equal(a.snap.state.clocks[1], 300_000);
+    assert.equal(a.snap.state.clock_active_index, null);
+
+    // Alice (challenger / host / seat 0) makes the first flip. After it,
+    // Bob's clock should be running.
+    a.send({ kind: 'flip', cell: 0 });
+    const ev = await a.waitNext((f) => f.type === 'event');
+    assert.equal(ev.event.action.kind, 'flip');
+    assert.equal(ev.state.clock_active_index, 1);
+    assert.ok(ev.event.clocks_after);
+
+    // Bob has time left, so an immediate claim-timeout by Alice is rejected.
+    const claim = await authedFetch(alice, `/api/games/${game.id}/claim-timeout`, {
+      method: 'POST',
+    });
+    assert.equal(claim.status, 409);
+    const claimBody = await claim.json();
+    assert.match(claimBody.error || '', /still has time/);
+
+    a.close(); b.close();
+  });
+
+  it('invalid time control values return 400', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+
+    // Below the 30s floor.
+    const tooShort = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({ to_user_id: meB.id, time_limit_ms: 5_000 }),
+    });
+    assert.equal(tooShort.status, 400);
+
+    // Above the 60s increment ceiling.
+    const tooBigInc = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({ to_user_id: meB.id, time_limit_ms: 300_000, increment_ms: 999_999 }),
+    });
+    assert.equal(tooBigInc.status, 400);
+  });
+
+  it('message over 280 chars is rejected with 400', async () => {
+    const alice = await signInAs('Alice');
+    const bob   = await signInAs('Bob');
+    const meB = await (await authedFetch(bob, '/api/me')).json();
+    await db.query(
+      `UPDATE match_requests SET status='cancelled' WHERE status='pending'`
+    );
+    const r = await authedFetch(alice, '/api/match-requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        to_user_id: meB.id,
+        message: 'x'.repeat(281),
+      }),
+    });
+    assert.equal(r.status, 400);
+  });
+
   it('remove friend works; cannot create token-add for an invalid token', async () => {
     const alice = await signInAs('Alice');
     const bob   = await signInAs('Bob');

@@ -15,10 +15,16 @@
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
-import { Replay, renderTranscript, ZH_GLYPH } from './replay.js';
+import { Replay, renderTranscript, exportPgn } from './replay.js';
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
+import { initSettings, openSettingsDrawer, openRulesDrawer } from './settings.js';
+import { captureCellRect, playEventAnimation } from './animations.js';
+
+// Initialise settings (applies theme / animation toggles to <body>) before
+// anything paints, so the first render uses the chosen palette.
+initSettings();
 
 // ---- service worker / PWA ----
 if ('serviceWorker' in navigator) {
@@ -70,6 +76,7 @@ const views = {
   leaderboard: $('view-leaderboard'),
   profile:     $('view-profile'),
   friends:     $('view-friends'),
+  challenge:   $('view-challenge'),
 };
 function showView(name) {
   for (const v of Object.values(views)) v?.classList.add('hidden');
@@ -166,11 +173,16 @@ async function refreshSession() {
 // ---- routing ----
 async function route() {
   const hash = location.hash || '#/';
+  updateNavActive(hash);
+  applyNavAuthState();
   const m = hash.match(/^#\/g\/([0-9A-Za-z]+)$/);
   if (m) { announce(`Game room ${m[1]}`); return openOnlineGame(m[1].toUpperCase()); }
 
   const mp = hash.match(/^#\/profile\/(\d+)$/);
   if (mp) { announce('Profile'); return renderProfile(+mp[1]); }
+
+  const mc = hash.match(/^#\/challenge\/(\d+)$/);
+  if (mc) { announce('Challenge details'); return renderChallengeDetails(+mc[1]); }
 
   const ma = hash.match(/^#\/add-friend\/(\d+-[0-9a-f]{16})$/);
   if (ma) { announce('Add friend'); return addFriendByToken(ma[1]); }
@@ -185,6 +197,41 @@ async function route() {
   }
 }
 window.addEventListener('hashchange', route);
+
+function updateNavActive(hash) {
+  const nav = document.getElementById('app-nav');
+  if (!nav) return;
+  // Match by data-route prefix so #/g/CODE highlights nothing (we're inside a
+  // game, not on a top-level nav destination).
+  for (const a of nav.querySelectorAll('a[data-route]')) {
+    a.classList.toggle('active', a.dataset.route === hash || (a.dataset.route === '#/' && (hash === '' || hash === '#/' || hash === '#')));
+  }
+}
+
+function applyNavAuthState() {
+  const nav = document.getElementById('app-nav');
+  if (!nav) return;
+  const signedIn = !!me;
+  const isGuest = !!me?.is_guest;
+  // Compute visibility per-item so an item with both attributes (e.g.
+  // Friends) doesn't get un-hidden by the second pass.
+  for (const el of nav.querySelectorAll('a[data-route]')) {
+    const requiresAuth = el.hasAttribute('data-requires-auth');
+    const notGuest = el.hasAttribute('data-not-guest');
+    let hidden = false;
+    if (requiresAuth && !signedIn) hidden = true;
+    if (notGuest && isGuest) hidden = true;
+    el.classList.toggle('hidden', hidden);
+  }
+}
+
+// Wire static nav buttons once on boot.
+(function wireNav() {
+  const settingsBtn = document.getElementById('btn-open-settings');
+  const rulesBtn = document.getElementById('btn-open-rules');
+  if (settingsBtn) settingsBtn.addEventListener('click', openSettingsDrawer);
+  if (rulesBtn) rulesBtn.addEventListener('click', openRulesDrawer);
+})();
 
 // ---- sign-in ----
 function renderSignInButtons(container, nextHash, { includeGuest = true } = {}) {
@@ -224,20 +271,17 @@ function renderSignInButtons(container, nextHash, { includeGuest = true } = {}) 
 // ---- lobby ----
 function renderLobby() {
   showView('lobby');
+  applyNavAuthState();
   const meBox = $('lobby-me');
   if (me) {
     const guestBadge = me.is_guest ? ' <span class="muted small">(guest — not rated)</span>' : '';
-    const links = me.is_guest
-      ? `· <a href="#/dashboard">my games</a>`
-      : `· <a href="#/dashboard">my games</a>
-         · <a href="#/leaderboard">leaderboard</a>
-         · <a href="#/friends">friends<span id="nav-notif-badge" class="badge hidden"></span></a>
-         · <a href="#/profile/${me.id}">profile</a>`;
+    const profileLink = me.is_guest
+      ? ''
+      : ` · <a href="#/profile/${me.id}">profile</a>`;
     meBox.innerHTML = `
       <div class="me-row">
         <div><b>Hi, ${escapeHtml(me.display_name)}</b>${guestBadge}
-          ${me.is_guest ? '' : `· Elo ${me.elo}`}
-          ${links}
+          ${me.is_guest ? '' : `· Elo ${me.elo}`}${profileLink}
         </div>
         <button id="btn-signout" class="link-btn">Sign out</button>
       </div>`;
@@ -261,12 +305,21 @@ async function signOut() {
   route();
 }
 
+// Whitelist of game-mode strings. Matches server-side normalizeMode so the
+// client can't be tricked into displaying something the server won't honour.
+const GAME_MODES = ['standard', 'capture_general'];
+function normMode(m) { return GAME_MODES.includes(m) ? m : 'standard'; }
+function modeLabel(m) {
+  return m === 'capture_general' ? 'Capture the General' : 'Standard';
+}
+
 async function startOnlineGame() {
   if (!me) return;
+  const mode = normMode($('lobby-online-mode')?.value);
   const res = await fetch('/api/games', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify({ mode }),
   });
   if (!res.ok) { toast('Could not create game. Try again.', { kind: 'error' }); return; }
   const g = await res.json();
@@ -334,6 +387,7 @@ async function openOnlineGame(roomCode) {
     replay: new Replay(),
     flashCellIdx: -1,
     flashUntil: 0,
+    offerDraw: false,
   };
   if (info.events) active.replay.setEvents(info.events);
 
@@ -352,20 +406,42 @@ async function openOnlineGame(roomCode) {
       return;
     }
     if (frame.type === 'event') {
+      // Capture the source cell rect + moved piece info BEFORE applying the
+      // new state. For animations to play smoothly we need both: the rect
+      // because the source cell may not exist post-render, and the piece
+      // info (glyph + color) because the dst cell will hold the captured
+      // piece for capture animations.
+      const boardEl = $('game-board');
+      const ev = frame.event;
+      let srcRect = null, piece = null;
+      if (ev?.action?.kind === 'move' && active.state?.cells) {
+        srcRect = captureCellRect(boardEl, ev.action.from);
+        const srcCell = active.state.cells[ev.action.from];
+        if (srcCell?.state === 'faceup') {
+          piece = { color: srcCell.color, glyph: srcCell.glyph };
+        }
+      }
       const wasMyTurnBefore = isMyTurn(active.state);
       active.state = frame.state;
-      active.replay.appendEvent(frame.event);
-      playMoveSound(frame.event);
-      if (frame.event.mover !== rolePlayerIndex(active)) {
-        announce(`Opponent: ${describeAction(frame.event)}`);
-        const to = frame.event.action?.to;
+      active.replay.appendEvent(ev);
+      playMoveSound(ev);
+      if (ev.mover !== rolePlayerIndex(active)) {
+        const desc = describeAction(ev);
+        const drawNote = ev.draw_offered ? " (with draw offer)" : "";
+        announce(`Opponent: ${desc}${drawNote}`);
+        const to = ev.action?.to;
         if (typeof to === 'number') {
           active.flashCellIdx = to;
           active.flashUntil = Date.now() + 1200;
         }
       }
+      if (ev.action?.kind === "accept_draw") {
+        announce("Draw accepted. The game is a draw.");
+      }
       maybeNotifyTurnTransition(wasMyTurnBefore);
       refreshGame();
+      // Fire and forget — animations are pure decoration over the new state.
+      playEventAnimation(boardEl, ev, { srcRect, piece });
       return;
     }
     if (frame.type === 'reject') {
@@ -428,6 +504,8 @@ function describeAction(event) {
     return s;
   }
   if (a.kind === 'resign') return 'resigned';
+  if (a.kind === "accept_draw") return "accepted the draw offer";
+  if (a.kind === 'timeout') return 'ran out of time';
   return 'made a move';
 }
 
@@ -481,12 +559,52 @@ function refreshGame() {
   const disconnectBanner = connState !== 'live' && connState !== 'connecting'
     ? `<div class="disconnect-banner" role="alert">
          <span>${connState === 'offline'
-            ? 'Connection lost. Trying to reconnect…'
-            : 'Reconnecting to the server…'}</span>
+            ? "Connection lost — your moves are saved. We'll reconnect when you're back online."
+            : "Reconnecting — your moves are saved."}</span>
          <button id="btn-retry-conn" type="button">Retry now</button>
        </div>`
     : '';
   const counts = pieceCounts(view.cells, active.replay);
+  const myPlayerIdx = rolePlayerIndex(active);
+  const drawOfferedBy = liveState.draw_offered_by ?? null;
+  const opponentOffered = drawOfferedBy !== null && drawOfferedBy !== myPlayerIdx
+                          && liveState.side_to_move === myPlayerIdx
+                          && !liveState.game_over && !view.replayViewing;
+  const iOffered = drawOfferedBy === myPlayerIdx && !liveState.game_over;
+  const canOfferDraw = liveState.first_flip_done && !liveState.game_over
+                       && !view.replayViewing
+                       && liveState.side_to_move === myPlayerIdx
+                       && drawOfferedBy === null;
+  const drawOfferRow = opponentOffered
+    ? `<div class="meta-row draw-offer-row" role="alert">
+         <span>Opponent offers a draw &mdash; accept, or make your move to decline.</span>
+         <button id="btn-accept-draw" class="primary" type="button">Accept Draw</button>
+       </div>`
+    : iOffered
+      ? `<div class="meta-row draw-offer-pending-row">
+           <span class="muted">Draw offer pending &mdash; waiting for opponent.</span>
+         </div>`
+      : "";
+  const offerDrawChk = canOfferDraw
+    ? `<label class="offer-draw-label" title="Attach a draw offer to your next move">
+         <input type="checkbox" id="chk-offer-draw"${active.offerDraw ? " checked" : ""}> Offer draw
+       </label>`
+    : "";
+  const clocksRow = (liveState.time_limit_ms != null && liveState.clocks)
+    ? renderClocksRowHtml(liveState, myPlayerIdx, opp || 'Opponent', me?.display_name || 'You', active)
+    : '';
+  const isAiGame = !!active.info.opponent_is_ai;
+  const aiDifficulty = active.info.ai_difficulty || '';
+  // Replay-on-AI affordance: after a vs-AI game ends, drop a "play another"
+  // button in the header so the user can spin up a fresh game with the same
+  // settings without going back through the lobby.
+  const playAnotherRow = isAiGame && liveState.game_over && !view.replayViewing
+    ? `<div class="meta-row">
+         <button id="btn-play-another-ai" class="primary" type="button">
+           Play another vs ${escapeHtml(active.info.join_name || 'AI')}
+         </button>
+       </div>`
+    : "";
   $('game-header').innerHTML = `
     ${disconnectBanner}
     <div class="meta game-meta">
@@ -495,22 +613,29 @@ function refreshGame() {
         <div class="meta-room">
           <span class="meta-label">Room</span>
           <code>${escapeHtml(active.info.room_code)}</code>
+          <span class="mode-chip" aria-label="Win condition: ${escapeHtml(modeLabel(active.info.mode || liveState.mode))}">${escapeHtml(modeLabel(active.info.mode || liveState.mode))}</span>
+          ${active.info.time_limit_ms != null ? `<span class="mode-chip" aria-label="Time control: ${escapeHtml(timeControlLabel(active.info.time_limit_ms, active.info.increment_ms || 0))}">${escapeHtml(timeControlLabel(active.info.time_limit_ms, active.info.increment_ms || 0))}</span>` : ''}
           <button id="btn-copy-link" class="link-btn" type="button" aria-label="Copy invite link">Copy invite link</button>
         </div>
         <div class="meta-row-right">
           <span class="conn-state conn-${connState}" aria-live="polite" aria-atomic="true">${connLabel}</span>
-          <a class="link-btn" href="#/dashboard">My games</a>
         </div>
       </div>
       <div class="meta-row">
-        <div><span class="meta-label">You vs</span> <strong>${escapeHtml(opp || '(waiting for opponent)')}</strong> ${colorChip}</div>
-        <button id="btn-resign" class="btn-danger-inline" type="button"
-          ${liveState.first_flip_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
+        ${turnPillHtml(liveState, 'online', { opponentIsAi: isAiGame })}
+        <div><span class="meta-label">vs</span> <strong>${escapeHtml(opp || '(waiting for opponent)')}</strong> ${colorChip}</div>
+        <div class="meta-btn-group">
+          ${offerDrawChk}
+          <button id="btn-resign" class="btn-danger-inline" type="button"
+            ${liveState.first_flip_done && !liveState.game_over && !view.replayViewing ? '' : 'disabled'}>Resign</button>
+        </div>
       </div>
+      ${clocksRow}
+      ${drawOfferRow}
+      ${playAnotherRow}
       <div class="meta-row meta-row-status">
         <span><span class="meta-label">Move</span> ${active.replay.totalMoves()}</span>
-        <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info)}</span></span>
-        <span><span class="meta-label">Turn</span> <span id="game-turn">${turnLabel(liveState)}</span></span>
+        <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info, active.replay)}</span></span>
       </div>
       <div class="meta-row meta-row-counts">
         ${renderPieceCountsHtml(counts)}
@@ -518,6 +643,10 @@ function refreshGame() {
       ${renderOnlineRematchRow(liveState, view)}
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
+  const chkOfferDraw = $('chk-offer-draw');
+  if (chkOfferDraw) chkOfferDraw.onchange = (e) => { if (active) active.offerDraw = e.target.checked; };
+  const btnAcceptDraw = $('btn-accept-draw');
+  if (btnAcceptDraw) btnAcceptDraw.onclick = () => { sendIntent({ kind: 'accept_draw' }); };
   $('btn-resign').onclick = async () => {
     if (!active.replay.isLive()) return;
     const ok = await confirmModal({
@@ -533,10 +662,71 @@ function refreshGame() {
   wireOnlineRematch();
   const retryBtn = $('btn-retry-conn');
   if (retryBtn) retryBtn.onclick = () => { active.conn?.reconnect?.(); };
+  const claimBtn = $('btn-claim-timeout');
+  if (claimBtn) claimBtn.onclick = async () => {
+    claimBtn.disabled = true;
+    await claimTimeout(active.info.id);
+    // The terminal event arrives over WS and refreshGame() repaints.
+  };
+  // Kick the local clock-decrement loop when this game has a TC; cheap no-op
+  // when the loop is already running.
+  if (liveState.time_limit_ms != null && !liveState.game_over) {
+    startClockTicker();
+  } else {
+    stopClockTicker();
+  }
+  const playAnotherBtn = $('btn-play-another-ai');
+  if (playAnotherBtn) {
+    playAnotherBtn.onclick = async () => {
+      playAnotherBtn.disabled = true;
+      try {
+        const res = await fetch('/api/games', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode:     active.info.mode || 'standard',
+            opponent: 'ai:' + aiDifficulty,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const g = await res.json();
+        location.hash = `#/g/${g.roomCode}`;
+      } catch (e) {
+        playAnotherBtn.disabled = false;
+        toast('Could not start a new AI game.', { kind: 'error' });
+      }
+    };
+  }
 
   renderTranscript($('game-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshGame(); },
+    onExport: (replay) => {
+      const pgn = exportPgn(replay, {
+        players: [active.info.host_name || 'Host', active.info.join_name || 'Guest'],
+        round:   active.info.room_code,
+        date:    active.info.created_at,
+      });
+      downloadPgn(pgn, `banqi-${active.info.room_code || 'online'}.pgn`);
+    },
   });
+  maybeShowTutorialTip($('game-board'));
+  maybeShowGameOver(view);
+}
+
+function downloadPgn(text, filename) {
+  try {
+    const blob = new Blob([text], { type: 'application/x-chess-pgn;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (e) {
+    toast(`Couldn't export PGN: ${e.message || e}`, { kind: 'error' });
+  }
 }
 
 function sendIntent(intent) {
@@ -553,6 +743,7 @@ function opponentUserIdFor(info, meId) {
 
 function renderOnlineRematchRow(liveState, view) {
   if (!liveState.game_over || view.replayViewing) return '';
+  if (active?.info?.opponent_is_ai) return '';
   const oppId = opponentUserIdFor(active?.info, me?.id);
   if (!me || me.is_guest || !oppId) {
     return `
@@ -601,10 +792,155 @@ function turnLabel(state) {
   if (state.game_over) return 'finished';
   return state.side_to_move === state.my_player_index ? 'your turn' : 'opponent\'s turn';
 }
-function statusLabel(state, info) {
+
+// HTML for the prominent turn-indicator pill shown in game HUDs.
+// mode: 'online' | 'otb' | 'ai'
+function turnPillHtml(state, mode, opts = {}) {
+  if (!state.first_flip_done) {
+    // If the game was created from a directed challenge with a fixed first
+    // mover, surface whose move it is so the locked-out side knows to wait.
+    let label = 'Awaiting first flip';
+    let yours = null;
+    if (mode === 'online' && (state.first_mover_index === 0 || state.first_mover_index === 1)) {
+      yours = state.first_mover_index === state.my_player_index;
+      label = yours ? 'Your move — flip first' : 'Opponent flips first';
+    }
+    const cls = yours === true ? 'your-turn' : yours === false ? 'opp-turn' : '';
+    return `<span class="turn-pill ${cls}" role="status" aria-live="polite">
+              <span class="turn-dot"></span>${label}
+            </span>`;
+  }
+  if (state.game_over) {
+    return `<span class="turn-pill finished" role="status">
+              <span class="turn-dot"></span>Finished
+            </span>`;
+  }
+  let yours, label;
+  if (mode === 'online') {
+    yours = state.side_to_move === state.my_player_index;
+    if (yours) label = 'Your turn';
+    else label = opts.opponentIsAi ? 'AI is thinking…' : "Opponent's turn";
+  } else if (mode === 'ai') {
+    yours = state.side_to_move === 0;
+    label = yours ? 'Your turn' : 'AI thinking…';
+  } else {
+    // OTB — both players are local; highlight whoever is to move.
+    yours = true;
+    label = state.side_to_move === 0 ? "Player 1's turn" : "Player 2's turn";
+  }
+  return `<span class="turn-pill ${yours ? 'your-turn' : 'opp-turn'}" role="status" aria-live="polite">
+            <span class="turn-dot"></span>${label}
+          </span>`;
+}
+
+// Format a remaining-time value for a chess-style clock display.
+// >= 1m  → 'M:SS'.   <10s  → 'S.t' (one decimal).   Otherwise 'M:SS'.
+function formatClockMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) ms = 0;
+  if (ms < 10_000) {
+    return (ms / 1000).toFixed(1) + 's';
+  }
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Render the two-clock strip + optional "Claim time" button. The data-clock-pi
+// attribute lets the local decrement loop update the right cell without a
+// full refreshGame().
+function renderClocksRowHtml(state, myPlayerIdx, oppName, myName, active) {
+  const c0 = state.clocks?.[0] ?? 0;
+  const c1 = state.clocks?.[1] ?? 0;
+  const myMs   = myPlayerIdx === 0 ? c0 : c1;
+  const oppMs  = myPlayerIdx === 0 ? c1 : c0;
+  const myActive  = state.clock_active_index === myPlayerIdx;
+  const oppActive = state.clock_active_index === (1 - myPlayerIdx);
+  const lowMine  = myActive  && myMs  < 30_000;
+  const lowOpp   = oppActive && oppMs < 30_000;
+  // Claim-timeout: opponent is the active side and their clock is at 0.
+  const canClaim = !state.game_over
+    && state.clock_active_index === (1 - myPlayerIdx)
+    && oppMs <= 0
+    && !active.replayViewing;
+  return `
+    <div class="meta-row clocks-row">
+      <div class="clock opp-clock ${oppActive ? 'active' : ''} ${lowOpp ? 'low' : ''}"
+           aria-label="${escapeHtml(oppName)} clock">
+        <span class="clock-name">${escapeHtml(oppName)}</span>
+        <span class="clock-time" data-clock-pi="${1 - myPlayerIdx}">${formatClockMs(oppMs)}</span>
+      </div>
+      <div class="clock my-clock ${myActive ? 'active' : ''} ${lowMine ? 'low' : ''}"
+           aria-label="${escapeHtml(myName)} clock">
+        <span class="clock-name">${escapeHtml(myName)}</span>
+        <span class="clock-time" data-clock-pi="${myPlayerIdx}">${formatClockMs(myMs)}</span>
+      </div>
+      ${canClaim ? `<button id="btn-claim-timeout" class="primary" type="button">Claim win on time</button>` : ''}
+    </div>`;
+}
+
+// Run a single requestAnimationFrame loop while an online game is active and
+// has clocks enabled. Updates only the active-side cell to avoid layout
+// thrash. Re-anchors from state.clocks + clock_server_ts every frame so it
+// stays in sync with the most-recently-received server snapshot/event.
+let _clockRafHandle = null;
+function startClockTicker() {
+  if (_clockRafHandle != null) return;
+  const tick = () => {
+    _clockRafHandle = null;
+    if (!active?.isOnline || !active.state || active.state.game_over) return;
+    const s = active.state;
+    if (!s.clocks || s.clock_active_index !== 0 && s.clock_active_index !== 1) {
+      _clockRafHandle = requestAnimationFrame(tick);
+      return;
+    }
+    const elapsed = Math.max(0, Date.now() - (s.clock_server_ts || Date.now()));
+    const activePi = s.clock_active_index;
+    const liveMs = Math.max(0, s.clocks[activePi] - elapsed);
+    const el = document.querySelector(`#game-header .clock-time[data-clock-pi="${activePi}"]`);
+    if (el) {
+      const newText = formatClockMs(liveMs);
+      if (el.textContent !== newText) el.textContent = newText;
+      // Add a "low" class to the clock container when under 30s.
+      const wrap = el.closest('.clock');
+      if (wrap) wrap.classList.toggle('low', liveMs < 30_000);
+      // If we just crossed zero and we're not the active side, surface the
+      // claim button by triggering a full refresh.
+      if (liveMs === 0 && activePi !== rolePlayerIndex(active)) {
+        const existing = document.getElementById('btn-claim-timeout');
+        if (!existing) refreshGame();
+      }
+    }
+    _clockRafHandle = requestAnimationFrame(tick);
+  };
+  _clockRafHandle = requestAnimationFrame(tick);
+}
+function stopClockTicker() {
+  if (_clockRafHandle != null) {
+    cancelAnimationFrame(_clockRafHandle);
+    _clockRafHandle = null;
+  }
+}
+
+async function claimTimeout(gameId) {
+  try {
+    const r = await fetch(`/api/games/${gameId}/claim-timeout`, { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      toast(body.error || 'Could not claim timeout.', { kind: 'warn' });
+      return;
+    }
+  } catch (_) {
+    toast('Network error — could not claim timeout.', { kind: 'error' });
+  }
+}
+function statusLabel(state, info, replay) {
   if (state.game_over) {
     const w = state.winner;
-    return `winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}`;
+    if (w === 1) return 'winner: Red';
+    if (w === 2) return 'winner: Black';
+    const lastKind = replay?.snapshots?.[replay.snapshots.length - 1]?.action?.kind;
+    return lastKind === "accept_draw" ? "draw" : "winner: —";
   }
   if (info.join_user_id == null || info.status === 'waiting') return 'waiting for opponent to join';
   return 'playing';
@@ -614,11 +950,18 @@ function onOnlineCellClick(idx, state) {
   if (state.game_over) return;
   if (state.replayViewing) return;
   if (state.side_to_move !== state.my_player_index) return;
+  // Pre-first-flip lock from a directed challenge: only the chosen first-mover
+  // may make the opening flip. Server rejects either way; we just avoid round-trips.
+  if (!state.first_flip_done
+      && (state.first_mover_index === 0 || state.first_mover_index === 1)
+      && state.first_mover_index !== state.my_player_index) return;
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me || [];
   if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
-      sendIntent({ kind: 'flip', cell: idx });
+      const drawOffer = active.offerDraw;
+      active.offerDraw = false;
+      sendIntent({ kind: 'flip', cell: idx, offer_draw: drawOffer });
       return;
     }
     if (c.state === 'faceup' && c.color === state.my_color &&
@@ -631,7 +974,9 @@ function onOnlineCellClick(idx, state) {
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
     active.selected = null;
-    sendIntent({ kind: 'move', from, to: idx });
+    const drawOffer = active.offerDraw;
+    active.offerDraw = false;
+    sendIntent({ kind: 'move', from, to: idx, offer_draw: drawOffer });
     return;
   }
   if (idx === active.selected) { active.selected = null; refreshGame(); return; }
@@ -675,14 +1020,18 @@ function flashCopied(label = 'Copied!') {
 async function openOTB() {
   showView('otb');
   await _moduleReady;
-  _startOTBGame();
+  const mode = normMode($('lobby-otb-mode')?.value);
+  _startOTBGame(mode);
 }
 
-function _startOTBGame() {
-  const game = Module.Game.create();
+function _startOTBGame(mode) {
+  const game = mode === 'capture_general'
+    ? Module.Game.createWithMode('capture_general')
+    : Module.Game.create();
   active = {
     isOTB: true,
     game,
+    mode,
     selected: null,
     replay: new Replay(),
   };
@@ -724,19 +1073,22 @@ function refreshOTB() {
     if (view.replayViewing) return;
     onLocalCellClick(idx, view, 'otb');
   });
+  const modeBadge = (active.mode && active.mode !== 'standard')
+    ? ` · ${modeLabel(active.mode)}`
+    : '';
   let banner;
   if (view.replayViewing) {
-    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}`;
+    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}`;
+    banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}${modeBadge}`;
   } else if (!view.first_flip_done) {
     banner = `Player 1 — flip a piece (your color is decided by your first flip)`;
   } else {
     const turnIdx = liveState.side_to_move;
     const sideName = turnIdx === 0 ? 'Player 1' : 'Player 2';
     const movingColor = turnIdx === 0 ? liveState.player0_color : liveState.player1_color;
-    banner = `${sideName}'s turn (${colorWord(movingColor)})`;
+    banner = `${sideName}'s turn (${colorWord(movingColor)})${modeBadge}`;
   }
   $('otb-banner').textContent = banner;
   $('otb-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
@@ -758,11 +1110,17 @@ function refreshOTB() {
   };
   const otbRematch = $('otb-rematch');
   otbRematch.classList.toggle('hidden', !view.game_over || view.replayViewing);
-  otbRematch.onclick = () => { _startOTBGame(); };
+  otbRematch.onclick = () => { _startOTBGame(active.mode); };
 
   renderTranscript($('otb-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshOTB(); },
+    onExport: (replay) => {
+      const pgn = exportPgn(replay, { players: ['Player 1', 'Player 2'], event: 'Banqi (over-the-board)' });
+      downloadPgn(pgn, `banqi-otb-${pgnFileStamp()}.pgn`);
+    },
   });
+  maybeShowTutorialTip($('otb-board'));
+  maybeShowGameOver(view);
 }
 function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
 
@@ -772,6 +1130,7 @@ function onLocalCellClick(idx, state, mode) {
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me || [];
   const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
+  const boardEl = $(mode === 'otb' ? 'otb-board' : 'ai-board');
   const sideToMove = state.side_to_move;
   if (mode === 'ai' && sideToMove !== state.my_player_index) return;
   if (mode === 'ai' && active.aiThinking) return;
@@ -782,10 +1141,12 @@ function onLocalCellClick(idx, state, mode) {
 
   if (active.selected == null) {
     if (c.state === 'facedown' && legal.some(m => m.from < 0 && m.to === idx)) {
-      try { localApply({ kind: 'flip', cell: idx }); }
+      let event = null;
+      try { event = localApply({ kind: 'flip', cell: idx }); }
       catch (e) { console.warn(e); }
       if (mode === 'ai') scheduleAIMove();
       refresh();
+      if (event) playEventAnimation(boardEl, event, {});
       return;
     }
     if (c.state === 'faceup' && c.color === myColorForClick &&
@@ -798,10 +1159,19 @@ function onLocalCellClick(idx, state, mode) {
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
     active.selected = null;
-    try { localApply({ kind: 'move', from, to: idx }); }
+    // Snapshot the source rect + piece before state changes for the move
+    // animation overlay.
+    const srcRect = captureCellRect(boardEl, from);
+    const srcCell = state.cells[from];
+    const piece = srcCell?.state === 'faceup'
+      ? { color: srcCell.color, glyph: srcCell.glyph }
+      : null;
+    let event = null;
+    try { event = localApply({ kind: 'move', from, to: idx }); }
     catch (e) { console.warn(e); }
     if (mode === 'ai') scheduleAIMove();
     refresh();
+    if (event) playEventAnimation(boardEl, event, { srcRect, piece });
     return;
   }
   if (idx === active.selected) { active.selected = null; refresh(); return; }
@@ -814,17 +1184,40 @@ const AI_THINK_DELAY_MS = 350;
 
 async function openAIGame() {
   const difficulty = $('lobby-ai-difficulty')?.value || Difficulty.MEDIUM;
+  const mode = normMode($('lobby-ai-mode')?.value);
+  // Signed-in non-guest users get a server-persisted AI game that shows up
+  // on their dashboard, contributes to Elo, and survives a refresh. Guests
+  // and logged-out users keep the local-only WASM flow.
+  if (me && !me.is_guest && online) {
+    try {
+      const res = await fetch('/api/games', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, opponent: 'ai:' + difficulty }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const g = await res.json();
+      location.hash = `#/g/${g.roomCode}`;
+      return;
+    } catch (e) {
+      toast('Could not start AI game. Falling back to local play.', { kind: 'warn' });
+      // fall through to local mode
+    }
+  }
   await _moduleReady;
-  _startAIGame(difficulty);
+  _startAIGame(difficulty, mode);
 }
 
-function _startAIGame(difficulty) {
+function _startAIGame(difficulty, mode = 'standard') {
   showView('ai');
-  const game = Module.Game.create();
+  const game = mode === 'capture_general'
+    ? Module.Game.createWithMode('capture_general')
+    : Module.Game.create();
   active = {
     isAI: true,
     game,
     difficulty,
+    mode,
     selected: null,
     aiThinking: false,
     replay: new Replay(),
@@ -849,7 +1242,8 @@ function _startAIGame(difficulty) {
   };
   $('ai-new-game').onclick = () => {
     const diff = active?.difficulty || Difficulty.MEDIUM;
-    _startAIGame(diff);
+    const m = active?.mode || 'standard';
+    _startAIGame(diff, m);
   };
   refreshAI();
 }
@@ -864,25 +1258,28 @@ function refreshAI() {
     onLocalCellClick(idx, view, 'ai');
   });
 
-  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard' }[active.difficulty] || '';
+  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
+  const modeBadge = (active.mode && active.mode !== 'standard')
+    ? ` · ${modeLabel(active.mode)}`
+    : '';
   let banner;
   if (view.replayViewing) {
-    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}`;
+    banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    if (w === view.my_color) banner = `You win! 🎉`;
-    else if (w !== 0)         banner = `AI wins. Better luck next time.`;
-    else                      banner = `Game over`;
+    if (w === view.my_color) banner = `You win! 🎉${modeBadge}`;
+    else if (w !== 0)         banner = `AI wins. Better luck next time.${modeBadge}`;
+    else                      banner = `Game over${modeBadge}`;
   } else if (!view.first_flip_done) {
-    banner = `Your turn — flip a piece to begin`;
+    banner = `Your turn — flip a piece to begin${modeBadge}`;
   } else if (view.side_to_move === 0) {
-    banner = `Your turn (${colorWord(view.my_color)})`;
+    banner = `Your turn (${colorWord(view.my_color)})${modeBadge}`;
   } else {
-    banner = active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(view.my_color === 1 ? 2 : 1)})`;
+    banner = (active.aiThinking ? `AI is thinking…` : `AI's turn (${colorWord(view.my_color === 1 ? 2 : 1)})`) + modeBadge;
   }
   $('ai-banner').textContent = banner;
   $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
-  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'easy' }[active.difficulty] || 'medium';
+  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'master', master: 'easy' }[active.difficulty] || 'medium';
   $('ai-meta').innerHTML = `
     <span class="meta-label">Difficulty</span>
     <button id="ai-diff-chip" class="diff-chip" type="button"
@@ -892,7 +1289,7 @@ function refreshAI() {
     active.difficulty = nextDiff;
     const sel = $('lobby-ai-difficulty');
     if (sel) sel.value = nextDiff;
-    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard'})[nextDiff]} on the next new game.`,
+    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert', master:'Master'})[nextDiff]} on the next new game.`,
           { kind: 'info', timeoutMs: 3000 });
     refreshAI();
   };
@@ -904,7 +1301,23 @@ function refreshAI() {
 
   renderTranscript($('ai-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshAI(); },
+    onExport: (replay) => {
+      const diff = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master' }[active.difficulty] || '';
+      const pgn = exportPgn(replay, {
+        players: ['You', `AI (${diff || active.difficulty})`],
+        event:   'Banqi (vs AI)',
+      });
+      downloadPgn(pgn, `banqi-ai-${pgnFileStamp()}.pgn`);
+    },
   });
+  maybeShowTutorialTip($('ai-board'));
+  maybeShowGameOver(view);
+}
+
+function pgnFileStamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 }
 
 function scheduleAIMove() {
@@ -923,72 +1336,106 @@ function scheduleAIMove() {
     if (fresh.game_over || fresh.side_to_move !== 1) {
       active.aiThinking = false; refreshAI(); return;
     }
+    let event = null;
+    let animCtx = {};
     try {
       const move = chooseMove(fresh, 1, active.difficulty);
       if (move) {
         const intent = move.from < 0
           ? { kind: 'flip', cell: move.to }
           : { kind: 'move', from: move.from, to: move.to };
-        localApply(intent);
+        const boardEl = $('ai-board');
+        if (intent.kind === 'move') {
+          // Capture source from the human's POV state — that's what the
+          // board element currently reflects.
+          const humanPov = JSON.parse(active.game.stateJson(0));
+          const srcCell = humanPov.cells[intent.from];
+          animCtx = {
+            srcRect: captureCellRect(boardEl, intent.from),
+            piece: srcCell?.state === 'faceup'
+              ? { color: srcCell.color, glyph: srcCell.glyph }
+              : null,
+          };
+        }
+        event = localApply(intent);
       }
     } catch (e) { console.warn('AI move error:', e); }
     active.aiThinking = false;
     refreshAI();
+    if (event) playEventAnimation($('ai-board'), event, animCtx);
   }, AI_THINK_DELAY_MS);
 }
 
 // ---- shared rendering ----
 const PIECE_NAMES = ['', 'Soldier', 'Cannon', 'Horse', 'Chariot', 'Elephant', 'Advisor', 'General'];
+const PIECE_TYPE_TOTALS = [0, 5, 2, 2, 2, 2, 2, 1]; // count of each type per color (index = type rank)
+const PIECE_GLYPHS = {
+  1: ['', '兵', '炮', '傌', '俥', '相', '仕', '帥'],
+  2: ['', '卒', '砲', '馬', '車', '象', '士', '將'],
+};
+// Display order: General → Soldier (rank high to low).
+const PIECE_TYPE_DISPLAY_ORDER = [7, 6, 5, 4, 3, 2, 1];
 
 function pieceCounts(cells, replay) {
-  let shown_red = 0, shown_black = 0;
+  const shown = { 1: [0, 0, 0, 0, 0, 0, 0, 0], 2: [0, 0, 0, 0, 0, 0, 0, 0] };
   for (const c of cells) {
-    if (c.state === 'faceup') {
-      if (c.color === 1) shown_red++;
-      else if (c.color === 2) shown_black++;
+    if (c.state === 'faceup' && (c.color === 1 || c.color === 2) && c.type >= 1 && c.type <= 7) {
+      shown[c.color][c.type]++;
     }
   }
-  const captured_red_pieces = [];
-  const captured_black_pieces = [];
+  const captured = { 1: [0, 0, 0, 0, 0, 0, 0, 0], 2: [0, 0, 0, 0, 0, 0, 0, 0] };
   if (replay) {
     const upTo = replay.isLive()
       ? replay.snapshots.length
       : (replay.viewIndex >= 0 ? replay.viewIndex + 1 : 0);
     for (let i = 0; i < upTo; i++) {
       const cap = replay.snapshots[i]?.capture;
-      if (!cap) continue;
-      const piece = { type: cap.type, glyph: cap.glyph || ZH_GLYPH[cap.color]?.[cap.type] || '?' };
-      if (cap.color === 1) captured_red_pieces.push(piece);
-      else if (cap.color === 2) captured_black_pieces.push(piece);
+      if (cap && (cap.color === 1 || cap.color === 2) && cap.type >= 1 && cap.type <= 7) {
+        captured[cap.color][cap.type]++;
+      }
     }
   }
-  const captured_red = captured_red_pieces.length;
-  const captured_black = captured_black_pieces.length;
-  return {
-    red:   { shown: shown_red,   hidden: 16 - shown_red   - captured_red,   captured: captured_red,   capturedPieces: captured_red_pieces   },
-    black: { shown: shown_black, hidden: 16 - shown_black - captured_black, captured: captured_black, capturedPieces: captured_black_pieces },
+  const build = (color) => {
+    const byType = {};
+    let shownTotal = 0, hiddenTotal = 0, capturedTotal = 0;
+    for (let t = 1; t <= 7; t++) {
+      const s = shown[color][t];
+      const cap = captured[color][t];
+      const h = Math.max(0, PIECE_TYPE_TOTALS[t] - s - cap);
+      byType[t] = { shown: s, hidden: h, captured: cap };
+      shownTotal += s; hiddenTotal += h; capturedTotal += cap;
+    }
+    return { shown: shownTotal, hidden: hiddenTotal, captured: capturedTotal, byType };
   };
+  return { red: build(1), black: build(2) };
 }
 
 function renderPieceCountsHtml(counts) {
-  const graveyard = (cls, pieces) => {
-    if (!pieces.length) {
-      return `<span class="pc-graveyard pc-graveyard-empty" aria-label="Captured: 0">—</span>`;
+  const breakdown = (colorVal, byType, category) => {
+    const glyphs = PIECE_GLYPHS[colorVal];
+    const parts = [];
+    for (const t of PIECE_TYPE_DISPLAY_ORDER) {
+      const n = byType[t][category];
+      if (n > 0) {
+        const name = PIECE_NAMES[t];
+        const label = `${name} ${category}: ${n}`;
+        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}">${glyphs[t]}<span class="pc-chip-n">${n}</span></span>`);
+      }
     }
-    const sorted = [...pieces].sort((a, b) => b.type - a.type);
-    const glyphs = sorted
-      .map(p => `<span class="pc-grave-glyph ${cls}">${p.glyph}</span>`)
-      .join('');
-    return `<span class="pc-graveyard" aria-label="Captured: ${pieces.length}">${glyphs}</span>`;
+    return parts.length
+      ? `<span class="pc-breakdown" aria-hidden="false">${parts.join('')}</span>`
+      : '';
   };
-  const row = (label, cls, c) =>
-    `<div class="pc-row">
-      <span class="pc-side ${cls}">${label}</span>
-      <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}</span>
-      <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}</span>
-      <span class="pc-stat pc-stat-grave"><span class="pc-label">Capt</span> ${graveyard(cls, c.capturedPieces)}</span>
+  const row = (label, sideGlyph, cls, colorVal, c) =>
+    `<div class="pc-row pc-row-${cls}">
+      <span class="pc-side ${cls}" aria-label="${label}">
+        <span class="pc-glyph" aria-hidden="true">${sideGlyph}</span>${label}
+      </span>
+      <span class="pc-stat"><span class="pc-label">Shown</span> ${c.shown}${breakdown(colorVal, c.byType, 'shown')}</span>
+      <span class="pc-stat"><span class="pc-label">Hidden</span> ${c.hidden}${breakdown(colorVal, c.byType, 'hidden')}</span>
+      <span class="pc-stat"><span class="pc-label">Capt</span> ${c.captured}${breakdown(colorVal, c.byType, 'captured')}</span>
     </div>`;
-  return `<div class="piece-counts">${row('Red', 'red', counts.red)}${row('Black', 'black', counts.black)}</div>`;
+  return `<div class="piece-counts">${row('Red', '帥', 'red', 1, counts.red)}${row('Black', '將', 'black', 2, counts.black)}</div>`;
 }
 
 function cellAriaLabel(idx, cell, opts = {}) {
@@ -1155,11 +1602,14 @@ async function renderDashboard() {
     const tag = g.status === 'complete'  ? 'complete'
               : g.status === 'waiting'   ? 'awaiting opponent'
               : 'in progress';
+    const modeBit = (g.mode && g.mode !== 'standard')
+      ? ` · ${escapeHtml(modeLabel(g.mode))}`
+      : '';
     return `<div class="game-row" data-game-id="${g.id}" data-room="${escapeHtml(g.room_code)}">
               <a class="game-row-link" href="#/g/${g.room_code}">
                 <div class="g-opp">vs ${escapeHtml(opp)}</div>
                 <div class="g-status">${tag}</div>
-                <div class="g-meta muted">${ts} · room ${g.room_code}</div>
+                <div class="g-meta muted">${ts} · room ${g.room_code}${modeBit}</div>
               </a>
               <button class="game-row-delete" type="button"
                       title="Remove from my games"
@@ -1347,11 +1797,20 @@ async function renderProfile(userId) {
   }
   const h2h = p.head_to_head || [];
   const isSelf = me && p.id === me.id;
-  const challengeBlock = (me && !isSelf) ? `
-    <div class="row" style="margin:12px 0">
-      <button id="btn-challenge" class="primary">Challenge to a game</button>
-      <span class="muted small">Sends a match request. They have to be a friend or someone you've played before.</span>
-    </div>` : '';
+  const isAi = p.provider === 'ai';
+  // AI profiles get a "Play vs <difficulty>" CTA instead of the human
+  // challenge button — match requests and friending are blocked server-side
+  // for AI rows, so we shouldn't offer those affordances here either.
+  const challengeBlock = isAi
+    ? (me && !me.is_guest ? `
+        <div class="row" style="margin:12px 0">
+          <button id="btn-play-ai-from-profile" class="primary">Play Banqi AI · ${escapeHtml((p.provider_id || '').replace(/^./, (c) => c.toUpperCase()))}</button>
+        </div>` : '')
+    : (me && !isSelf ? `
+        <div class="row" style="margin:12px 0">
+          <button id="btn-challenge" class="primary">Challenge to a game</button>
+          <span class="muted small">Sends a match request. They have to be a friend or someone you've played before.</span>
+        </div>` : '');
   $('profile-body').innerHTML = `
     <h2>${escapeHtml(p.display_name)}</h2>
     <div><b>Elo:</b> ${p.elo}</div>
@@ -1368,8 +1827,28 @@ async function renderProfile(userId) {
       <h3>Danger zone</h3>
       <p class="muted">Deleting your account anonymizes your past games and removes your sign-in. This cannot be undone.</p>
       <button id="btn-delete-account" class="link-btn" style="color:#d24343">Delete my account…</button>` : ''}`;
-  if (challengeBlock) {
-    $('btn-challenge').onclick = () => challengePlayer(p.id);
+  if (challengeBlock && !isAi) {
+    $('btn-challenge').onclick = () => {
+      location.hash = `#/challenge/${p.id}`;
+    };
+  }
+  if (isAi && $('btn-play-ai-from-profile')) {
+    $('btn-play-ai-from-profile').onclick = async () => {
+      const mode = await pickChallengeMode();
+      if (mode == null) return;
+      try {
+        const res = await fetch('/api/games', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, opponent: 'ai:' + p.provider_id }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const g = await res.json();
+        location.hash = `#/g/${g.roomCode}`;
+      } catch (e) {
+        toast('Could not start AI game.', { kind: 'error' });
+      }
+    };
   }
   if (isSelf) {
     $('btn-delete-account').onclick = async () => {
@@ -1386,23 +1865,303 @@ async function renderProfile(userId) {
 
 // ---- friends + match requests ----
 
-async function challengePlayer(toUserId) {
-  if (!me) return;
+async function challengePlayer(toUserId, opts = {}) {
+  if (!me) return null;
+  const mode = normMode(opts.mode);
+  const firstMoverPref = normFirstMoverPref(opts.first_mover_pref);
+  const message = (typeof opts.message === 'string') ? opts.message.trim() : '';
+  const body = {
+    to_user_id: toUserId,
+    mode,
+    first_mover_pref: firstMoverPref,
+  };
+  if (message) body.message = message;
+  if (Number.isInteger(opts.time_limit_ms)) body.time_limit_ms = opts.time_limit_ms;
+  if (Number.isInteger(opts.increment_ms) && opts.increment_ms > 0) {
+    body.increment_ms = opts.increment_ms;
+  }
   const res = await fetch('/api/match-requests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to_user_id: toUserId }),
+    body: JSON.stringify(body),
   });
-  const body = await res.json().catch(() => ({}));
+  const responseBody = await res.json().catch(() => ({}));
   if (res.status === 403) {
-    toast(body.error || 'Become friends first to challenge each other.', { kind: 'warn' });
-    return;
+    toast(responseBody.error || 'Become friends first to challenge each other.', { kind: 'warn' });
+    return null;
   }
   if (!res.ok) {
-    toast(body.error || 'Could not send challenge.', { kind: 'error' });
+    toast(responseBody.error || 'Could not send challenge.', { kind: 'error' });
+    return null;
+  }
+  const tcChip = body.time_limit_ms ? ` · ${timeControlLabel(body.time_limit_ms, body.increment_ms || 0)}` : '';
+  toast(`Challenge sent (${modeLabel(mode)}${tcChip}).`, { kind: 'success' });
+  return responseBody;
+}
+
+const FIRST_MOVER_PREFS = ['challenger', 'opponent', 'random'];
+function normFirstMoverPref(p) {
+  return FIRST_MOVER_PREFS.includes(p) ? p : 'random';
+}
+
+// Time-control presets surfaced in the challenge picker. value === '' is
+// the special "unlimited" sentinel; 'custom' opens the inline number inputs.
+// Each preset is { base_min, inc_sec } in human units.
+const TIME_CONTROL_PRESETS = [
+  { value: '',         label: 'Unlimited' },
+  { value: '1+0',      label: '1 + 0',   base_min: 1,  inc_sec: 0  },
+  { value: '3+0',      label: '3 + 0',   base_min: 3,  inc_sec: 0  },
+  { value: '3+2',      label: '3 + 2',   base_min: 3,  inc_sec: 2  },
+  { value: '5+0',      label: '5 + 0',   base_min: 5,  inc_sec: 0  },
+  { value: '5+3',      label: '5 + 3',   base_min: 5,  inc_sec: 3  },
+  { value: '10+0',     label: '10 + 0',  base_min: 10, inc_sec: 0  },
+  { value: '10+5',     label: '10 + 5',  base_min: 10, inc_sec: 5  },
+  { value: '15+10',    label: '15 + 10', base_min: 15, inc_sec: 10 },
+  { value: '30+0',     label: '30 + 0',  base_min: 30, inc_sec: 0  },
+  { value: 'custom',   label: 'Custom…' },
+];
+
+// Render a human label for a (time_limit_ms, increment_ms) pair. Returns
+// 'Unlimited' when there's no clock, otherwise 'minutes+seconds'.
+function timeControlLabel(timeLimitMs, incrementMs = 0) {
+  if (timeLimitMs == null) return 'Unlimited';
+  const baseMin = Math.round(timeLimitMs / 60000);
+  const incSec  = Math.round((incrementMs || 0) / 1000);
+  return `${baseMin}+${incSec}`;
+}
+
+// Per-perspective chip text. Outgoing = the viewer is the challenger;
+// incoming = the viewer is the recipient. 'random' renders no chip (it's
+// the default, no need to clutter the row).
+function firstMoverChipText(pref, perspective) {
+  if (pref === 'random' || !pref) return null;
+  if (perspective === 'outgoing') {
+    return pref === 'challenger' ? 'You flip first' : 'They flip first';
+  }
+  return pref === 'challenger' ? 'They flip first' : 'You flip first';
+}
+
+function matchRequestChips(req, perspective) {
+  const parts = [
+    `<span class="mode-chip small">${escapeHtml(modeLabel(normMode(req.mode)))}</span>`,
+  ];
+  const fm = firstMoverChipText(req.first_mover_pref, perspective);
+  if (fm) parts.push(`<span class="mode-chip small">${escapeHtml(fm)}</span>`);
+  // Only show a TC chip when there's actually a clock; "Unlimited" is the
+  // default and would clutter every row.
+  if (req.time_limit_ms != null) {
+    parts.push(`<span class="mode-chip small">${escapeHtml(timeControlLabel(req.time_limit_ms, req.increment_ms || 0))}</span>`);
+  }
+  return parts.join(' ');
+}
+
+// Minimal mode-only modal used by the AI profile button ("Play Banqi AI · X").
+// AI games are created via POST /api/games and don't carry first-mover / TC /
+// message; the full challenge-details screen is reserved for human directed
+// challenges. Resolves to the chosen mode string, or null if cancelled.
+function pickChallengeMode() {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(null); return; }
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cm-title" tabindex="-1">
+        <h2 id="cm-title">Start game</h2>
+        <p class="modal-body">Pick the win condition for this match.</p>
+        <div class="row" style="margin:8px 0 16px">
+          <label for="cm-mode">Win condition</label>
+          <select id="cm-mode">
+            <option value="standard" selected>Standard (no legal moves)</option>
+            <option value="capture_general">Capture the General</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel">Cancel</button>
+          <button type="button" class="btn-confirm primary">Start</button>
+        </div>
+      </div>`;
+    const close = (result) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+    };
+    overlay.querySelector('.btn-cancel').addEventListener('click', () => close(null));
+    overlay.querySelector('.btn-confirm').addEventListener('click', () => {
+      const v = overlay.querySelector('#cm-mode').value;
+      close(normMode(v));
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    overlay.querySelector('.btn-confirm').focus();
+  });
+}
+
+// Full-screen view the challenger lands on after clicking "Challenge". Lets
+// them pick the win condition, who flips first, and an optional message,
+// then sends the match request via challengePlayer().
+async function renderChallengeDetails(targetUserId) {
+  showView('challenge');
+  const body = $('challenge-body');
+  if (!me) {
+    body.innerHTML = `<div class="muted">Sign in to send a challenge. <a href="#/">Lobby</a></div>`;
     return;
   }
-  toast('Challenge sent.', { kind: 'success' });
+  if (me.id === targetUserId) {
+    body.innerHTML = `<div class="err">You can't challenge yourself. <a href="#/friends">Friends</a></div>`;
+    return;
+  }
+  if (!online) {
+    body.innerHTML = `<div class="muted">You're offline — can't send a challenge right now. <a href="#/">Lobby</a></div>`;
+    return;
+  }
+  body.innerHTML = `<div class="muted">Loading…</div>`;
+  let opponent;
+  try {
+    const r = await fetch(`/api/users/${targetUserId}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    opponent = await r.json();
+  } catch (_) {
+    body.innerHTML = `<div class="err">Couldn't load that player. <a href="#/friends">Friends</a></div>`;
+    return;
+  }
+  body.innerHTML = `
+    <div class="challenge-details">
+      <p class="muted">Sending a challenge to <b>${escapeHtml(opponent.display_name)}</b>
+         <span class="muted small">(Elo ${opponent.elo})</span>.
+         They'll see this request in their Friends page and can accept, decline, or ignore it.</p>
+
+      <fieldset class="challenge-section">
+        <legend>Win condition</legend>
+        <label class="radio-row">
+          <input type="radio" name="cd-mode" value="standard" checked>
+          <span><b>Standard</b> <span class="muted small">— you lose if you have no legal move.</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-mode" value="capture_general">
+          <span><b>Capture the General</b> <span class="muted small">— win by capturing the opposing General.</span></span>
+        </label>
+      </fieldset>
+
+      <fieldset class="challenge-section">
+        <legend>Who flips first</legend>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="random" checked>
+          <span><b>Random</b> <span class="muted small">— decided when they accept.</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="challenger">
+          <span><b>I flip first</b> <span class="muted small">— I'll make the opening flip (claiming that color).</span></span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="cd-first" value="opponent">
+          <span><b>${escapeHtml(opponent.display_name)} flips first</b> <span class="muted small">— they make the opening flip.</span></span>
+        </label>
+      </fieldset>
+
+      <fieldset class="challenge-section">
+        <legend>Time control</legend>
+        <div class="row">
+          <label for="cd-tc-preset">Pace</label>
+          <select id="cd-tc-preset">
+            ${TIME_CONTROL_PRESETS.map(p =>
+              `<option value="${escapeHtml(p.value)}"${p.value === '' ? ' selected' : ''}>${escapeHtml(p.label)}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div id="cd-tc-custom" class="row hidden" style="margin-top:8px">
+          <label for="cd-tc-base">Base minutes</label>
+          <input id="cd-tc-base" type="number" min="1" max="180" step="1" value="5" inputmode="numeric">
+          <label for="cd-tc-inc">Increment seconds</label>
+          <input id="cd-tc-inc"  type="number" min="0" max="60"  step="1" value="0" inputmode="numeric">
+        </div>
+        <div class="muted small" id="cd-tc-help">No clock — players take as long as they want.</div>
+      </fieldset>
+
+      <fieldset class="challenge-section">
+        <legend>Message <span class="muted small">(optional)</span></legend>
+        <textarea id="cd-message" maxlength="280" rows="3"
+                  placeholder="Add a note for your opponent — they'll see it on their incoming request."></textarea>
+        <div class="muted small"><span id="cd-message-count">0</span> / 280</div>
+      </fieldset>
+
+      <div class="row challenge-actions">
+        <button type="button" id="cd-cancel" class="link-btn">Cancel</button>
+        <button type="button" id="cd-send" class="primary">Send challenge</button>
+      </div>
+    </div>`;
+
+  const messageEl = $('cd-message');
+  const countEl = $('cd-message-count');
+  messageEl.addEventListener('input', () => {
+    countEl.textContent = String(messageEl.value.length);
+  });
+
+  const tcPresetEl = $('cd-tc-preset');
+  const tcCustomEl = $('cd-tc-custom');
+  const tcBaseEl   = $('cd-tc-base');
+  const tcIncEl    = $('cd-tc-inc');
+  const tcHelpEl   = $('cd-tc-help');
+  const refreshTcUI = () => {
+    const v = tcPresetEl.value;
+    tcCustomEl.classList.toggle('hidden', v !== 'custom');
+    const tc = readTcFromPicker();
+    if (tc.time_limit_ms == null) {
+      tcHelpEl.textContent = 'No clock — players take as long as they want.';
+    } else {
+      const baseMin = Math.round(tc.time_limit_ms / 60000);
+      const incSec  = Math.round(tc.increment_ms / 1000);
+      tcHelpEl.textContent = `${baseMin} minute${baseMin === 1 ? '' : 's'} per side, +${incSec}s per move.`;
+    }
+  };
+  function readTcFromPicker() {
+    const v = tcPresetEl.value;
+    if (v === '') return { time_limit_ms: null, increment_ms: 0 };
+    if (v === 'custom') {
+      const baseMin = Math.max(1, Math.min(180, parseInt(tcBaseEl.value, 10) || 0));
+      const incSec  = Math.max(0, Math.min(60,  parseInt(tcIncEl.value,  10) || 0));
+      return { time_limit_ms: baseMin * 60000, increment_ms: incSec * 1000 };
+    }
+    const preset = TIME_CONTROL_PRESETS.find(p => p.value === v);
+    if (!preset) return { time_limit_ms: null, increment_ms: 0 };
+    return {
+      time_limit_ms: preset.base_min * 60000,
+      increment_ms:  preset.inc_sec  * 1000,
+    };
+  }
+  tcPresetEl.addEventListener('change', refreshTcUI);
+  tcBaseEl.addEventListener('input', refreshTcUI);
+  tcIncEl.addEventListener('input', refreshTcUI);
+  refreshTcUI();
+
+  $('cd-cancel').addEventListener('click', () => {
+    if (history.length > 1) history.back();
+    else location.hash = `#/profile/${targetUserId}`;
+  });
+
+  $('cd-send').addEventListener('click', async (e) => {
+    const sendBtn = e.currentTarget;
+    sendBtn.disabled = true;
+    const mode = body.querySelector('input[name="cd-mode"]:checked')?.value || 'standard';
+    const firstMoverPref = body.querySelector('input[name="cd-first"]:checked')?.value || 'random';
+    const message = messageEl.value || '';
+    const tc = readTcFromPicker();
+    const result = await challengePlayer(targetUserId, {
+      mode, first_mover_pref: firstMoverPref, message,
+      time_limit_ms: tc.time_limit_ms, increment_ms: tc.increment_ms,
+    });
+    if (!result) {
+      sendBtn.disabled = false;
+      return;
+    }
+    location.hash = '#/friends';
+  });
 }
 
 async function addFriendByToken(combined) {
@@ -1501,11 +2260,15 @@ async function renderFriends() {
     ${incoming.length === 0 ? `<div class="muted">No pending requests.</div>` :
       `<ul class="friends-req-list">${incoming.map(r => `
         <li data-req="${r.id}">
-          <span><b>${escapeHtml(r.from_name || '')}</b> wants to play</span>
-          <span class="row">
-            <button class="primary" data-action="accept" data-req="${r.id}">Accept</button>
-            <button class="link-btn" data-action="decline" data-req="${r.id}">Decline</button>
-          </span>
+          <div class="req-summary">
+            <span><b>${escapeHtml(r.from_name || '')}</b> wants to play
+              ${matchRequestChips(r, 'incoming')}</span>
+            <span class="row">
+              <button class="primary" data-action="accept" data-req="${r.id}">Accept</button>
+              <button class="link-btn" data-action="decline" data-req="${r.id}">Decline</button>
+            </span>
+          </div>
+          ${r.message ? `<div class="req-message">“${escapeHtml(r.message)}”</div>` : ''}
         </li>`).join('')}</ul>`}`;
 
   const outgoing = requests?.outgoing || [];
@@ -1514,8 +2277,12 @@ async function renderFriends() {
     ${outgoing.length === 0 ? `<div class="muted">No outgoing requests.</div>` :
       `<ul class="friends-req-list">${outgoing.map(r => `
         <li data-req="${r.id}">
-          <span>Sent to <b>${escapeHtml(r.to_name || '')}</b></span>
-          <button class="link-btn" data-action="cancel" data-req="${r.id}">Cancel</button>
+          <div class="req-summary">
+            <span>Sent to <b>${escapeHtml(r.to_name || '')}</b>
+              ${matchRequestChips(r, 'outgoing')}</span>
+            <button class="link-btn" data-action="cancel" data-req="${r.id}">Cancel</button>
+          </div>
+          ${r.message ? `<div class="req-message">“${escapeHtml(r.message)}”</div>` : ''}
         </li>`).join('')}</ul>`}`;
 
   // Friends list + per-friend Challenge + Remove.
@@ -1556,8 +2323,7 @@ async function renderFriends() {
         if (!res.ok) toast('Could not cancel.', { kind: 'error' });
         renderFriends();
       } else if (action === 'challenge' && friendId) {
-        await challengePlayer(friendId);
-        renderFriends();
+        location.hash = `#/challenge/${friendId}`;
       } else if (action === 'remove' && friendId) {
         const ok = await confirmModal({
           title: 'Remove this friend?',
@@ -1740,6 +2506,168 @@ function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel'
   });
 }
 
+// ---- game-over celebration modal ----
+// outcome: 'win' | 'loss' | 'draw'
+// actions: array of { label, onClick, primary, danger }
+function showGameOverModal({ outcome, title, subtitle, actions = [] }) {
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  const previouslyFocused = document.activeElement;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+
+  const glyph = outcome === 'win' ? '勝' : outcome === 'loss' ? '敗' : '和';
+  const glyphCls = outcome === 'win' ? 'win' : outcome === 'loss' ? 'loss' : 'draw';
+
+  overlay.innerHTML = `
+    <div class="modal game-over-modal" role="dialog" aria-modal="true"
+         aria-labelledby="go-title" tabindex="-1">
+      ${outcome === 'win' ? '<div class="confetti" aria-hidden="true"></div>' : ''}
+      <div class="go-glyph ${glyphCls}" aria-hidden="true">${glyph}</div>
+      <h2 id="go-title">${escapeHtml(title)}</h2>
+      ${subtitle ? `<p class="go-sub">${escapeHtml(subtitle)}</p>` : ''}
+      <div class="modal-actions"></div>
+    </div>`;
+
+  const actionsEl = overlay.querySelector('.modal-actions');
+  for (const a of actions) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = a.label;
+    if (a.primary) btn.className = 'primary';
+    else if (a.danger) btn.className = 'btn-danger';
+    btn.addEventListener('click', () => {
+      try { a.onClick?.(); } finally { close(); }
+    });
+    actionsEl.appendChild(btn);
+  }
+
+  if (outcome === 'win') seedConfetti(overlay.querySelector('.confetti'));
+
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey, true);
+    try { previouslyFocused?.focus?.(); } catch (_) {}
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); }
+  };
+  document.addEventListener('keydown', onKey, true);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  root.appendChild(overlay);
+  overlay.querySelector('.modal').focus();
+}
+
+function seedConfetti(container) {
+  if (!container) return;
+  const colors = ['#ffb43a', '#ffc868', '#d24343', '#6ec96e', '#6ea4ff', '#e0e0e0'];
+  for (let i = 0; i < 28; i++) {
+    const s = document.createElement('span');
+    s.style.left = `${Math.random() * 100}%`;
+    s.style.background = colors[i % colors.length];
+    s.style.animationDelay = `${Math.random() * 0.4}s`;
+    s.style.borderRadius = Math.random() < 0.5 ? '50%' : '2px';
+    s.style.transform = `rotate(${Math.random() * 360}deg)`;
+    container.appendChild(s);
+  }
+}
+
+// Decides what to show in the game-over modal for the current active session
+// and triggers it (idempotent — calls itself only once per game).
+function maybeShowGameOver(view) {
+  if (!view?.game_over) return;
+  if (!active || active._gameOverShown) return;
+  active._gameOverShown = true;
+
+  const winner = view.winner;
+  // Online: my_color is the side YOU play. If winner === my_color, you won.
+  // OTB: nobody is "you"; use a generic banner.
+  // AI: my_color === 1 for player 0 (human).
+  let outcome, title, subtitle;
+  if (active.isOnline) {
+    const myColor = view.my_color;
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
+    else if (winner === myColor) { outcome = 'win'; title = 'You win!'; subtitle = 'Nicely played.'; }
+    else { outcome = 'loss'; title = 'You lost'; subtitle = 'Good game — review the moves to learn.'; }
+  } else if (active.isAI) {
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
+    else if (winner === view.my_color) { outcome = 'win'; title = 'You beat the AI!'; subtitle = 'Try a harder difficulty.'; }
+    else { outcome = 'loss'; title = 'The AI wins'; subtitle = "Try again — the AI doesn't get tired."; }
+  } else {
+    // OTB
+    const name = winner === 1 ? 'Red' : winner === 2 ? 'Black' : null;
+    outcome = name ? 'win' : 'draw';
+    title = name ? `${name} wins!` : "It's a draw";
+    subtitle = name ? 'Good game.' : null;
+  }
+
+  const actions = [];
+  if (active.isAI) {
+    actions.push({ label: 'New game', primary: true, onClick: () => {
+      const diff = active?.difficulty || Difficulty.MEDIUM;
+      const m = active?.mode || 'standard';
+      _startAIGame(diff, m);
+    }});
+    actions.push({ label: 'Review moves', onClick: () => {} });
+  } else if (active.isOTB) {
+    actions.push({ label: 'New game', primary: true, onClick: () => { openOTB(); }});
+    actions.push({ label: 'Lobby', onClick: () => { location.hash = '#/'; }});
+  } else {
+    actions.push({ label: 'Lobby', primary: true, onClick: () => { location.hash = '#/'; }});
+    actions.push({ label: 'Review moves', onClick: () => {} });
+  }
+
+  showGameOverModal({ outcome, title, subtitle, actions });
+}
+
+// ---- contextual tutorial tooltip (first-time players) ----
+function maybeShowTutorialTip(boardEl) {
+  try {
+    if (localStorage.getItem('banqi.tutorial-seen') === '1') return;
+  } catch (_) { return; }
+  // Only show on the very first board view (a fresh game with all cells
+  // face-down).
+  const facedown = boardEl.querySelectorAll('.cell.facedown');
+  if (facedown.length < 30) return;  // not a fresh game
+  if (document.querySelector('.tutorial-tip')) return;  // already showing
+
+  // Anchor near a face-down piece in the middle of the board.
+  const anchor = boardEl.querySelector('[data-cell-index="10"]') || facedown[0];
+  if (!anchor) return;
+  const r = anchor.getBoundingClientRect();
+
+  const tip = document.createElement('div');
+  tip.className = 'tutorial-tip';
+  tip.setAttribute('role', 'note');
+  tip.innerHTML = `
+    <div><strong>Click any face-down piece to start.</strong></div>
+    <div style="margin-top:4px;font-weight:400;font-size:12px;">
+      The piece you reveal sets your color for the game.
+    </div>
+    <button type="button" class="tip-dismiss">Got it</button>`;
+  document.body.appendChild(tip);
+  // Position below the anchor, clamped to viewport.
+  const tipRect = tip.getBoundingClientRect();
+  let left = r.left + r.width / 2 - tipRect.width / 2;
+  let top = r.bottom + 10;
+  left = Math.max(8, Math.min(left, window.innerWidth - tipRect.width - 8));
+  if (top + tipRect.height > window.innerHeight - 8) {
+    top = r.top - tipRect.height - 10;
+  }
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+
+  const dismiss = () => {
+    try { localStorage.setItem('banqi.tutorial-seen', '1'); } catch (_) {}
+    tip.remove();
+  };
+  tip.querySelector('.tip-dismiss').addEventListener('click', dismiss);
+  // Auto-dismiss on first click of any cell.
+  const onAnyClick = () => { dismiss(); boardEl.removeEventListener('click', onAnyClick, true); };
+  boardEl.addEventListener('click', onAnyClick, true);
+}
+
 // ---- utils ----
 function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, (c) =>
@@ -1747,14 +2675,6 @@ function escapeHtml(s) {
 }
 
 // ---- boot ----
-function initCribDefault() {
-  const details = document.getElementById('crib-details');
-  if (!details) return;
-  const small = window.matchMedia('(max-width: 700px)');
-  details.open = !small.matches;
-}
-initCribDefault();
-
 document.addEventListener('keydown', (e) => {
   if (e.key !== '?') return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1768,4 +2688,5 @@ const btnHelp = document.getElementById('btn-keyboard-help');
 if (btnHelp) btnHelp.addEventListener('click', showKeyboardHelp);
 
 await refreshSession();
+applyNavAuthState();
 route();

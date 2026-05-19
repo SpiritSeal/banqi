@@ -119,10 +119,52 @@ CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
 
 -- Drop legacy federated-relay tables / columns if present. The server-
 -- authoritative model persists moves via game_state + game_events; end-of-
--- game claims are unnecessary now that the server decides terminal state;
--- and there's only one game mode.
+-- game claims are unnecessary now that the server decides terminal state.
 DROP TABLE IF EXISTS finalize_claims;
 DROP TABLE IF EXISTS messages;
-ALTER TABLE games           DROP COLUMN IF EXISTS mode;
 ALTER TABLE games           DROP COLUMN IF EXISTS tip_hash;
-ALTER TABLE match_requests  DROP COLUMN IF EXISTS mode;
+
+-- Game mode. 'standard' = classic Banqi (no-legal-moves loses). 'capture_general'
+-- = win by capturing the opponent's General. Carried on the games row and (when
+-- the game was created via a directed challenge) on the originating match request.
+ALTER TABLE games          ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'standard';
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'standard';
+
+-- Optional rules carried from a directed challenge. The challenger picks
+-- these on the challenge-details screen; on accept they propagate onto the
+-- games row.
+--   first_mover_pref:    who must make the first flip — 'challenger' (the
+--                        request sender), 'opponent' (the recipient), or
+--                        'random' (resolved at accept time).
+--   first_mover_index:   resolved seat index on the game: 0 = host (= the
+--                        challenger), 1 = join (= the acceptor). NULL on
+--                        games not created via a directed challenge, which
+--                        keeps the legacy free-for-all "either side flips
+--                        first" behavior.
+--   message:             optional free-text note the challenger attaches.
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS first_mover_pref TEXT NOT NULL DEFAULT 'random';
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS message          TEXT;
+ALTER TABLE games          ADD COLUMN IF NOT EXISTS first_mover_index INTEGER;
+
+-- Optional chess-style time control. NULL time_limit_ms = unlimited (no clock
+-- runs). increment_ms is the per-move bonus added after a player's move
+-- completes (Fischer style). Both fields ride from the match request onto
+-- the games row at accept time.
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS time_limit_ms INTEGER;
+ALTER TABLE match_requests ADD COLUMN IF NOT EXISTS increment_ms  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE games          ADD COLUMN IF NOT EXISTS time_limit_ms INTEGER;
+ALTER TABLE games          ADD COLUMN IF NOT EXISTS increment_ms  INTEGER NOT NULL DEFAULT 0;
+
+-- Live clock state for games with a time limit. Refreshed atomically with
+-- game_state on each event. JSON shape:
+--   { clocks: { "0": ms_left, "1": ms_left },
+--     active_index: 0 | 1 | null,
+--     timeout_loser: 0 | 1 | null }
+-- On rehydrate after a server restart, active_index + clocks resume; the
+-- gap-during-downtime is forfeited to the active player (we reset
+-- activeSince to now) rather than the loser, on the gentler side.
+ALTER TABLE games ADD COLUMN IF NOT EXISTS clock_state_json TEXT;
+
+-- Why a player lost (for analytics / "Won on time" UI). NULL for wins and
+-- draws. Today only 'timeout' is written; resignations remain unmarked.
+ALTER TABLE elo_history ADD COLUMN IF NOT EXISTS loss_reason TEXT;

@@ -2,11 +2,16 @@
 //   * move + capture: real wooden-clack sample (CC0 from freesound.org,
 //     "Small Wood Piece Sound" by qubodup, id 822567), pitched and layered
 //     via Web Audio.
-//   * flip + game-over: synthesized on the fly.
+//   * flip: short scrape (filtered noise) + high-pitched tap from the wood
+//     sample, evoking the rotation and landing of the tile.
+//   * game-over: synthesized chime.
 // AudioContext is created lazily on the first move; sample bytes are
 // pre-fetched at module load so the first move doesn't wait on the network.
+//
+// All sounds are gated on the user's sound setting (settings.js). When sound
+// is off, playMoveSound is a no-op.
 
-import { getSettings } from './notifications.js';
+import { isSoundEnabled } from './settings.js';
 
 let ctx = null;
 let sampleBytes = null;
@@ -91,9 +96,6 @@ function chime(ac, frequencies, noteDuration) {
 function vibrateFor(event) {
   if (!('vibrate' in navigator)) return;
   try {
-    if (!getSettings().sound) return;
-  } catch (_) { return; }
-  try {
     const kind = event.action?.kind;
     if (event.game_over) navigator.vibrate(40);
     else if (event.capture) navigator.vibrate([12, 30, 22]);
@@ -103,6 +105,7 @@ function vibrateFor(event) {
 }
 
 export function playMoveSound(event) {
+  if (!isSoundEnabled()) return;
   vibrateFor(event);
   try {
     const ac = getCtx();
@@ -114,7 +117,13 @@ export function playMoveSound(event) {
     }
 
     if (kind === 'flip') {
-      noise(ac, 0.085, 700, 0.4);
+      // Brief scrape as the piece rotates.
+      noise(ac, 0.055, 1800, 0.18);
+      // High-pitched tap from the wood sample as it lands face-up.
+      getSample(ac).then(buf => {
+        if (!buf) return;
+        playSample(ac, buf, { rate: 1.9, gain: 0.55, offsetSec: 0.045 });
+      }).catch(() => { /* swallow */ });
       return;
     }
 

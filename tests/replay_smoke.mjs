@@ -3,7 +3,7 @@
 // class and validates: snapshot count, cellsAfter walking, mover attribution,
 // past-position freezing, formatAction notation, and navigation controls.
 
-import { Replay, formatAction, coord, applyEventToCells, initialCells } from '../web/replay.js';
+import { Replay, formatAction, coord, applyEventToCells, initialCells, exportPgn } from '../web/replay.js';
 
 if (coord(0)  !== 'a1') throw new Error(`coord(0) = ${coord(0)}`);
 if (coord(7)  !== 'h1') throw new Error(`coord(7) = ${coord(7)}`);
@@ -85,6 +85,64 @@ const cells = initialCells();
 applyEventToCells(cells, events[0]);
 if (cells[0].state !== 'faceup' || cells[0].type !== 7) {
   throw new Error('applyEventToCells flip failed');
+}
+
+// exportPgn — uses the same handcrafted event log above.
+{
+  const pgn = exportPgn(r, {
+    players: ['Alice', 'Bob'],
+    date:    '2026-05-16',
+    round:   'ABCD',
+  });
+  // Tag pairs.
+  for (const tag of [
+    '[Event "Banqi"]',
+    '[Site "banqi-p2p"]',
+    '[Date "2026.05.16"]',
+    '[Round "ABCD"]',
+    // Alice (P0) flipped a Red piece first → Alice = Red, Bob = Black.
+    '[Red "Alice"]',
+    '[Black "Bob"]',
+    '[Variant "Banqi (Taiwanese)"]',
+    // Bob (P1) resigned in event 3 → Red wins.
+    '[Result "1-0"]',
+  ]) {
+    if (!pgn.includes(tag)) throw new Error(`PGN missing tag: ${tag}\n---\n${pgn}`);
+  }
+  // Movetext shape.
+  if (!pgn.includes('1. a1=帥')) throw new Error(`flip move not formatted: ${pgn}`);
+  if (!pgn.includes('h4=卒')) throw new Error(`second flip not formatted: ${pgn}`);
+  if (!pgn.includes('a1-b1')) throw new Error(`non-capture move not formatted: ${pgn}`);
+  if (!pgn.includes('resigns')) throw new Error(`resign half-move missing: ${pgn}`);
+  if (!pgn.includes('{Black resigns}')) throw new Error(`resign annotation missing: ${pgn}`);
+  if (!/1-0\s*$/.test(pgn.trim())) throw new Error(`PGN should end with result token: ${pgn}`);
+
+  // Captures use 'x' and include the captured glyph in a comment.
+  const cap = new Replay();
+  cap.setEvents([
+    { seq: 0, mover: 0, action: { kind: 'flip', to: 0 }, revealed: { color: 2, type: 4 }, game_over: false, winner: 0 },
+    { seq: 1, mover: 1, action: { kind: 'flip', to: 1 }, revealed: { color: 1, type: 1 }, game_over: false, winner: 0 },
+    { seq: 2, mover: 0, action: { kind: 'move', from: 0, to: 1 },
+      capture: { color: 1, type: 1, glyph: '兵' }, game_over: false, winner: 0 },
+  ]);
+  const capPgn = exportPgn(cap, { players: ['A', 'B'] });
+  if (!capPgn.includes('a1xb1')) throw new Error(`capture notation missing: ${capPgn}`);
+  if (!capPgn.includes('{兵}')) throw new Error(`captured-piece comment missing: ${capPgn}`);
+  if (!capPgn.includes('[Result "*"]')) throw new Error(`unfinished game should have * result: ${capPgn}`);
+
+  // Cannon-jump capture spans more than 1 step → 'X'.
+  const cj = new Replay();
+  cj.setEvents([
+    { seq: 0, mover: 0, action: { kind: 'flip', to: 0 }, revealed: { color: 1, type: 2 }, game_over: false, winner: 0 },
+    { seq: 1, mover: 1, action: { kind: 'flip', to: 16 }, revealed: { color: 2, type: 7 }, game_over: false, winner: 0 },
+    { seq: 2, mover: 0, action: { kind: 'flip', to: 8 }, revealed: { color: 1, type: 1 }, game_over: false, winner: 0 },
+    { seq: 3, mover: 1, action: { kind: 'flip', to: 24 }, revealed: { color: 2, type: 1 }, game_over: false, winner: 0 },
+    // Cannon at 0 jumps over 8 onto 16.
+    { seq: 4, mover: 0, action: { kind: 'move', from: 0, to: 16 },
+      capture: { color: 2, type: 7, glyph: '將' }, game_over: true, winner: 1 },
+  ]);
+  const cjPgn = exportPgn(cj, { players: ['A', 'B'] });
+  if (!cjPgn.includes('a1Xa3')) throw new Error(`cannon-jump capture notation missing: ${cjPgn}`);
 }
 
 console.log('replay smoke: OK');

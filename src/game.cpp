@@ -9,14 +9,28 @@ namespace banqi {
 
 using json = nlohmann::json;
 
+static const char* mode_to_str(GameMode m) {
+    switch (m) {
+        case GameMode::CaptureGeneral: return "capture_general";
+        case GameMode::Standard:       return "standard";
+    }
+    return "standard";
+}
+
+static GameMode mode_from_str(const std::string& s) {
+    if (s == "capture_general") return GameMode::CaptureGeneral;
+    return GameMode::Standard;
+}
+
 Game::Game() {
     rules_.set_all_facedown();
     auto deck = initial_deck();
     for (int i = 0; i < 32; ++i) layout_[i] = deck[i];
 }
 
-Game Game::create(IPrng& prng) {
+Game Game::create(IPrng& prng, GameMode mode) {
     Game g;
+    g.rules_.set_mode(mode);
     auto deck = initial_deck();
     for (int i = (int)deck.size() - 1; i > 0; --i) {
         uint8_t buf[8];
@@ -62,6 +76,9 @@ void Game::apply_resign(int player_index) {
     // game still ends but no rated outcome is meaningful).
     Color other = rules_.color_for_player(1 - player_index);
     resign_winner_ = other;
+    // Propagate the terminal state into the rule engine so legal_moves /
+    // state_json reflect the resignation consistently.
+    rules_.force_terminal(other);
 }
 
 std::string Game::state_json(int viewer_player_index) const {
@@ -73,6 +90,7 @@ std::string Game::state_json(int viewer_player_index) const {
     j["first_flip_done"] = rules_.first_flip_done();
     j["game_over"]       = game_over();
     j["winner"]          = (int)winner();
+    j["mode"]            = mode_to_str(rules_.mode());
 
     if (viewer >= 0) {
         j["my_color"] = (int)rules_.color_for_player(viewer);
@@ -145,15 +163,49 @@ std::string Game::snapshot_json() const {
     j["resigned"]           = resigned_;
     j["resign_player"]      = resign_player_;
     j["resign_winner"]      = (int)resign_winner_;
+    j["mode"]               = mode_to_str(rules_.mode());
+    // In capture-general mode the terminal state is set by a specific capture
+    // (not derivable from the board layout alone), so persist it directly.
+    j["game_over"]          = rules_.game_over();
+    j["winner"]             = (int)rules_.winner();
     return j.dump();
 }
 
 Game Game::from_snapshot_json(const std::string& s) {
     Game g;
     auto j = json::parse(s);
-    for (int i = 0; i < 32; ++i) g.layout_[i] = j.at("layout").at(i).get<int>();
+
+    auto check_color = [](int v) -> Color {
+        if (v != (int)Color::None && v != (int)Color::Red && v != (int)Color::Black) {
+            throw std::runtime_error("from_snapshot_json: bad color value");
+        }
+        return (Color)v;
+    };
+    auto check_type = [](int v) -> PieceType {
+        switch (v) {
+            case (int)PieceType::None:
+            case (int)PieceType::General:
+            case (int)PieceType::Advisor:
+            case (int)PieceType::Elephant:
+            case (int)PieceType::Chariot:
+            case (int)PieceType::Horse:
+            case (int)PieceType::Cannon:
+            case (int)PieceType::Soldier:
+                return (PieceType)v;
+        }
+        throw std::runtime_error("from_snapshot_json: bad piece type");
+    };
+
+    for (int i = 0; i < 32; ++i) {
+        int code = j.at("layout").at(i).get<int>();
+        if (code < 1 || code > 32) {
+            throw std::runtime_error("from_snapshot_json: bad layout code");
+        }
+        g.layout_[i] = code;
+    }
 
     g.rules_.clear();
+    g.rules_.set_mode(mode_from_str(j.value("mode", std::string("standard"))));
     const auto& cells = j.at("cells");
     for (int i = 0; i < BanqiRules::CELLS; ++i) {
         const auto& cj = cells.at(i);
@@ -161,21 +213,45 @@ Game Game::from_snapshot_json(const std::string& s) {
         if (st == "empty")          g.rules_.set_empty(i);
         else if (st == "facedown")  g.rules_.set_facedown(i);
         else if (st == "faceup") {
-            Piece p{(Color)cj.at("color").get<int>(), (PieceType)cj.at("type").get<int>()};
-            g.rules_.set_faceup(i, p);
+            Color c = check_color(cj.at("color").get<int>());
+            PieceType t = check_type(cj.at("type").get<int>());
+            if (c == Color::None || t == PieceType::None) {
+                throw std::runtime_error("from_snapshot_json: faceup cell has no piece");
+            }
+            g.rules_.set_faceup(i, Piece{c, t});
         }
+        else throw std::runtime_error("from_snapshot_json: bad cell state");
     }
 
     bool first_flip = j.at("first_flip_done").get<bool>();
     int  stm        = j.at("side_to_move_player").get<int>();
-    Color p0c       = (Color)j.at("player0_color").get<int>();
+    if (stm != 0 && stm != 1) {
+        throw std::runtime_error("from_snapshot_json: bad side_to_move_player");
+    }
+    Color p0c       = check_color(j.at("player0_color").get<int>());
     g.rules_.set_initial_side(stm);
-    if (first_flip) g.rules_.force_color_assignment(stm, p0c);
+    if (first_flip) {
+        if (p0c == Color::None) {
+            throw std::runtime_error("from_snapshot_json: first_flip_done but player0_color is None");
+        }
+        g.rules_.force_color_assignment(stm, p0c);
+    }
     g.rules_.recheck_terminal();
 
     g.resigned_       = j.value("resigned", false);
     g.resign_player_  = j.value("resign_player", -1);
-    g.resign_winner_  = (Color)j.value("resign_winner", 0);
+    g.resign_winner_  = check_color(j.value("resign_winner", 0));
+    if (g.resigned_) {
+        if (g.resign_player_ != 0 && g.resign_player_ != 1) {
+            throw std::runtime_error("from_snapshot_json: bad resign_player");
+        }
+        g.rules_.force_terminal(g.resign_winner_);
+    } else if (j.value("game_over", false)) {
+        // Capture-general mode (or any rule that ends the game via a specific
+        // capture) needs its terminal flag persisted directly: recheck_terminal
+        // can't re-derive it from the board layout alone.
+        g.rules_.force_terminal(check_color(j.value("winner", 0)));
+    }
     return g;
 }
 
