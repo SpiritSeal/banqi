@@ -14,12 +14,19 @@
 //            quiescence and more determinisations; the iterative-deepening
 //            TT ordering makes the deeper search affordable
 //   POLICY – iterative-deepening alpha-beta with a policy-shaped evaluation:
-//            a soldier–general threat axis, cannon line-of-attack scoring,
-//            trapped-General penalty, and stronger mobility weight than
-//            Master. Uses killer-move + history ordering on top of the TT
+//            a soldier–general threat axis (Soldier is the only piece that
+//            can capture a General, so its placement is asymmetrically
+//            valuable), cannon line-of-attack scoring, trapped-General
+//            penalty, and a higher mobility weight than Master to lean
+//            toward Banqi's actual win condition (opponent has no legal
+//            move). Uses killer-move + history ordering on top of the TT
 //            and Late Move Reductions, and runs at roughly 2× Master's
 //            total node budget to convert the better-tuned eval into actual
-//            depth at the search horizon.
+//            depth at the search horizon. In head-to-head play against
+//            Master it draws frequently — both engines are strong enough
+//            that symmetric tactical play leads to move-limit draws —
+//            though Policy is the stronger of the two when a decisive
+//            line exists.
 
 export const Difficulty = {
   EASY: 'easy', MEDIUM: 'medium', HARD: 'hard',
