@@ -957,19 +957,22 @@ const POLICY_MOBILITY_WEIGHT  = 30;
 
 // Soldier–General threat. A soldier `d` Chebyshev-steps away from an enemy
 // General (face-up) contributes this much to its owner. Capped at the
-// maximum reachable distance on a 4×8 board (7 steps). Values are small
-// enough that they only break Master's ties — they shouldn't override the
-// material/safety terms — but at distance 1 the bonus is meaningful because
-// a soldier next to the enemy General actually threatens capture next ply.
-const SOLDIER_GENERAL_BONUS = [0, 180, 90, 45, 20, 10, 5, 0];
+// maximum reachable distance on a 4×8 board (7 steps). Tuned to exploit
+// the key blind spot in Master's flat-material eval: Master treats a
+// Soldier as worth 100 regardless of position, so it leaves Soldiers
+// exposed near its General and doesn't see incoming attacks on its General
+// from Soldiers (Master's piece-safety check is rank-based and General is
+// rank 7, so it incorrectly thinks the General is safe).
+const SOLDIER_GENERAL_BONUS = [0, 280, 160, 90, 40, 20, 8, 0];
 
 // Per-cannon-line bonus when the cannon has a legal jump available (screen
-// + face-up enemy target on the same row/column). Small — primarily a
-// tie-breaker that prefers positions where Cannons are pre-loaded.
-const CANNON_LINE_BONUS = 20;
+// + face-up enemy target on the same row/column).
+const CANNON_LINE_BONUS = 30;
 
 // Each missing escape square (out of 4) on a General penalises that side.
-const GENERAL_ESCAPE_PENALTY = 22;
+// Trapped Generals are a major loss vector since Banqi ends on "no legal
+// moves" and the General is hard to replace mid-game.
+const GENERAL_ESCAPE_PENALTY = 40;
 
 // SEE: returns the net material swing (positive = `attackerColor` gains) of
 // playing all profitable captures on `cell`, with both sides choosing their
