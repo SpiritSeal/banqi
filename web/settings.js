@@ -9,16 +9,18 @@ const DEFAULTS = Object.freeze({
   theme: 'dark',         // dark | sepia
   boardStyle: 'classic', // classic | wood | minimal  (reserved; default for now)
   pieceStyle: 'glyph',   // glyph | minimal | large
+  pieceNumbers: 'off',   // off | badge | full  (rank labels on captured-pieces pane)
   animations: 'on',      // on | off
   sound: 'on',           // on | off
 });
 
 const VALID = {
-  theme:      ['dark', 'sepia'],
-  boardStyle: ['classic', 'wood', 'minimal'],
-  pieceStyle: ['glyph', 'minimal', 'large'],
-  animations: ['on', 'off'],
-  sound:      ['on', 'off'],
+  theme:        ['dark', 'sepia'],
+  boardStyle:   ['classic', 'wood', 'minimal'],
+  pieceStyle:   ['glyph', 'minimal', 'large'],
+  pieceNumbers: ['off', 'badge', 'full'],
+  animations:   ['on', 'off'],
+  sound:        ['on', 'off'],
 };
 
 let cached = null;
@@ -69,6 +71,7 @@ function apply(s) {
   document.body.dataset.theme = s.theme;
   document.body.dataset.boardStyle = s.boardStyle;
   document.body.dataset.pieceStyle = s.pieceStyle;
+  document.body.dataset.pieceNumbers = s.pieceNumbers;
   document.body.classList.toggle('no-anim', s.animations === 'off');
   document.body.classList.toggle('sound-off', s.sound === 'off');
   // Update theme-color meta so PWA chrome matches.
@@ -127,6 +130,17 @@ export function openSettingsDrawer() {
       </select>
     </div>
     <div class="setting-row">
+      <label for="setting-pnums">
+        <span class="setting-label">Captured-pieces rank labels</span>
+        <span class="setting-hint">Show rank numbers (1–7) on the pieces pane</span>
+      </label>
+      <select id="setting-pnums">
+        <option value="off">Off (glyph only)</option>
+        <option value="badge">Glyph + small rank</option>
+        <option value="full">Glyph + rank + count</option>
+      </select>
+    </div>
+    <div class="setting-row">
       <label for="setting-anim">
         <span class="setting-label">Animations</span>
         <span class="setting-hint">Piece flip, move and capture effects</span>
@@ -153,6 +167,7 @@ export function openSettingsDrawer() {
 
   drawer.querySelector('#setting-theme').value = s.theme;
   drawer.querySelector('#setting-piece').value = s.pieceStyle;
+  drawer.querySelector('#setting-pnums').value = s.pieceNumbers;
   drawer.querySelector('#setting-anim').checked = s.animations === 'on';
   drawer.querySelector('#setting-sound').checked = s.sound === 'on';
 
@@ -173,6 +188,7 @@ export function openSettingsDrawer() {
 
   drawer.querySelector('#setting-theme').addEventListener('change', (e) => setSetting('theme', e.target.value));
   drawer.querySelector('#setting-piece').addEventListener('change', (e) => setSetting('pieceStyle', e.target.value));
+  drawer.querySelector('#setting-pnums').addEventListener('change', (e) => setSetting('pieceNumbers', e.target.value));
   drawer.querySelector('#setting-anim').addEventListener('change', (e) => setSetting('animations', e.target.checked ? 'on' : 'off'));
   drawer.querySelector('#setting-sound').addEventListener('change', (e) => setSetting('sound', e.target.checked ? 'on' : 'off'));
 
