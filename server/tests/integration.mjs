@@ -294,6 +294,97 @@ describe('banqi server-authoritative backend', () => {
     assert.equal(view.events.length, 1);
   });
 
+  it('/api/history is public and lists completed games', async () => {
+    // No cookie — endpoint must be open.
+    const res = await fetch(`${baseUrl}/api/history?limit=10`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(Array.isArray(body.games));
+    // Prior resign + guest tests above committed at least two completed games.
+    assert.ok(body.games.length >= 2, `expected ≥2 history rows, got ${body.games.length}`);
+    // Every row is complete (status not exposed; check derived fields instead),
+    // sorted newest first, and never carries a room_code.
+    for (const g of body.games) {
+      assert.equal(typeof g.id, 'number');
+      assert.equal(g.room_code, undefined,
+        'room_code must not be exposed in the public feed');
+      assert.equal(typeof g.move_count, 'number');
+      assert.ok(g.ended_at, 'completed games should have ended_at');
+      assert.ok(g.host_name);
+    }
+    for (let i = 1; i < body.games.length; ++i) {
+      assert.ok(body.games[i - 1].ended_at >= body.games[i].ended_at,
+        'history must be sorted by ended_at DESC');
+    }
+    // The most recent terminal action was a resign (Bob2 → Alice2 above).
+    assert.equal(body.games[0].end_kind, 'resign');
+  });
+
+  it('/api/history mode filter narrows to a single mode', async () => {
+    // Create + finish a capture_general game so we have at least one of each.
+    const alice = await signInDev('AliceCG');
+    const bob   = await signInDev('BobCG');
+    const game  = await (await authedFetch(alice, '/api/games', {
+      method: 'POST', body: JSON.stringify({ mode: 'capture_general' }),
+    })).json();
+    await authedFetch(bob, `/api/games/${game.id}/join`, { method: 'POST' });
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+    a.send({ kind: 'flip', cell: 0 });
+    await a.waitNext((f) => f.type === 'event');
+    await b.waitNext((f) => f.type === 'event');
+    a.send({ kind: 'resign' });
+    await a.waitNext((f) => f.type === 'event' && f.event.game_over);
+    a.close(); b.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    const cg = await (await fetch(`${baseUrl}/api/history?mode=capture_general`)).json();
+    assert.ok(cg.games.some((g) => g.id === game.id), 'cg-mode game appears under cg filter');
+    for (const g of cg.games) assert.equal(g.mode, 'capture_general');
+
+    const std = await (await fetch(`${baseUrl}/api/history?mode=standard`)).json();
+    assert.ok(!std.games.some((g) => g.id === game.id), 'cg-mode game absent from standard filter');
+    for (const g of std.games) assert.equal(g.mode, 'standard');
+  });
+
+  it('/api/history player_id filter scopes to that player', async () => {
+    const carl = await signInDev('CarlH');
+    const carlMe = await (await authedFetch(carl, '/api/me')).json();
+    const dan  = await signInDev('DanH');
+    const game = await (await authedFetch(carl, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+    await authedFetch(dan, `/api/games/${game.id}/join`, { method: 'POST' });
+    const c = await openWs(carl, game.id);
+    const d = await openWs(dan,  game.id);
+    c.send({ kind: 'flip', cell: 0 });
+    await c.waitNext((f) => f.type === 'event');
+    await d.waitNext((f) => f.type === 'event');
+    d.send({ kind: 'resign' });
+    await c.waitNext((f) => f.type === 'event' && f.event.game_over);
+    c.close(); d.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    const mine = await (await fetch(`${baseUrl}/api/history?player_id=${carlMe.id}`)).json();
+    assert.ok(mine.games.length >= 1);
+    for (const g of mine.games) {
+      assert.ok(g.host_user_id === carlMe.id || g.join_user_id === carlMe.id,
+        'every row must involve the filter user');
+    }
+  });
+
+  it('/api/history before cursor paginates older games', async () => {
+    const all = await (await fetch(`${baseUrl}/api/history?limit=100`)).json();
+    if (all.games.length < 2) return; // nothing to paginate against
+    // Cut the feed in half at the second row's ended_at: the page must start
+    // strictly earlier than that.
+    const cursor = all.games[1].ended_at;
+    const page = await (await fetch(`${baseUrl}/api/history?before=${cursor}&limit=100`)).json();
+    for (const g of page.games) {
+      assert.ok(g.ended_at < cursor, 'every row must be older than the cursor');
+    }
+  });
+
   it('leaderboard excludes guests', async () => {
     const board = await (await fetch(`${baseUrl}/api/leaderboard`)).json();
     assert.ok(Array.isArray(board));

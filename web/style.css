@@ -1207,6 +1207,58 @@ button.dash-section-header:hover { color: var(--fg); }
   .gc-delete { opacity: 1; }
 }
 
+/* ---- game history list -------------------------------------------- */
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.history-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "players  result"
+    "meta     meta";
+  align-items: center;
+  gap: 4px 12px;
+  padding: 10px 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+}
+.history-players {
+  grid-area: players;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.history-vs {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.history-player a { color: var(--accent); text-decoration: none; }
+.history-player a:hover { text-decoration: underline; }
+.history-player.winner { font-weight: 700; }
+.history-player.loser  { color: var(--muted); }
+.history-result {
+  grid-area: result;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.history-meta {
+  grid-area: meta;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* ---- tables (leaderboard / profile) -------------------------------- */
 table {
   width: 100%;
