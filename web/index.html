@@ -178,8 +178,15 @@
 
   <!-- DASHBOARD -->
   <section id="view-dashboard" class="panel hidden" aria-labelledby="dashboard-heading">
-    <h2 id="dashboard-heading" tabindex="-1">My games</h2>
-    <div id="dashboard-list" class="dashboard-list"></div>
+    <header class="dash-header">
+      <h2 id="dashboard-heading" tabindex="-1">My games</h2>
+    </header>
+    <div id="dash-controls" class="dash-controls hidden">
+      <input id="dash-search" type="search" placeholder="Search opponent or room…"
+             autocomplete="off" aria-label="Search games">
+      <div id="dash-chips" class="chip-row" role="tablist" aria-label="Filter games"></div>
+    </div>
+    <div id="dashboard-sections"></div>
   </section>
 
   <!-- LEADERBOARD -->
