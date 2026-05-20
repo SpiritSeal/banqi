@@ -20,7 +20,8 @@ import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
 import { initSettings, openSettingsDrawer, openRulesDrawer } from './settings.js';
-import { captureCellRect, playEventAnimation } from './animations.js';
+import { captureCellRect, playEventAnimation, animateCapture } from './animations.js';
+import { bindBoardInput } from './board-input.js';
 
 // Initialise settings (applies theme / animation toggles to <body>) before
 // anything paints, so the first render uses the chosen palette.
@@ -544,9 +545,9 @@ function refreshGame() {
   if (!active.state) return;
   const liveState = active.state;
   const view = viewState(active, liveState);
-  renderBoard($('game-board'), view, (idx) => {
-    if (view.replayViewing) return;
-    onOnlineCellClick(idx, view);
+  renderBoard($('game-board'), view, {
+    onTap: (idx) => { if (!view.replayViewing) onOnlineCellClick(idx, view); },
+    onDragMove: (from, to) => { if (!view.replayViewing) onlineDragMove(from, to, view); },
   });
   const opp = active.role === 'host' ? active.info.join_name : active.info.host_name;
   const colorChip = liveState.my_color === 1
@@ -955,6 +956,11 @@ function statusLabel(state, info, replay) {
 function onOnlineCellClick(idx, state) {
   if (state.game_over) return;
   if (state.replayViewing) return;
+  // idx === -1 is the "tap outside" signal from the pointer controller.
+  if (idx === -1) {
+    if (active.selected != null) { active.selected = null; refreshGame(); }
+    return;
+  }
   if (state.side_to_move !== state.my_player_index) return;
   // Pre-first-flip lock from a directed challenge: only the chosen first-mover
   // may make the opening flip. Server rejects either way; we just avoid round-trips.
@@ -988,6 +994,22 @@ function onOnlineCellClick(idx, state) {
   if (idx === active.selected) { active.selected = null; refreshGame(); return; }
   active.selected = null;
   refreshGame();
+}
+
+// Drag-completed in an online game: skip the intermediate select step and
+// issue the move directly. Mirrors the move branch of onOnlineCellClick.
+function onlineDragMove(from, to, state) {
+  if (state.game_over || state.replayViewing) return;
+  if (state.side_to_move !== state.my_player_index) return;
+  if (!state.first_flip_done
+      && (state.first_mover_index === 0 || state.first_mover_index === 1)
+      && state.first_mover_index !== state.my_player_index) return;
+  const legal = state.legal_moves_for_me || [];
+  if (!legal.some(m => m.from === from && m.to === to)) return;
+  active.selected = null;
+  const drawOffer = active.offerDraw;
+  active.offerDraw = false;
+  sendIntent({ kind: 'move', from, to, offer_draw: drawOffer });
 }
 
 async function copyInviteLink() {
@@ -1075,9 +1097,9 @@ function refreshOTB() {
   if (!active?.isOTB) return;
   const liveState = JSON.parse(active.game.stateJson(-1));
   const view = viewState(active, liveState);
-  renderBoard($('otb-board'), view, (idx) => {
-    if (view.replayViewing) return;
-    onLocalCellClick(idx, view, 'otb');
+  renderBoard($('otb-board'), view, {
+    onTap: (idx) => { if (!view.replayViewing) onLocalCellClick(idx, view, 'otb'); },
+    onDragMove: (from, to) => { if (!view.replayViewing) localDragMove(from, to, view, 'otb'); },
   });
   const modeBadge = (active.mode && active.mode !== 'standard')
     ? ` · ${modeLabel(active.mode)}`
@@ -1133,9 +1155,14 @@ function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
 function onLocalCellClick(idx, state, mode) {
   if (state.game_over) return;
   if (state.replayViewing) return;
+  const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
+  // idx === -1 is the "tap outside" signal from the pointer controller.
+  if (idx === -1) {
+    if (active.selected != null) { active.selected = null; refresh(); }
+    return;
+  }
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me || [];
-  const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
   const boardEl = $(mode === 'otb' ? 'otb-board' : 'ai-board');
   const sideToMove = state.side_to_move;
   if (mode === 'ai' && sideToMove !== state.my_player_index) return;
@@ -1183,6 +1210,31 @@ function onLocalCellClick(idx, state, mode) {
   if (idx === active.selected) { active.selected = null; refresh(); return; }
   active.selected = null;
   refresh();
+}
+
+// Drag-completed in a local game (OTB or vs-AI). Skips the "select source"
+// intermediate state and applies the move atomically. Skips the move
+// animation since the drag ghost has already conveyed the motion — only
+// the capture-dissolve still plays.
+function localDragMove(from, to, state, mode) {
+  if (state.game_over || state.replayViewing) return;
+  const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
+  const boardEl = $(mode === 'otb' ? 'otb-board' : 'ai-board');
+  const sideToMove = state.side_to_move;
+  if (mode === 'ai' && sideToMove !== state.my_player_index) return;
+  if (mode === 'ai' && active.aiThinking) return;
+  const legal = state.legal_moves_for_me || [];
+  if (!legal.some(m => m.from === from && m.to === to)) return;
+  active.selected = null;
+  let event = null;
+  try { event = localApply({ kind: 'move', from, to }); }
+  catch (e) { console.warn(e); }
+  if (mode === 'ai') scheduleAIMove();
+  refresh();
+  // The user dragged the piece to the destination already — replaying the
+  // slide animation would feel laggy and redundant. Capture (if any) still
+  // animates so the captured piece visibly dissolves.
+  if (event?.capture) animateCapture(boardEl, event.action.to, event.capture);
 }
 
 // ---- vs AI (single local Game; human = player 0, AI = player 1) ----
@@ -1259,9 +1311,13 @@ function refreshAI() {
   // Human is player 0. Render from the human's POV.
   const liveState = JSON.parse(active.game.stateJson(0));
   const view = viewState(active, liveState);
-  renderBoard($('ai-board'), view, (idx) => {
-    if (view.replayViewing) return;
-    onLocalCellClick(idx, view, 'ai');
+  renderBoard($('ai-board'), view, {
+    onTap: (idx) => { if (!view.replayViewing) onLocalCellClick(idx, view, 'ai'); },
+    onDragMove: (from, to) => { if (!view.replayViewing) localDragMove(from, to, view, 'ai'); },
+    // While the AI is thinking, suppress drag on the human's pieces.
+    getDragSource: (idx) => active?.aiThinking
+      ? null
+      : defaultDragSource(view, $('ai-board'), idx),
   });
 
   const diffLabel = aiDifficultyLabel(active.difficulty);
@@ -1495,7 +1551,47 @@ function attachBoardKeyNav(boardEl) {
   });
 }
 
-function renderBoard(boardEl, state, onClick) {
+// Default drag-source resolver — mode-agnostic. Returns {piece, srcRect} if
+// the cell at `idx` is a faceup own-piece the active player can legally move,
+// else null. Call sites can wrap this to add mode-specific gates (e.g.
+// AI-thinking lock) before delegating.
+function defaultDragSource(state, boardEl, idx) {
+  if (idx == null || idx < 0 || idx >= 32) return null;
+  if (state.game_over || state.replayViewing) return null;
+  const c = state.cells[idx];
+  if (!c || c.state !== 'faceup') return null;
+  const legal = state.legal_moves_for_me || [];
+  const stm = state.side_to_move;
+  let actorColor;
+  if (state.my_player_index === -1) {
+    // OTB viewer: whoever is to move is the actor.
+    actorColor = stm === 0 ? state.player0_color : state.player1_color;
+  } else {
+    // Online / vs-AI: only the viewer can drag, and only on their turn.
+    if (stm !== state.my_player_index) return null;
+    actorColor = state.my_color;
+  }
+  if (c.color !== actorColor) return null;
+  if (!legal.some(m => m.from === idx)) return null;
+  const rect = captureCellRect(boardEl, idx);
+  if (!rect) return null;
+  return { piece: { color: c.color, glyph: c.glyph }, srcRect: rect };
+}
+
+function defaultIsLegalTarget(state, from, to) {
+  if (state.game_over || state.replayViewing) return false;
+  const legal = state.legal_moves_for_me || [];
+  return legal.some(m => m.from === from && m.to === to);
+}
+
+// `callbacks` shape:
+//   { onTap(idx), onDragMove(from, to), getDragSource?(idx), isLegalTarget?(from, to) }
+// Back-compat: a bare function is treated as onTap (and drag is disabled
+// via a stub getDragSource that always returns null).
+function renderBoard(boardEl, state, callbacks) {
+  if (typeof callbacks === 'function') {
+    callbacks = { onTap: callbacks, onDragMove: () => {}, getDragSource: () => null };
+  }
   const prevFocusIdx = boardEl.querySelector('[data-cell-index][tabindex="0"]')?.dataset.cellIndex;
   const hadDomFocus = boardEl.contains(document.activeElement);
 
@@ -1549,7 +1645,6 @@ function renderBoard(boardEl, state, onClick) {
     if (state.flashCellIdx === i) btn.classList.add('opp-move-flash');
     btn.setAttribute('aria-label', cellAriaLabel(i, c, opts));
     if (state.replayViewing) btn.setAttribute('aria-disabled', 'true');
-    btn.addEventListener('click', () => onClick(i));
     boardEl.appendChild(btn);
   }
 
@@ -1560,6 +1655,18 @@ function renderBoard(boardEl, state, onClick) {
     wm.setAttribute('aria-hidden', 'true');
     boardEl.appendChild(wm);
   }
+
+  // Wire pointer input. Idempotent per board element; subsequent renders
+  // just swap the callback closures (so they see the freshest state).
+  const getDragSource = callbacks.getDragSource
+    || ((idx) => defaultDragSource(state, boardEl, idx));
+  const isLegalTarget = callbacks.isLegalTarget
+    || ((from, to) => defaultIsLegalTarget(state, from, to));
+  bindBoardInput(boardEl, {
+    onTap: callbacks.onTap,
+    onDragMove: callbacks.onDragMove,
+    getDragSource, isLegalTarget,
+  });
 
   if (hadDomFocus) {
     const tgt = boardEl.querySelector(`[data-cell-index="${focusIdx}"]`);
