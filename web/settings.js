@@ -6,21 +6,23 @@
 const KEY = 'banqi.settings.v1';
 
 const DEFAULTS = Object.freeze({
-  theme: 'dark',         // dark | sepia
-  boardStyle: 'classic', // classic | wood | minimal  (reserved; default for now)
-  pieceStyle: 'glyph',   // glyph | minimal | large
-  pieceNumbers: 'off',   // off | badge | full  (rank labels on captured-pieces pane)
-  animations: 'on',      // on | off
-  sound: 'on',           // on | off
+  theme: 'dark',                 // dark | sepia
+  boardStyle: 'classic',         // classic | wood | minimal  (reserved; default for now)
+  pieceStyle: 'glyph',           // glyph | minimal | large
+  pieceNumbers: 'off',           // off | badge | full  (rank labels on captured-pieces pane)
+  animations: 'on',              // on | off
+  sound: 'on',                   // on | off
+  warnBeforeThreefold: 'on',     // on | off — confirm before locking in a threefold-repetition draw
 });
 
 const VALID = {
-  theme:        ['dark', 'sepia'],
-  boardStyle:   ['classic', 'wood', 'minimal'],
-  pieceStyle:   ['glyph', 'minimal', 'large'],
-  pieceNumbers: ['off', 'badge', 'full'],
-  animations:   ['on', 'off'],
-  sound:        ['on', 'off'],
+  theme:               ['dark', 'sepia'],
+  boardStyle:          ['classic', 'wood', 'minimal'],
+  pieceStyle:          ['glyph', 'minimal', 'large'],
+  pieceNumbers:        ['off', 'badge', 'full'],
+  animations:          ['on', 'off'],
+  sound:               ['on', 'off'],
+  warnBeforeThreefold: ['on', 'off'],
 };
 
 let cached = null;
@@ -66,6 +68,7 @@ export function areAnimationsEnabled() {
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return false;
   return true;
 }
+export function warnBeforeThreefold() { return load().warnBeforeThreefold === 'on'; }
 
 function apply(s) {
   document.body.dataset.theme = s.theme;
@@ -160,6 +163,16 @@ export function openSettingsDrawer() {
         <span class="toggle-switch-slider"></span>
       </label>
     </div>
+    <div class="setting-row">
+      <label for="setting-warn-threefold">
+        <span class="setting-label">Confirm before threefold draw</span>
+        <span class="setting-hint">Ask before a move that ends the game by repetition</span>
+      </label>
+      <label class="toggle-switch">
+        <input id="setting-warn-threefold" type="checkbox">
+        <span class="toggle-switch-slider"></span>
+      </label>
+    </div>
   `;
 
   overlay.appendChild(drawer);
@@ -170,6 +183,7 @@ export function openSettingsDrawer() {
   drawer.querySelector('#setting-pnums').value = s.pieceNumbers;
   drawer.querySelector('#setting-anim').checked = s.animations === 'on';
   drawer.querySelector('#setting-sound').checked = s.sound === 'on';
+  drawer.querySelector('#setting-warn-threefold').checked = s.warnBeforeThreefold === 'on';
 
   const close = () => {
     if (!drawerOpen) return;
@@ -191,6 +205,7 @@ export function openSettingsDrawer() {
   drawer.querySelector('#setting-pnums').addEventListener('change', (e) => setSetting('pieceNumbers', e.target.value));
   drawer.querySelector('#setting-anim').addEventListener('change', (e) => setSetting('animations', e.target.checked ? 'on' : 'off'));
   drawer.querySelector('#setting-sound').addEventListener('change', (e) => setSetting('sound', e.target.checked ? 'on' : 'off'));
+  drawer.querySelector('#setting-warn-threefold').addEventListener('change', (e) => setSetting('warnBeforeThreefold', e.target.checked ? 'on' : 'off'));
 
   drawer.focus();
 }

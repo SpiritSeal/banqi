@@ -99,6 +99,12 @@ API and the static client, so one process is enough.
   the target. Ignores rank, but the target must be a face-up enemy piece.
 - The very first flip determines that player's color. You lose if you
   have no legal move.
+- **Draws**: in addition to mutual agreement, the engine ends the game
+  as a draw automatically when (a) the same position with the same side
+  to move occurs three times within a single "reversible window" — i.e.
+  with no flip or capture in between (threefold repetition), or (b) 40
+  consecutive half-moves go by with no flip and no capture (no-progress
+  rule). Both fire only after the first flip.
 
 ## Threat model
 

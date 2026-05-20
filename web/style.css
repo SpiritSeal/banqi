@@ -1559,6 +1559,16 @@ table a:hover { text-decoration: underline; }
   gap: 8px;
 }
 .modal .modal-actions button { min-width: 88px; justify-content: center; }
+.modal .modal-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px 0;
+  font-size: 13px;
+  color: var(--fg-muted, var(--fg));
+  cursor: pointer;
+}
+.modal .modal-checkbox input { margin: 0; }
 .modal .btn-danger {
   background: var(--err-border);
   color: #fff;

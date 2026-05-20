@@ -19,6 +19,8 @@ void BanqiRules::clear() {
     player_color_ = {Color::None, Color::None};
     game_over_ = false;
     winner_ = Color::None;
+    terminal_reason_ = TerminalReason::None;
+    reset_reversible_history();
 }
 
 void BanqiRules::set_all_facedown() {
@@ -32,6 +34,85 @@ void BanqiRules::set_all_facedown() {
     player_color_ = {Color::None, Color::None};
     game_over_ = false;
     winner_ = Color::None;
+    terminal_reason_ = TerminalReason::None;
+    reset_reversible_history();
+}
+
+void BanqiRules::reset_reversible_history() {
+    reversible_position_hashes_.clear();
+    plies_since_progress_ = 0;
+}
+
+std::string BanqiRules::position_key() const {
+    // Layout: 32 cells × 1 char + 1 char for side-to-move (0/1). Face-up
+    // pieces fold (color, type) into a single character; face-down cells
+    // collapse to a single placeholder because their hidden identity is fixed
+    // and immaterial for repetition (any flip would clear the window).
+    std::string s;
+    s.reserve(CELLS + 1);
+    for (int i = 0; i < CELLS; ++i) {
+        const Cell& c = cells_[i];
+        char ch;
+        if (c.state == Cell::State::Empty) {
+            ch = '_';
+        } else if (c.state == Cell::State::FaceDown) {
+            ch = '?';
+        } else {
+            // Red 1..7 → 'A'..'G';  Black 1..7 → 'H'..'N'.
+            int t = (int)c.piece.type;     // 1..7
+            int base = (c.piece.color == Color::Red) ? 0 : 7;
+            ch = (char)('A' + base + (t - 1));
+        }
+        s.push_back(ch);
+    }
+    s.push_back((char)('0' + side_to_move_player_));
+    return s;
+}
+
+int BanqiRules::repetition_count() const {
+    if (reversible_position_hashes_.empty()) return 0;
+    const std::string& cur = reversible_position_hashes_.back();
+    int n = 0;
+    for (const auto& k : reversible_position_hashes_) if (k == cur) ++n;
+    return n;
+}
+
+bool BanqiRules::would_trigger_threefold(int from, int to) const {
+    // Flips are signalled with from < 0 — they reset the window, so they
+    // can never trigger a threefold draw.
+    if (from < 0 || from >= CELLS || to < 0 || to >= CELLS) return false;
+    if (cells_[from].state != Cell::State::FaceUp) return false;
+    // A face-up destination means the move would capture, which also resets
+    // the reversible window. Threefold is impossible.
+    if (cells_[to].state == Cell::State::FaceUp) return false;
+
+    // Build the position key the engine WOULD record after this move:
+    // cells_[from] becomes empty, cells_[to] inherits the moving piece, and
+    // side-to-move flips to the opponent. Mirrors position_key()'s encoding.
+    const Cell moving = cells_[from];
+    auto encode_cell = [](const Cell& c) -> char {
+        if (c.state == Cell::State::Empty)    return '_';
+        if (c.state == Cell::State::FaceDown) return '?';
+        const int t = (int)c.piece.type;
+        const int base = (c.piece.color == Color::Red) ? 0 : 7;
+        return (char)('A' + base + (t - 1));
+    };
+    std::string key;
+    key.reserve(CELLS + 1);
+    for (int i = 0; i < CELLS; ++i) {
+        if (i == from)      key.push_back('_');                  // emptied
+        else if (i == to)   key.push_back(encode_cell(moving));  // mover lands here
+        else                key.push_back(encode_cell(cells_[i]));
+    }
+    key.push_back((char)('0' + (1 - side_to_move_player_)));
+
+    int n = 0;
+    for (const auto& k : reversible_position_hashes_) if (k == key) ++n;
+    return (n + 1) >= THREEFOLD_THRESHOLD;
+}
+
+void BanqiRules::note_reversible_position() {
+    reversible_position_hashes_.push_back(position_key());
 }
 
 void BanqiRules::set_facedown(int cell) {
@@ -271,6 +352,10 @@ void BanqiRules::apply_flip(int cell, Piece revealed) {
         player_color_[1 - flipper] = opposite(revealed.color);
         side_to_move_ = revealed.color;
     }
+    // A flip is irreversible "progress": the face-down count drops by one and
+    // can never recover. Clear the repetition window and the no-progress
+    // counter — no prior position is reachable again.
+    reset_reversible_history();
     advance_turn();
 }
 
@@ -310,8 +395,33 @@ MoveResult BanqiRules::apply_move(int from, int to) {
         r.captured_piece.type == PieceType::General) {
         game_over_ = true;
         winner_ = moving.color;
+        terminal_reason_ = TerminalReason::CaptureGeneral;
+    }
+    // Maintain the reversible-window state used by threefold-repetition and
+    // no-progress draw detection.
+    //   * A capture removes a face-up piece — irreversible — so we clear the
+    //     window and the counter.
+    //   * A non-capturing move is reversible: bump the counter, record the
+    //     post-move position. recompute_terminal will then check whether
+    //     either threshold has been crossed.
+    if (r.captured) {
+        reset_reversible_history();
+    } else {
+        ++plies_since_progress_;
     }
     advance_turn();
+    if (!r.captured && !game_over_) {
+        note_reversible_position();
+        if (repetition_count() >= THREEFOLD_THRESHOLD) {
+            game_over_ = true;
+            winner_ = Color::None;
+            terminal_reason_ = TerminalReason::ThreefoldRepetition;
+        } else if (plies_since_progress_ >= NO_PROGRESS_PLIES) {
+            game_over_ = true;
+            winner_ = Color::None;
+            terminal_reason_ = TerminalReason::NoProgress;
+        }
+    }
     return r;
 }
 
@@ -332,6 +442,7 @@ void BanqiRules::force_color_assignment(int side_to_move_player, Color p0_color)
     side_to_move_          = player_color_[side_to_move_player];
     game_over_             = false;
     winner_                = Color::None;
+    terminal_reason_       = TerminalReason::None;
 }
 
 void BanqiRules::advance_turn() {
@@ -356,8 +467,28 @@ void BanqiRules::recompute_terminal() {
         if (first_flip_done_) {
             game_over_ = true;
             winner_ = player_color_[1 - side_to_move_player_];
+            terminal_reason_ = TerminalReason::NoLegalMoves;
         }
         return;
+    }
+
+    // Threefold-repetition and no-progress draws are checked here too — not
+    // just at apply_move — so that restoring a snapshot whose tail crossed
+    // a threshold yields a consistent terminal state.
+    if (first_flip_done_) {
+        if (!reversible_position_hashes_.empty() &&
+            repetition_count() >= THREEFOLD_THRESHOLD) {
+            game_over_ = true;
+            winner_ = Color::None;
+            terminal_reason_ = TerminalReason::ThreefoldRepetition;
+            return;
+        }
+        if (plies_since_progress_ >= NO_PROGRESS_PLIES) {
+            game_over_ = true;
+            winner_ = Color::None;
+            terminal_reason_ = TerminalReason::NoProgress;
+            return;
+        }
     }
 
     // Also terminal: a side has zero face-up pieces AND no face-down pieces

@@ -59,6 +59,9 @@ public:
     int  winner()             const { return (int)game_.winner(); }     // 0/1/2
     int  sideToMovePlayer()   const { return game_.side_to_move_player(); }
     int  resignPlayerIndex()  const { return game_.resign_player_index(); }
+    bool isDraw()             const { return game_.rules().is_draw(); }
+    int  terminalReason()     const { return (int)game_.rules().terminal_reason(); }
+    int  pliesSinceProgress() const { return game_.rules().plies_since_progress(); }
 
     // State JSON: -1 = full visibility (OTB), 0/1 = filter for that viewer.
     std::string stateJson(int viewer_player_index) const {
@@ -91,6 +94,9 @@ EMSCRIPTEN_BINDINGS(banqi_module) {
         .function("winner",                  &GameWrapper::winner)
         .function("sideToMovePlayer",        &GameWrapper::sideToMovePlayer)
         .function("resignPlayerIndex",       &GameWrapper::resignPlayerIndex)
+        .function("isDraw",                  &GameWrapper::isDraw)
+        .function("terminalReason",          &GameWrapper::terminalReason)
+        .function("pliesSinceProgress",      &GameWrapper::pliesSinceProgress)
         .function("stateJson",               &GameWrapper::stateJson)
         .function("snapshotJson",            &GameWrapper::snapshotJson);
 }

@@ -233,6 +233,22 @@ export function formatAction(snap, prevCells) {
   return { primary: '(unknown)', detail: '', piece: '', jump: false };
 }
 
+// Human-readable phrase for a game-over end_reason. Used by the game-over
+// modal + the result banner. Returns null if the reason isn't surfaced — let
+// callers fall back to a generic "Game over" / "Draw" string.
+export function endReasonLabel(reason) {
+  switch (reason) {
+    case 'no_legal_moves':        return 'no legal moves';
+    case 'capture_general':       return 'general captured';
+    case 'resigned':              return 'resignation';
+    case 'threefold_repetition':  return 'threefold repetition';
+    case 'no_progress':           return '40-move rule (no flip or capture)';
+    case 'mutual_agreement':      return 'draw by agreement';
+    case 'timeout':               return 'timeout';
+    default:                      return null;
+  }
+}
+
 export class Replay {
   constructor() {
     this.snapshots = [];      // { event, cellsAfter, gameOver, winner }

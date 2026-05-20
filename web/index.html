@@ -263,6 +263,12 @@
           <li><b>Cannon</b> jumps along a row or column over exactly one piece to capture anything, ignoring rank.</li>
           <li>The first flipper plays the revealed color. You lose if you have no legal move.</li>
         </ul>
+        <h3>Draws</h3>
+        <ul class="crib-rules">
+          <li><b>By agreement</b> &mdash; in online play, tick "Offer draw" on your move; the opponent can Accept (or just play, which declines).</li>
+          <li><b>Threefold repetition</b> &mdash; if the same position with the same side to move recurs three times with no flip or capture in between, the game is drawn automatically. You'll be asked to confirm the move that would seal it; turn the prompt off under Settings → "Confirm before threefold draw".</li>
+          <li><b>40-move rule</b> &mdash; if 40 consecutive half-moves go by with no flip and no capture, the game is drawn automatically. Flips and captures reset the counter.</li>
+        </ul>
       </div>
     </div>
   </template>

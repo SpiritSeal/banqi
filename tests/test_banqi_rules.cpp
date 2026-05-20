@@ -644,3 +644,273 @@ TEST_CASE("BanqiRules: apply_flip / apply_move refuse to mutate a terminal engin
     CHECK(b.at(0).state == Cell::State::FaceDown);
     CHECK(b.at(8).state == Cell::State::FaceUp);
 }
+
+// ---- Automatic draw rules: threefold repetition + no-progress -------------
+
+TEST_CASE("BanqiRules: threefold repetition draw via mutual general shuffle") {
+    // Two lone Generals on opposite sides of the board, shuffling between
+    // two squares each. The cycle is (0→1, 7→6, 1→0, 6→7) repeated. Each
+    // ply within a cycle produces a unique post-move position; that position
+    // reappears once per subsequent cycle. So the position after the first
+    // ply of cycle N appears N times — threefold fires on the first ply of
+    // the third cycle (ply 9, 0-indexed: i==8).
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(7, Piece{Color::Black, PieceType::General});
+    CHECK_FALSE(b.game_over());
+    CHECK(b.terminal_reason() == TerminalReason::None);
+
+    auto cycle_step = [&](int ply_index) {
+        switch (ply_index % 4) {
+            case 0: b.apply_move(0, 1); break;
+            case 1: b.apply_move(7, 6); break;
+            case 2: b.apply_move(1, 0); break;
+            case 3: b.apply_move(6, 7); break;
+        }
+    };
+    for (int i = 0; i < 8; ++i) {
+        CHECK_FALSE(b.game_over());
+        cycle_step(i);
+    }
+    CHECK_FALSE(b.game_over());
+    cycle_step(8);
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::None);
+    CHECK(b.terminal_reason() == TerminalReason::ThreefoldRepetition);
+    CHECK(b.is_draw());
+    CHECK(b.legal_moves(0).empty());
+    CHECK(b.legal_moves(1).empty());
+}
+
+TEST_CASE("BanqiRules: a flip resets the repetition window") {
+    // Almost-threefold: shuffle two generals twice (8 plies, every position
+    // has appeared twice) — but then flip a face-down cell. The window
+    // resets, so subsequent shuffles can repeat freely without firing.
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(7, Piece{Color::Black, PieceType::General});
+    b.set_facedown(16);     // somewhere out of the way (row 2 col 0)
+    auto cycle_step = [&](int ply_index) {
+        switch (ply_index % 4) {
+            case 0: b.apply_move(0, 1); break;
+            case 1: b.apply_move(7, 6); break;
+            case 2: b.apply_move(1, 0); break;
+            case 3: b.apply_move(6, 7); break;
+        }
+    };
+    for (int i = 0; i < 8; ++i) cycle_step(i);     // two cycles, no draw
+    CHECK_FALSE(b.game_over());
+    // Red flips the face-down cell. This resets the reversible history.
+    // (cell 16 is non-adjacent to either General, so it's safely flippable
+    // by the side to move — Red at this point.)
+    REQUIRE(b.side_to_move_player() == 0);
+    b.apply_flip(16, Piece{Color::Red, PieceType::Soldier});
+    CHECK(b.plies_since_progress() == 0);
+    CHECK_FALSE(b.game_over());
+    // Now another two full cycles still doesn't trigger — the window started
+    // fresh after the flip. (The newly-revealed soldier doesn't interact with
+    // the generals at this distance, so movement stays purely reversible.)
+    for (int i = 0; i < 8; ++i) cycle_step(i);
+    CHECK_FALSE(b.game_over());
+}
+
+TEST_CASE("BanqiRules: a capture resets the repetition window") {
+    // Two Black Soldiers ringing a Red General. Red captures one Soldier,
+    // which should reset the plies-since-progress counter to 0 even mid-
+    // window. The remaining Soldier + General can then shuffle without
+    // hitting threefold for several more plies.
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});  // a1
+    b.set_faceup(1, Piece{Color::Black, PieceType::Advisor});  // b1, capturable by General
+    b.set_faceup(8, Piece{Color::Black, PieceType::Advisor});  // a2
+    // Red captures the Advisor at b1.
+    auto r = b.apply_move(0, 1);
+    CHECK(r.captured);
+    CHECK(b.plies_since_progress() == 0);
+    CHECK_FALSE(b.game_over());
+}
+
+TEST_CASE("BanqiRules: no-progress rule fires after NO_PROGRESS_PLIES plies") {
+    // Set the plies counter close to the cap, then make one reversible
+    // (non-flip, non-capture) move. The cap fires.
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(7, Piece{Color::Black, PieceType::General});
+    b.set_plies_since_progress(BanqiRules::NO_PROGRESS_PLIES - 1);
+    CHECK_FALSE(b.game_over());
+
+    b.apply_move(0, 1);
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::None);
+    CHECK(b.terminal_reason() == TerminalReason::NoProgress);
+    CHECK(b.is_draw());
+}
+
+TEST_CASE("BanqiRules: capture resets the no-progress counter") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0,  Piece{Color::Red,   PieceType::General});
+    b.set_faceup(1,  Piece{Color::Black, PieceType::Soldier});
+    // Give Black a face-up piece that has somewhere to move post-capture,
+    // so the next side's empty-move-set doesn't end the game as a loss
+    // before we get to inspect the counter.
+    b.set_faceup(16, Piece{Color::Black, PieceType::Advisor});
+    b.set_plies_since_progress(BanqiRules::NO_PROGRESS_PLIES - 1);
+    auto r = b.apply_move(0, 1);
+    CHECK(r.captured);
+    CHECK(b.plies_since_progress() == 0);
+    CHECK_FALSE(b.game_over());
+}
+
+TEST_CASE("BanqiRules: terminal_reason is NoLegalMoves on stalemate-loss") {
+    // Lone Red General with both orthogonal neighbors occupied by face-up
+    // Black Soldiers. Red can't move (General can't capture Soldier per the
+    // special rule), can't flip (no face-down cells), so on Red's turn Red
+    // loses. terminal_reason should be NoLegalMoves (not a draw).
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(/*side_to_move_player=*/0, /*p0_color=*/Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(1, Piece{Color::Black, PieceType::Soldier});
+    b.set_faceup(8, Piece{Color::Black, PieceType::Soldier});
+    b.recheck_terminal();
+    CHECK(b.game_over());
+    CHECK(b.winner() == Color::Black);
+    CHECK(b.terminal_reason() == TerminalReason::NoLegalMoves);
+    CHECK_FALSE(b.is_draw());
+}
+
+TEST_CASE("BanqiRules: recheck_terminal triggers threefold after a restore") {
+    // Replay 8 plies (two cycles of two-General shuffle) into a fresh engine,
+    // then push the 9th position by hand and call recheck_terminal —
+    // verifying the snapshot-restore path catches the threefold-condition
+    // exactly the same as the live apply_move path.
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(7, Piece{Color::Black, PieceType::General});
+    auto cycle_step = [&](int ply_index) {
+        switch (ply_index % 4) {
+            case 0: b.apply_move(0, 1); break;
+            case 1: b.apply_move(7, 6); break;
+            case 2: b.apply_move(1, 0); break;
+            case 3: b.apply_move(6, 7); break;
+        }
+    };
+    for (int i = 0; i < 8; ++i) cycle_step(i);
+
+    // Now manually push the 9th occurrence and re-derive. The history has
+    // two copies of every cycle position; adding one more should flag
+    // threefold via recheck_terminal alone.
+    auto hist = b.repetition_history();
+    hist.push_back(hist.front());   // 3rd occurrence of cycle's first key
+    b.set_repetition_history(hist);
+    b.recheck_terminal();
+    CHECK(b.game_over());
+    CHECK(b.is_draw());
+    CHECK(b.terminal_reason() == TerminalReason::ThreefoldRepetition);
+}
+
+TEST_CASE("BanqiRules: would_trigger_threefold predicts the draw move") {
+    // Set up the two-General shuffle and play 8 plies (two full cycles). On
+    // the 9th ply the position recurs for a third time — would_trigger_
+    // threefold(0, 1) must return true for that exact move, and false for
+    // moves that would land in a not-yet-thrice position.
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(7, Piece{Color::Black, PieceType::General});
+    auto cycle_step = [&](int ply_index) {
+        switch (ply_index % 4) {
+            case 0: b.apply_move(0, 1); break;
+            case 1: b.apply_move(7, 6); break;
+            case 2: b.apply_move(1, 0); break;
+            case 3: b.apply_move(6, 7); break;
+        }
+    };
+    for (int i = 0; i < 8; ++i) cycle_step(i);
+    REQUIRE_FALSE(b.game_over());
+    REQUIRE(b.side_to_move_player() == 0);
+
+    // Red's options here are 0→1 (the cycle's first ply, position-after-move
+    // already at 2 occurrences → 3rd would draw) and possibly other shuffle
+    // moves. The cycle move must be flagged.
+    CHECK(b.would_trigger_threefold(0, 1));
+    // A flip (signalled by from < 0) never triggers threefold.
+    CHECK_FALSE(b.would_trigger_threefold(-1, 0));
+    // Out-of-range inputs are rejected silently.
+    CHECK_FALSE(b.would_trigger_threefold(99, 1));
+    CHECK_FALSE(b.would_trigger_threefold(0, 99));
+}
+
+TEST_CASE("BanqiRules: would_trigger_threefold rejects capture moves") {
+    // A capture resets the reversible window — so even from a window full of
+    // repetitions, a capturing move can't be flagged as a draw trigger.
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0,  Piece{Color::Red,   PieceType::General});
+    b.set_faceup(1,  Piece{Color::Black, PieceType::Soldier});  // not capturable by General (rule)
+    b.set_faceup(8,  Piece{Color::Black, PieceType::Advisor});  // capturable by General
+    // Synthesize a stuffed history so the threefold predicate has plenty of
+    // matching entries to count if a non-capture move were tried.
+    auto hist = std::vector<std::string>(2, b.position_key());
+    b.set_repetition_history(std::move(hist));
+    // 0→8 is a capture; would_trigger_threefold must say no.
+    CHECK_FALSE(b.would_trigger_threefold(0, 8));
+}
+
+TEST_CASE("Game: legal_moves_for_me carries threefold flag on the draw move") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(7, Piece{Color::Black, PieceType::General});
+    auto cycle_step = [&](int ply_index) {
+        switch (ply_index % 4) {
+            case 0: b.apply_move(0, 1); break;
+            case 1: b.apply_move(7, 6); break;
+            case 2: b.apply_move(1, 0); break;
+            case 3: b.apply_move(6, 7); break;
+        }
+    };
+    for (int i = 0; i < 8; ++i) cycle_step(i);
+    auto legal = b.legal_moves(0);
+    bool found = false;
+    for (const auto& m : legal) {
+        if (m.from == 0 && m.to == 1) {
+            found = true;
+            CHECK(b.would_trigger_threefold(m.from, m.to));
+        }
+    }
+    CHECK(found);
+}
+
+TEST_CASE("BanqiRules: position_key encodes side-to-move and visible cells") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red, PieceType::General});
+    std::string ka = b.position_key();
+
+    BanqiRules b2 = b;
+    // Same cells but the OTHER side to move → different key.
+    b2.force_color_assignment(1, Color::Red);
+    b2.set_faceup(0, Piece{Color::Red, PieceType::General});
+    std::string kb = b2.position_key();
+    CHECK(ka != kb);
+
+    // Each key is exactly CELLS+1 characters (32 cells + 1 side-to-move digit).
+    CHECK(ka.size() == (size_t)BanqiRules::CELLS + 1);
+}

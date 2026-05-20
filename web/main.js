@@ -15,11 +15,14 @@
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
-import { Replay, renderTranscript, exportPgn } from './replay.js';
+import { Replay, renderTranscript, exportPgn, endReasonLabel } from './replay.js';
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
-import { initSettings, openSettingsDrawer, openRulesDrawer } from './settings.js';
+import {
+  initSettings, openSettingsDrawer, openRulesDrawer,
+  warnBeforeThreefold, setSetting,
+} from './settings.js';
 import { captureCellRect, playEventAnimation, animateCapture } from './animations.js';
 import { bindBoardInput } from './board-input.js';
 
@@ -955,7 +958,7 @@ function statusLabel(state, info, replay) {
   return 'playing';
 }
 
-function onOnlineCellClick(idx, state) {
+async function onOnlineCellClick(idx, state) {
   if (state.game_over) return;
   if (state.replayViewing) return;
   // idx === -1 is the "tap outside" signal from the pointer controller.
@@ -987,6 +990,10 @@ function onOnlineCellClick(idx, state) {
   }
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
+    if (!(await confirmThreefoldIfNeeded({ from, to: idx, state }))) {
+      // User cancelled — keep the source selected so they can pick again.
+      return;
+    }
     active.selected = null;
     const drawOffer = active.offerDraw;
     active.offerDraw = false;
@@ -1000,7 +1007,7 @@ function onOnlineCellClick(idx, state) {
 
 // Drag-completed in an online game: skip the intermediate select step and
 // issue the move directly. Mirrors the move branch of onOnlineCellClick.
-function onlineDragMove(from, to, state) {
+async function onlineDragMove(from, to, state) {
   if (state.game_over || state.replayViewing) return;
   if (state.side_to_move !== state.my_player_index) return;
   if (!state.first_flip_done
@@ -1008,6 +1015,7 @@ function onlineDragMove(from, to, state) {
       && state.first_mover_index !== state.my_player_index) return;
   const legal = state.legal_moves_for_me || [];
   if (!legal.some(m => m.from === from && m.to === to)) return;
+  if (!(await confirmThreefoldIfNeeded({ from, to, state }))) return;
   active.selected = null;
   const drawOffer = active.offerDraw;
   active.offerDraw = false;
@@ -1073,7 +1081,8 @@ function localApply(intent) {
   const game = active.game;
   const stm = game.sideToMovePlayer();
   let event = { seq: active.replay.totalMoves(), ts: Date.now(), mover: stm, action: null,
-                revealed: null, capture: null, game_over: false, winner: 0 };
+                revealed: null, capture: null, game_over: false, winner: 0,
+                end_reason: null };
   if (intent.kind === 'flip') {
     const piece = JSON.parse(game.applyFlip(stm, intent.cell));
     event.action = { kind: 'flip', to: intent.cell };
@@ -1090,6 +1099,14 @@ function localApply(intent) {
   }
   event.game_over = game.gameOver();
   event.winner = game.winner();
+  if (event.game_over) {
+    // Engine surfaces "no_legal_moves" / "threefold_repetition" / etc. via
+    // stateJson. We re-read it to tag the synthesized event.
+    try {
+      const post = JSON.parse(game.stateJson(-1));
+      event.end_reason = post.terminal_reason || null;
+    } catch (_) { /* swallow — banner falls back to a generic string */ }
+  }
   active.replay.appendEvent(event);
   playMoveSound(event);
   return event;
@@ -1111,7 +1128,9 @@ function refreshOTB() {
     banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}${modeBadge}`;
+    const reasonText = otbEndReasonText(active, liveState);
+    const head = w === 1 ? 'Red wins' : w === 2 ? 'Black wins' : 'Draw';
+    banner = `Game over — ${head}${reasonText ? ` (${reasonText})` : ''}${modeBadge}`;
   } else if (!view.first_flip_done) {
     banner = `Player 1 — flip a piece (your color is decided by your first flip)`;
   } else {
@@ -1154,7 +1173,7 @@ function refreshOTB() {
 }
 function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
 
-function onLocalCellClick(idx, state, mode) {
+async function onLocalCellClick(idx, state, mode) {
   if (state.game_over) return;
   if (state.replayViewing) return;
   const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
@@ -1193,6 +1212,10 @@ function onLocalCellClick(idx, state, mode) {
   }
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
+    if (!(await confirmThreefoldIfNeeded({ from, to: idx, state }))) {
+      // User cancelled — keep the source selected so they can pick again.
+      return;
+    }
     active.selected = null;
     // Snapshot the source rect + piece before state changes for the move
     // animation overlay.
@@ -1218,7 +1241,7 @@ function onLocalCellClick(idx, state, mode) {
 // intermediate state and applies the move atomically. Skips the move
 // animation since the drag ghost has already conveyed the motion — only
 // the capture-dissolve still plays.
-function localDragMove(from, to, state, mode) {
+async function localDragMove(from, to, state, mode) {
   if (state.game_over || state.replayViewing) return;
   const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
   const boardEl = $(mode === 'otb' ? 'otb-board' : 'ai-board');
@@ -1227,6 +1250,7 @@ function localDragMove(from, to, state, mode) {
   if (mode === 'ai' && active.aiThinking) return;
   const legal = state.legal_moves_for_me || [];
   if (!legal.some(m => m.from === from && m.to === to)) return;
+  if (!(await confirmThreefoldIfNeeded({ from, to, state }))) return;
   active.selected = null;
   let event = null;
   try { event = localApply({ kind: 'move', from, to }); }
@@ -1331,9 +1355,11 @@ function refreshAI() {
     banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    if (w === view.my_color) banner = `You win! 🎉${modeBadge}`;
-    else if (w !== 0)         banner = `AI wins. Better luck next time.${modeBadge}`;
-    else                      banner = `Game over${modeBadge}`;
+    const reasonText = otbEndReasonText(active, liveState);
+    const reasonSuffix = reasonText ? ` (${reasonText})` : '';
+    if (w === view.my_color) banner = `You win!${reasonSuffix}${modeBadge}`;
+    else if (w !== 0)         banner = `AI wins${reasonSuffix}${modeBadge}`;
+    else                      banner = `Draw${reasonSuffix}${modeBadge}`;
   } else if (!view.first_flip_done) {
     banner = `Your turn — flip a piece to begin${modeBadge}`;
   } else if (view.side_to_move === 0) {
@@ -3007,6 +3033,84 @@ function showKeyboardHelp() {
   infoModal({ title: 'Keyboard shortcuts', html });
 }
 
+// Looks up a move in the legal-moves array and returns true if it carries
+// the engine's `threefold` flag. Cheap — the legal moves array is short.
+function moveTriggersThreefold(state, from, to) {
+  const legal = state?.legal_moves_for_me || [];
+  for (const m of legal) {
+    if (m.from === from && m.to === to) return !!m.threefold;
+  }
+  return false;
+}
+
+// Returns true if the move was confirmed (caller should send it), false if
+// cancelled. When `warnBeforeThreefold` is off, returns true immediately —
+// no modal. The "Don't show again" checkbox toggles the setting.
+async function confirmThreefoldIfNeeded({ from, to, state }) {
+  if (!moveTriggersThreefold(state, from, to)) return true;
+  if (!warnBeforeThreefold()) return true;
+  return confirmThreefoldModal();
+}
+
+// Confirm-this-move dialog with a "Don't show again" checkbox. Resolves true
+// (commit the move) or false (cancel). On commit-with-checkbox, persists
+// warnBeforeThreefold = 'off' to settings.
+function confirmThreefoldModal() {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(true); return; }   // fail-open: if no modal root, just send.
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true"
+           aria-labelledby="threefold-title" aria-describedby="threefold-body" tabindex="-1">
+        <h2 id="threefold-title">End the game by repetition?</h2>
+        <p id="threefold-body" class="modal-body">
+          This move recreates a position that has already occurred twice with
+          you to move. Playing it ends the game as a draw by threefold
+          repetition. Continue?
+        </p>
+        <label class="modal-checkbox">
+          <input type="checkbox" id="threefold-dont-show">
+          <span>Don't show this warning again</span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel">Cancel</button>
+          <button type="button" class="btn-confirm primary">Continue &amp; draw</button>
+        </div>
+      </div>`;
+    const btnCancel = overlay.querySelector('.btn-cancel');
+    const btnConfirm = overlay.querySelector('.btn-confirm');
+    const dontShow = overlay.querySelector('#threefold-dont-show');
+    const close = (result) => {
+      if (result && dontShow.checked) setSetting('warnBeforeThreefold', 'off');
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(false); return; }
+      if (e.key === 'Tab') {
+        const focusables = [btnCancel, btnConfirm, dontShow];
+        const idx = focusables.indexOf(document.activeElement);
+        if (idx === -1) { focusables[0].focus(); e.preventDefault(); return; }
+        const next = e.shiftKey ? (idx - 1 + focusables.length) % focusables.length
+                                : (idx + 1) % focusables.length;
+        focusables[next].focus();
+        e.preventDefault();
+      }
+    };
+    btnCancel.addEventListener('click', () => close(false));
+    btnConfirm.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    btnCancel.focus();
+  });
+}
+
 function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = {}) {
   return new Promise((resolve) => {
     const root = document.getElementById('modal-root');
@@ -3125,6 +3229,17 @@ function seedConfetti(container) {
   }
 }
 
+// Why this local (OTB / AI) game ended, as a short human-readable phrase
+// pulled from either liveState.terminal_reason (online + the engine's view)
+// or the last replay event's end_reason. Returns "" if no reason is known.
+function otbEndReasonText(act, liveState) {
+  const lastSnap = act?.replay?.snapshots?.[act.replay.snapshots.length - 1];
+  const reason = lastSnap?.event?.end_reason
+              || liveState?.terminal_reason
+              || null;
+  return endReasonLabel(reason) || '';
+}
+
 // Decides what to show in the game-over modal for the current active session
 // and triggers it (idempotent — calls itself only once per game).
 function maybeShowGameOver(view) {
@@ -3133,25 +3248,32 @@ function maybeShowGameOver(view) {
   active._gameOverShown = true;
 
   const winner = view.winner;
+  // Reason rides on either the state (set by the server / engine) or the
+  // last event (set by the action that finalized the game). Prefer the
+  // event-level reason — it's authoritative for the action that ended things.
+  const lastSnap = active.replay?.snapshots?.[active.replay.snapshots.length - 1];
+  const reason = lastSnap?.event?.end_reason || view.terminal_reason || null;
+  const reasonText = endReasonLabel(reason);
+  const drawSubtitle = reasonText ? `By ${reasonText}.` : null;
   // Online: my_color is the side YOU play. If winner === my_color, you won.
   // OTB: nobody is "you"; use a generic banner.
   // AI: my_color === 1 for player 0 (human).
   let outcome, title, subtitle;
   if (active.isOnline) {
     const myColor = view.my_color;
-    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
-    else if (winner === myColor) { outcome = 'win'; title = 'You win!'; subtitle = 'Nicely played.'; }
-    else { outcome = 'loss'; title = 'You lost'; subtitle = 'Good game — review the moves to learn.'; }
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; subtitle = drawSubtitle; }
+    else if (winner === myColor) { outcome = 'win'; title = 'You win!'; subtitle = reasonText ? `Won by ${reasonText}.` : 'Nicely played.'; }
+    else { outcome = 'loss'; title = 'You lost'; subtitle = reasonText ? `Lost by ${reasonText}.` : 'Good game — review the moves to learn.'; }
   } else if (active.isAI) {
-    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
-    else if (winner === view.my_color) { outcome = 'win'; title = 'You beat the AI!'; subtitle = 'Try a harder difficulty.'; }
-    else { outcome = 'loss'; title = 'The AI wins'; subtitle = "Try again — the AI doesn't get tired."; }
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; subtitle = drawSubtitle; }
+    else if (winner === view.my_color) { outcome = 'win'; title = 'You beat the AI!'; subtitle = reasonText ? `Won by ${reasonText}.` : 'Try a harder difficulty.'; }
+    else { outcome = 'loss'; title = 'The AI wins'; subtitle = reasonText ? `By ${reasonText}.` : "Try again — the AI doesn't get tired."; }
   } else {
     // OTB
     const name = winner === 1 ? 'Red' : winner === 2 ? 'Black' : null;
     outcome = name ? 'win' : 'draw';
     title = name ? `${name} wins!` : "It's a draw";
-    subtitle = name ? 'Good game.' : null;
+    subtitle = name ? (reasonText ? `By ${reasonText}.` : 'Good game.') : drawSubtitle;
   }
 
   const actions = [];

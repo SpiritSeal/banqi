@@ -18,6 +18,15 @@ import {
 // little "thinking" pause instead of an instant snap-reply.
 const AI_THINK_DELAY_MS = 350;
 
+// A draw is anything that ends the game without a winning color. Includes
+// mutual agreement, threefold repetition, no-progress (40-ply rule), and
+// any other future automatic-draw rule surfaced via end_reason. Resignations
+// and capture-general / no-legal-moves wins always carry winner ∈ {1, 2}.
+function isDrawEvent(event) {
+  if (!event?.game_over) return false;
+  return event.winner === 0 || event.winner == null;
+}
+
 // Default WASM loader. Imported dynamically so this file can be loaded in
 // test contexts that pass an injected fake module — the real banqi.js +
 // banqi.wasm only need to exist on disk when nobody supplies a substitute.
@@ -264,6 +273,7 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
       capture:      null,
       game_over:    true,
       winner:       winnerColor,
+      end_reason:   'timeout',
       draw_offered: false,
       clocks_after: { 0: session.clocks?.[0] ?? 0, 1: session.clocks?.[1] ?? 0 },
     };
@@ -396,6 +406,21 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
       }
     }
 
+    // end_reason matches the C++ TerminalReason enum surfaced via stateJson.
+    // The mutual-agreement path lives outside the WASM engine, so we set it
+    // explicitly when drawAccepted fires. For every other terminal — no
+    // legal moves, threefold repetition, no-progress, resign, capture-general,
+    // timeout — we trust the engine (or the synthesized timeout event).
+    let endReason = null;
+    const isOver = session.wasm.gameOver() || session.drawAccepted;
+    if (isOver) {
+      if (session.drawAccepted) {
+        endReason = 'mutual_agreement';
+      } else {
+        const st = JSON.parse(session.wasm.stateJson(-1));
+        endReason = st.terminal_reason || null;
+      }
+    }
     const event = {
       seq:          session.events.length,
       ts:           eventTs,
@@ -403,8 +428,9 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
       action,
       revealed,
       capture,
-      game_over:    session.wasm.gameOver() || session.drawAccepted,
+      game_over:    isOver,
       winner:       session.drawAccepted ? 0 : session.wasm.winner(),
+      end_reason:   endReason,
       draw_offered: drawOffered,
       clocks_after: session.clocks
         ? { 0: session.clocks[0], 1: session.clocks[1] } : null,
@@ -473,7 +499,7 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
       return _applyIntentLocked(session, pi, intent);
     });
     if (result.ok) {
-      const isDraw = result.event.action?.kind === 'accept_draw';
+      const isDraw = isDrawEvent(result.event);
       await emitEvent({ gameId, event: result.event, session,
                         endedNow: result.endedNow, isDraw });
       maybeScheduleAiMove(session);
@@ -522,7 +548,7 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
     });
     session.aiPending = false;
     if (result && result.ok) {
-      const isDraw = result.event.action?.kind === 'accept_draw';
+      const isDraw = isDrawEvent(result.event);
       await emitEvent({ gameId: session.gameId, event: result.event, session,
                         endedNow: result.endedNow, isDraw });
       // Edge case: an AI-vs-AI game (not currently exposed) would loop here.
@@ -556,7 +582,19 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
       state.clock_server_ts    = null;
     }
     state.timeout_loser = session.timeoutLoser;
-    if (session.timeoutLoser !== null) state.game_over = true;
+    if (session.timeoutLoser !== null) {
+      state.game_over = true;
+      state.terminal_reason = 'timeout';
+    }
+    // The engine's stateJson already carries a terminal_reason field (set
+    // from the WASM rule engine). Override it for the two terminal kinds
+    // the engine doesn't natively know about — mutual draw + timeout. We
+    // do NOT override on resign / threefold / no-progress / no-legal-moves
+    // because the engine has those correctly already.
+    if (session.drawAccepted) {
+      state.game_over = true;
+      state.terminal_reason = 'mutual_agreement';
+    }
     return state;
   }
 

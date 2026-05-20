@@ -71,6 +71,8 @@ class FakeGame {
       game_over:          this._gameOver,
       legal_moves_for_me: this._legalMovesForViewer(viewerIndex),
       winner:             this._winner,
+      terminal_reason:    this._terminalReason || 'none',
+      plies_since_progress:  0,
       my_color,
       mode:               this.mode,
     });
@@ -141,6 +143,7 @@ class FakeGame {
     this._gameOver = true;
     // Opponent wins; map their seat-color to the winner field.
     this._winner = (pi === 0 ? this._player1Color : this._player0Color) || (pi === 0 ? 2 : 1);
+    this._terminalReason = 'resigned';
   }
 
   gameOver() { return this._gameOver; }
