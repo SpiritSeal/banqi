@@ -113,6 +113,14 @@ public:
     // present occurrence. THREEFOLD_THRESHOLD or higher → draw.
     int repetition_count() const;
 
+    // Would applying `(from → to)` push the reversible window's count for
+    // the resulting post-move position to THREEFOLD_THRESHOLD or higher?
+    // Used by the client to warn before the user commits the draw-triggering
+    // move. Returns false for flips (which reset the window) and for moves
+    // whose destination is a face-up enemy (captures, also resetting). The
+    // simulation is non-mutating.
+    bool would_trigger_threefold(int from, int to) const;
+
     // Thresholds for automatic-draw conditions. Exposed so tests can sanity-
     // check the constants without parroting them from the cpp.
     static constexpr int THREEFOLD_THRESHOLD = 3;

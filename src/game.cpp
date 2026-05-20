@@ -149,12 +149,19 @@ std::string Game::state_json(int viewer_player_index) const {
     }
     j["cells"] = cells;
 
-    // Legal moves for the viewer (or for side-to-move when OTB).
+    // Legal moves for the viewer (or for side-to-move when OTB). Each entry
+    // is `{from, to}`; non-flip non-capture moves that would push the engine
+    // into a threefold-repetition draw also carry `threefold: true`, so the
+    // client can warn the user before committing.
     int legal_for = (viewer >= 0) ? viewer : rules_.side_to_move_player();
     auto legal = rules_.legal_moves(legal_for);
     json lm = json::array();
     for (const auto& m : legal) {
-        lm.push_back(json{{"from", m.from}, {"to", m.to}});
+        json mj = {{"from", m.from}, {"to", m.to}};
+        if (!m.is_flip() && rules_.would_trigger_threefold(m.from, m.to)) {
+            mj["threefold"] = true;
+        }
+        lm.push_back(mj);
     }
     j["legal_moves_for_me"] = lm;
     return j.dump();

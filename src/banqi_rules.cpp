@@ -77,6 +77,40 @@ int BanqiRules::repetition_count() const {
     return n;
 }
 
+bool BanqiRules::would_trigger_threefold(int from, int to) const {
+    // Flips are signalled with from < 0 — they reset the window, so they
+    // can never trigger a threefold draw.
+    if (from < 0 || from >= CELLS || to < 0 || to >= CELLS) return false;
+    if (cells_[from].state != Cell::State::FaceUp) return false;
+    // A face-up destination means the move would capture, which also resets
+    // the reversible window. Threefold is impossible.
+    if (cells_[to].state == Cell::State::FaceUp) return false;
+
+    // Build the position key the engine WOULD record after this move:
+    // cells_[from] becomes empty, cells_[to] inherits the moving piece, and
+    // side-to-move flips to the opponent. Mirrors position_key()'s encoding.
+    const Cell moving = cells_[from];
+    auto encode_cell = [](const Cell& c) -> char {
+        if (c.state == Cell::State::Empty)    return '_';
+        if (c.state == Cell::State::FaceDown) return '?';
+        const int t = (int)c.piece.type;
+        const int base = (c.piece.color == Color::Red) ? 0 : 7;
+        return (char)('A' + base + (t - 1));
+    };
+    std::string key;
+    key.reserve(CELLS + 1);
+    for (int i = 0; i < CELLS; ++i) {
+        if (i == from)      key.push_back('_');                  // emptied
+        else if (i == to)   key.push_back(encode_cell(moving));  // mover lands here
+        else                key.push_back(encode_cell(cells_[i]));
+    }
+    key.push_back((char)('0' + (1 - side_to_move_player_)));
+
+    int n = 0;
+    for (const auto& k : reversible_position_hashes_) if (k == key) ++n;
+    return (n + 1) >= THREEFOLD_THRESHOLD;
+}
+
 void BanqiRules::note_reversible_position() {
     reversible_position_hashes_.push_back(position_key());
 }

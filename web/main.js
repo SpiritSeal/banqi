@@ -19,7 +19,10 @@ import { Replay, renderTranscript, exportPgn, endReasonLabel } from './replay.js
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
-import { initSettings, openSettingsDrawer, openRulesDrawer } from './settings.js';
+import {
+  initSettings, openSettingsDrawer, openRulesDrawer,
+  warnBeforeThreefold, setSetting,
+} from './settings.js';
 import { captureCellRect, playEventAnimation } from './animations.js';
 
 // Initialise settings (applies theme / animation toggles to <body>) before
@@ -952,7 +955,7 @@ function statusLabel(state, info, replay) {
   return 'playing';
 }
 
-function onOnlineCellClick(idx, state) {
+async function onOnlineCellClick(idx, state) {
   if (state.game_over) return;
   if (state.replayViewing) return;
   if (state.side_to_move !== state.my_player_index) return;
@@ -979,6 +982,10 @@ function onOnlineCellClick(idx, state) {
   }
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
+    if (!(await confirmThreefoldIfNeeded({ from, to: idx, state }))) {
+      // User cancelled — keep the source selected so they can pick again.
+      return;
+    }
     active.selected = null;
     const drawOffer = active.offerDraw;
     active.offerDraw = false;
@@ -1141,7 +1148,7 @@ function refreshOTB() {
 }
 function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
 
-function onLocalCellClick(idx, state, mode) {
+async function onLocalCellClick(idx, state, mode) {
   if (state.game_over) return;
   if (state.replayViewing) return;
   const c = state.cells[idx];
@@ -1175,6 +1182,10 @@ function onLocalCellClick(idx, state, mode) {
   }
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
+    if (!(await confirmThreefoldIfNeeded({ from, to: idx, state }))) {
+      // User cancelled — keep the source selected so they can pick again.
+      return;
+    }
     active.selected = null;
     // Snapshot the source rect + piece before state changes for the move
     // animation overlay.
@@ -2740,6 +2751,84 @@ function showKeyboardHelp() {
       <dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Flip, select, or move to the focused cell</dd>
     </dl>`;
   infoModal({ title: 'Keyboard shortcuts', html });
+}
+
+// Looks up a move in the legal-moves array and returns true if it carries
+// the engine's `threefold` flag. Cheap — the legal moves array is short.
+function moveTriggersThreefold(state, from, to) {
+  const legal = state?.legal_moves_for_me || [];
+  for (const m of legal) {
+    if (m.from === from && m.to === to) return !!m.threefold;
+  }
+  return false;
+}
+
+// Returns true if the move was confirmed (caller should send it), false if
+// cancelled. When `warnBeforeThreefold` is off, returns true immediately —
+// no modal. The "Don't show again" checkbox toggles the setting.
+async function confirmThreefoldIfNeeded({ from, to, state }) {
+  if (!moveTriggersThreefold(state, from, to)) return true;
+  if (!warnBeforeThreefold()) return true;
+  return confirmThreefoldModal();
+}
+
+// Confirm-this-move dialog with a "Don't show again" checkbox. Resolves true
+// (commit the move) or false (cancel). On commit-with-checkbox, persists
+// warnBeforeThreefold = 'off' to settings.
+function confirmThreefoldModal() {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(true); return; }   // fail-open: if no modal root, just send.
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true"
+           aria-labelledby="threefold-title" aria-describedby="threefold-body" tabindex="-1">
+        <h2 id="threefold-title">End the game by repetition?</h2>
+        <p id="threefold-body" class="modal-body">
+          This move recreates a position that has already occurred twice with
+          you to move. Playing it ends the game as a draw by threefold
+          repetition. Continue?
+        </p>
+        <label class="modal-checkbox">
+          <input type="checkbox" id="threefold-dont-show">
+          <span>Don't show this warning again</span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel">Cancel</button>
+          <button type="button" class="btn-confirm primary">Continue &amp; draw</button>
+        </div>
+      </div>`;
+    const btnCancel = overlay.querySelector('.btn-cancel');
+    const btnConfirm = overlay.querySelector('.btn-confirm');
+    const dontShow = overlay.querySelector('#threefold-dont-show');
+    const close = (result) => {
+      if (result && dontShow.checked) setSetting('warnBeforeThreefold', 'off');
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(false); return; }
+      if (e.key === 'Tab') {
+        const focusables = [btnCancel, btnConfirm, dontShow];
+        const idx = focusables.indexOf(document.activeElement);
+        if (idx === -1) { focusables[0].focus(); e.preventDefault(); return; }
+        const next = e.shiftKey ? (idx - 1 + focusables.length) % focusables.length
+                                : (idx + 1) % focusables.length;
+        focusables[next].focus();
+        e.preventDefault();
+      }
+    };
+    btnCancel.addEventListener('click', () => close(false));
+    btnConfirm.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    btnCancel.focus();
+  });
 }
 
 function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = {}) {

@@ -821,6 +821,82 @@ TEST_CASE("BanqiRules: recheck_terminal triggers threefold after a restore") {
     CHECK(b.terminal_reason() == TerminalReason::ThreefoldRepetition);
 }
 
+TEST_CASE("BanqiRules: would_trigger_threefold predicts the draw move") {
+    // Set up the two-General shuffle and play 8 plies (two full cycles). On
+    // the 9th ply the position recurs for a third time — would_trigger_
+    // threefold(0, 1) must return true for that exact move, and false for
+    // moves that would land in a not-yet-thrice position.
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(7, Piece{Color::Black, PieceType::General});
+    auto cycle_step = [&](int ply_index) {
+        switch (ply_index % 4) {
+            case 0: b.apply_move(0, 1); break;
+            case 1: b.apply_move(7, 6); break;
+            case 2: b.apply_move(1, 0); break;
+            case 3: b.apply_move(6, 7); break;
+        }
+    };
+    for (int i = 0; i < 8; ++i) cycle_step(i);
+    REQUIRE_FALSE(b.game_over());
+    REQUIRE(b.side_to_move_player() == 0);
+
+    // Red's options here are 0→1 (the cycle's first ply, position-after-move
+    // already at 2 occurrences → 3rd would draw) and possibly other shuffle
+    // moves. The cycle move must be flagged.
+    CHECK(b.would_trigger_threefold(0, 1));
+    // A flip (signalled by from < 0) never triggers threefold.
+    CHECK_FALSE(b.would_trigger_threefold(-1, 0));
+    // Out-of-range inputs are rejected silently.
+    CHECK_FALSE(b.would_trigger_threefold(99, 1));
+    CHECK_FALSE(b.would_trigger_threefold(0, 99));
+}
+
+TEST_CASE("BanqiRules: would_trigger_threefold rejects capture moves") {
+    // A capture resets the reversible window — so even from a window full of
+    // repetitions, a capturing move can't be flagged as a draw trigger.
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0,  Piece{Color::Red,   PieceType::General});
+    b.set_faceup(1,  Piece{Color::Black, PieceType::Soldier});  // not capturable by General (rule)
+    b.set_faceup(8,  Piece{Color::Black, PieceType::Advisor});  // capturable by General
+    // Synthesize a stuffed history so the threefold predicate has plenty of
+    // matching entries to count if a non-capture move were tried.
+    auto hist = std::vector<std::string>(2, b.position_key());
+    b.set_repetition_history(std::move(hist));
+    // 0→8 is a capture; would_trigger_threefold must say no.
+    CHECK_FALSE(b.would_trigger_threefold(0, 8));
+}
+
+TEST_CASE("Game: legal_moves_for_me carries threefold flag on the draw move") {
+    BanqiRules b;
+    b.clear();
+    b.force_color_assignment(0, Color::Red);
+    b.set_faceup(0, Piece{Color::Red,   PieceType::General});
+    b.set_faceup(7, Piece{Color::Black, PieceType::General});
+    auto cycle_step = [&](int ply_index) {
+        switch (ply_index % 4) {
+            case 0: b.apply_move(0, 1); break;
+            case 1: b.apply_move(7, 6); break;
+            case 2: b.apply_move(1, 0); break;
+            case 3: b.apply_move(6, 7); break;
+        }
+    };
+    for (int i = 0; i < 8; ++i) cycle_step(i);
+    auto legal = b.legal_moves(0);
+    bool found = false;
+    for (const auto& m : legal) {
+        if (m.from == 0 && m.to == 1) {
+            found = true;
+            CHECK(b.would_trigger_threefold(m.from, m.to));
+        }
+    }
+    CHECK(found);
+}
+
 TEST_CASE("BanqiRules: position_key encodes side-to-move and visible cells") {
     BanqiRules b;
     b.clear();
