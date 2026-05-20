@@ -110,6 +110,17 @@ pwa-test:
 pwa-smoke: wasm
 	node tests/pwa_smoke.mjs
 
+# Touch / pointer input on the board. The unit test runs the pure gesture
+# state machine and needs no build. The browser test drives a real Chromium
+# against the OTB view and needs the WASM artefact + Playwright.
+.PHONY: board-input-test
+board-input-test:
+	node tests/board_input_unit.mjs
+
+.PHONY: board-input-smoke
+board-input-smoke: wasm
+	node tests/board_input_browser.mjs
+
 # Regenerate web/icons/*.png from web/favicon.svg. Run after editing the
 # favicon. Requires fonts-noto-cjk installed system-wide (for the 將 glyph)
 # and the @resvg/resvg-js dev dependency (already pinned in package.json).

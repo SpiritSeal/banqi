@@ -555,7 +555,43 @@ button:focus-visible, a.primary:focus-visible {
     inset 0 1px 0 rgba(255, 230, 180, 0.04),
     inset 0 -1px 0 rgba(0, 0, 0, 0.45);
 }
-.cell:hover.legal { transform: scale(1.04); }
+/* Hover styles only on real hover-capable input (desktop mouse, pen).
+   On touch, :hover latches after a tap and leaves cells stuck scaled-up. */
+@media (hover: hover) and (pointer: fine) {
+  .cell:hover.legal { transform: scale(1.04); }
+}
+
+/* Immediate press feedback — fires on pointerdown for both mouse and touch.
+   `.is-pressing` is toggled by the pointer controller in board-input.js. */
+.cell:active.legal,
+.cell.is-pressing.legal,
+.cell:active.facedown.legal,
+.cell.is-pressing.facedown.legal {
+  transform: scale(0.96);
+  filter: brightness(1.08);
+}
+
+/* Drag-source cell while a drag is in flight: dim, no pulse. */
+.cell.is-dragging {
+  animation: none !important;
+}
+.cell.is-dragging .cell-glyph,
+.cell.is-dragging .cell-value {
+  opacity: 0.18;
+}
+
+/* Cell currently under the dragged piece, on a legal target — strong halo. */
+.cell.drag-over-legal {
+  transform: scale(1.06);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -3px 6px rgba(140, 90, 30, 0.32),
+    0 0 0 4px var(--accent),
+    0 6px 14px rgba(0, 0, 0, 0.55);
+}
+.cell.drag-over-illegal {
+  filter: saturate(0.55) brightness(0.85);
+}
 .cell.empty {
   background:
     radial-gradient(ellipse at 30% 25%, rgba(0, 0, 0, 0.25), transparent 65%),
@@ -778,6 +814,18 @@ button.cell:disabled, button.cell[aria-disabled="true"] { cursor: default; }
 }
 .anim-piece.dissolving {
   animation: piece-dissolve 320ms var(--ease-in-out) 1 forwards;
+}
+
+/* Drag preview piece that follows the finger / cursor during a drag-to-move.
+   pointer-events: none so document.elementFromPoint sees the cell under it. */
+.anim-piece.drag-ghost {
+  pointer-events: none;
+  opacity: 0.94;
+  transition: transform 60ms linear;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -3px 6px rgba(140, 90, 30, 0.32),
+    0 10px 24px rgba(0, 0, 0, 0.55);
 }
 @keyframes piece-dissolve {
   0%   { opacity: 1; transform: scale(1)   rotate(0deg); }
@@ -1218,6 +1266,8 @@ button.dash-section-header:hover { color: var(--fg); }
   .gc-badges { margin-right: 30px; gap: 3px; }
   .badge { font-size: 9px; padding: 2px 6px; }
   .gc-delete { opacity: 1; }
+  /* Tighten board chrome so each cell gets a few extra pixels of touch area. */
+  .board { padding: 4px; gap: 3px; }
 }
 
 /* ---- game history list -------------------------------------------- */

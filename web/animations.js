@@ -143,5 +143,32 @@ export async function playEventAnimation(boardEl, event, ctx = {}) {
   }
 }
 
+// ---- drag ghost (touch / mouse drag-to-move preview) -------------------
+//
+// Lives in the same overlay layer as the move/capture animations so it
+// renders above cells but inside the board's clip. Ungated from
+// `areAnimationsEnabled()` — a drag without visual feedback is broken, not
+// "reduced motion".
+
+export function spawnDragGhost(boardEl, srcRect, piece) {
+  if (!boardEl || !srcRect || !piece) return null;
+  const colorClass = piece.color === 1 ? 'red' : 'black';
+  const overlay = buildOverlay(boardEl, srcRect, `face-up ${colorClass} drag-ghost`, piece.glyph);
+  overlay.style.zIndex = '6';
+  // Anchor it as if it's still at the source; subsequent moveDragGhost
+  // calls translate it to follow the pointer.
+  overlay._anchorX = srcRect.left + srcRect.width / 2;
+  overlay._anchorY = srcRect.top + srcRect.height / 2;
+  ensureLayer(boardEl).appendChild(overlay);
+  return overlay;
+}
+
+export function moveDragGhost(ghostEl, clientX, clientY /* boardEl unused */) {
+  if (!ghostEl) return;
+  const dx = clientX - ghostEl._anchorX;
+  const dy = clientY - ghostEl._anchorY;
+  ghostEl.style.transform = `translate(${dx}px, ${dy}px) scale(1.08)`;
+}
+
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 function nextFrame() { return new Promise(r => requestAnimationFrame(() => r())); }

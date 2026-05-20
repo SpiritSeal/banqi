@@ -28,6 +28,7 @@ const APP_SHELL = [
   './replay.js',
   './notifications.js',
   './board-hints.js',
+  './board-input.js',
   './settings.js',
   './animations.js',
   './style.css',
