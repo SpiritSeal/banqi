@@ -1425,7 +1425,7 @@ function renderPieceCountsHtml(counts) {
       if (n > 0) {
         const name = PIECE_NAMES[t];
         const label = `${name} ${category}: ${n}`;
-        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}">${glyphs[t]}<span class="pc-chip-n">${n}</span></span>`);
+        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}"><span class="pc-chip-g">${glyphs[t]}</span><span class="pc-chip-r" aria-hidden="true">${t}</span><span class="pc-chip-n">${n}</span></span>`);
       }
     }
     return parts.length

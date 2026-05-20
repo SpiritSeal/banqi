@@ -1959,6 +1959,40 @@ body.is-offline #btn-start-online { opacity: 0.55; }
 .piece-counts .pc-row-red .pc-chip { color: #f5a5a5; }
 .piece-counts .pc-row-black .pc-chip { color: #e6e6e6; }
 
+/* Rank-number labels on captured-pieces chips. Off by default; revealed by
+   body[data-piece-numbers="..."] for users who identify pieces by rank. */
+.piece-counts .pc-chip-r { display: none; }
+
+body[data-piece-numbers="badge"] .piece-counts .pc-chip-r {
+  display: inline;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--muted);
+  margin-left: 1px;
+  font-variant-numeric: tabular-nums;
+  vertical-align: super;
+  font-weight: 600;
+}
+
+body[data-piece-numbers="full"] .piece-counts .pc-chip-r {
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  padding: 0 3px;
+  border-left: 1px solid rgba(255, 255, 255, 0.10);
+  margin-left: 4px;
+}
+
+body[data-piece-numbers="full"] .piece-counts .pc-chip-n::before {
+  content: "×";
+  margin-right: 1px;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
 /* ---- sticky mobile game header -------------------------------- */
 @media (max-width: 700px) {
   #game-header, #ai-header {
