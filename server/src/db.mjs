@@ -181,16 +181,27 @@ export async function joinGame(db, gameId, joinUserId) {
 
 export async function listGamesForUser(db, userId, { status, limit = 50 } = {}) {
   const params = [userId, userId];
+  // last_event_mover lets the route derive whose-turn-it-is without loading
+  // each engine session: every flip/move/capture/draw-offer alternates
+  // side_to_move in the WASM rules, so active = 1 - last_mover for any
+  // non-terminal event. Indexed via idx_events_game (game_id, seq).
   let sql = `
     SELECT g.*,
            hu.display_name AS host_name, ju.display_name AS join_name,
            hu.provider     AS host_provider,
            ju.provider     AS join_provider,
            hu.provider_id  AS host_provider_id,
-           ju.provider_id  AS join_provider_id
+           ju.provider_id  AS join_provider_id,
+           le.mover        AS last_event_mover
       FROM games g
       JOIN users hu ON hu.id = g.host_user_id
       LEFT JOIN users ju ON ju.id = g.join_user_id
+      LEFT JOIN LATERAL (
+        SELECT mover FROM game_events
+         WHERE game_id = g.id
+         ORDER BY seq DESC
+         LIMIT 1
+      ) le ON TRUE
      WHERE (
              (g.host_user_id = $1 AND NOT g.hidden_for_host)
           OR (g.join_user_id = $2 AND NOT g.hidden_for_join)

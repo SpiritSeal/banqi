@@ -30,6 +30,9 @@
   <header>
     <a href="#/" class="brand"><h1>Banqi · 半棋</h1></a>
     <div class="subtitle">Chinese Dark Chess · play online or share a screen</div>
+    <button id="btn-keyboard-help" class="header-help-btn" type="button"
+            aria-label="Keyboard shortcuts"
+            title="Keyboard shortcuts (press ?)">?</button>
   </header>
 
   <!-- Persistent app nav. Items are added/hidden via JS based on sign-in state. -->
@@ -148,6 +151,7 @@
     </div>
     <div class="row" style="margin-top:12px">
       <button id="otb-resign">Resign</button>
+      <button id="otb-rematch" class="primary hidden">Rematch</button>
       <a class="link-btn" href="#/">Back to lobby</a>
     </div>
   </section>
@@ -175,8 +179,15 @@
 
   <!-- DASHBOARD -->
   <section id="view-dashboard" class="panel hidden" aria-labelledby="dashboard-heading">
-    <h2 id="dashboard-heading" tabindex="-1">My games</h2>
-    <div id="dashboard-list" class="dashboard-list"></div>
+    <header class="dash-header">
+      <h2 id="dashboard-heading" tabindex="-1">My games</h2>
+    </header>
+    <div id="dash-controls" class="dash-controls hidden">
+      <input id="dash-search" type="search" placeholder="Search opponent or room…"
+             autocomplete="off" aria-label="Search games">
+      <div id="dash-chips" class="chip-row" role="tablist" aria-label="Filter games"></div>
+    </div>
+    <div id="dashboard-sections"></div>
   </section>
 
   <!-- LEADERBOARD -->

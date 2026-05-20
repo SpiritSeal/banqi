@@ -313,6 +313,12 @@ function modeLabel(m) {
   return m === 'capture_general' ? 'Capture the General' : 'Standard';
 }
 
+const AI_DIFFICULTY_LABELS = {
+  easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master',
+  policy: 'Policy',
+};
+function aiDifficultyLabel(d) { return AI_DIFFICULTY_LABELS[d] || (d || ''); }
+
 async function startOnlineGame() {
   if (!me) return;
   const mode = normMode($('lobby-online-mode')?.value);
@@ -640,6 +646,7 @@ function refreshGame() {
       <div class="meta-row meta-row-counts">
         ${renderPieceCountsHtml(counts)}
       </div>
+      ${renderOnlineRematchRow(liveState, view)}
     </div>`;
   $('btn-copy-link').onclick = copyInviteLink;
   const chkOfferDraw = $('chk-offer-draw');
@@ -658,6 +665,7 @@ function refreshGame() {
     if (!ok) return;
     sendIntent({ kind: 'resign' });
   };
+  wireOnlineRematch();
   const retryBtn = $('btn-retry-conn');
   if (retryBtn) retryBtn.onclick = () => { active.conn?.reconnect?.(); };
   const claimBtn = $('btn-claim-timeout');
@@ -730,6 +738,59 @@ function downloadPgn(text, filename) {
 function sendIntent(intent) {
   if (!active?.isOnline || !active.conn) return;
   active.conn.send({ type: 'intent', ...intent });
+}
+
+function opponentUserIdFor(info, meId) {
+  if (!info || !meId) return null;
+  if (info.host_user_id === meId) return info.join_user_id || null;
+  if (info.join_user_id === meId) return info.host_user_id || null;
+  return null;
+}
+
+function renderOnlineRematchRow(liveState, view) {
+  if (!liveState.game_over || view.replayViewing) return '';
+  if (active?.info?.opponent_is_ai) return '';
+  const oppId = opponentUserIdFor(active?.info, me?.id);
+  if (!me || me.is_guest || !oppId) {
+    return `
+      <div class="meta-row meta-row-rematch">
+        <span class="meta-label">Game over</span>
+        <a class="primary" href="#/">Start a new game</a>
+      </div>`;
+  }
+  return `
+    <div class="meta-row meta-row-rematch">
+      <span class="meta-label">Game over</span>
+      <button id="btn-rematch" class="primary" type="button">Rematch</button>
+      <a class="link-btn" href="#/">Lobby</a>
+    </div>`;
+}
+
+function wireOnlineRematch() {
+  const btn = $('btn-rematch');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const oppId = opponentUserIdFor(active?.info, me?.id);
+    if (!oppId) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/match-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to_user_id: oppId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(body.error || 'Could not send rematch.', { kind: 'error' });
+        btn.disabled = false;
+        return;
+      }
+      toast('Rematch sent. Your opponent will see it in Friends.', { kind: 'success', timeoutMs: 4000 });
+    } catch (e) {
+      toast(`Could not send rematch: ${e.message || e}`, { kind: 'error' });
+      btn.disabled = false;
+    }
+  };
 }
 
 function turnLabel(state) {
@@ -966,6 +1027,10 @@ async function openOTB() {
   showView('otb');
   await _moduleReady;
   const mode = normMode($('lobby-otb-mode')?.value);
+  _startOTBGame(mode);
+}
+
+function _startOTBGame(mode) {
   const game = mode === 'capture_general'
     ? Module.Game.createWithMode('capture_general')
     : Module.Game.create();
@@ -1049,6 +1114,9 @@ function refreshOTB() {
     catch (e) { toast(`Couldn't resign: ${e.message || e}`, { kind: 'error' }); }
     refreshOTB();
   };
+  const otbRematch = $('otb-rematch');
+  otbRematch.classList.toggle('hidden', !view.game_over || view.replayViewing);
+  otbRematch.onclick = () => { _startOTBGame(active.mode); };
 
   renderTranscript($('otb-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshOTB(); },
@@ -1196,7 +1264,7 @@ function refreshAI() {
     onLocalCellClick(idx, view, 'ai');
   });
 
-  const diffLabel = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master', policy: 'Policy' }[active.difficulty] || '';
+  const diffLabel = aiDifficultyLabel(active.difficulty);
   const modeBadge = (active.mode && active.mode !== 'standard')
     ? ` · ${modeLabel(active.mode)}`
     : '';
@@ -1227,19 +1295,20 @@ function refreshAI() {
     active.difficulty = nextDiff;
     const sel = $('lobby-ai-difficulty');
     if (sel) sel.value = nextDiff;
-    toast(`Difficulty will be ${({easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert', master:'Master', policy:'Policy'})[nextDiff]} on the next new game.`,
+    toast(`Difficulty will be ${aiDifficultyLabel(nextDiff)} on the next new game.`,
           { kind: 'info', timeoutMs: 3000 });
     refreshAI();
   };
   $('ai-resign').disabled = !liveState.first_flip_done || liveState.game_over
     || liveState.side_to_move !== 0 || view.replayViewing;
   $('ai-new-game').disabled = false;
+  $('ai-new-game').classList.toggle('btn-emphasis', !!view.game_over);
   $('ai-thinking').classList.toggle('hidden', !active.aiThinking);
 
   renderTranscript($('ai-transcript'), active.replay, {
     onJump: (step) => { active.replay.goToStep(step); refreshAI(); },
     onExport: (replay) => {
-      const diff = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master', policy: 'Policy' }[active.difficulty] || '';
+      const diff = aiDifficultyLabel(active.difficulty);
       const pgn = exportPgn(replay, {
         players: ['You', `AI (${diff || active.difficulty})`],
         event:   'Banqi (vs AI)',
@@ -1498,15 +1567,40 @@ function renderBoard(boardEl, state, onClick) {
   }
 }
 
-// ---- dashboard ----
+// ---- dashboard / My Games ----------------------------------------------
+//
+// `renderDashboard` does the one-shot fetch + state-reset + shell mount;
+// after that, search/chip clicks call `rerenderDashboardBody` which only
+// touches the sections container.
+
+const DASH_CHIPS = [
+  { id: 'all',       label: 'All' },
+  { id: 'your_turn', label: 'Your turn' },
+  { id: 'waiting',   label: 'Waiting' },
+  { id: 'completed', label: 'Completed' },
+];
+const dashState = {
+  query: '',
+  chip: 'all',
+  collapsedCompleted: true,
+  games: [],
+  shellMounted: false,
+};
+
 async function renderDashboard() {
   showView('dashboard');
   refreshNotificationBadge();
   ensureNotifySettingsPanel();
-  const list = $('dashboard-list');
-  if (!me) { list.innerHTML = `<div>Sign in first. <a href="#/">Lobby</a></div>`; return; }
+  const sections = $('dashboard-sections');
+  const controls = $('dash-controls');
+  if (!me) {
+    controls.classList.add('hidden');
+    sections.innerHTML = `<div>Sign in first. <a href="#/">Lobby</a></div>`;
+    return;
+  }
   if (!online) {
-    list.innerHTML = `<div class="muted">You're offline — can't load games. <a href="#/">Lobby</a></div>`;
+    controls.classList.add('hidden');
+    sections.innerHTML = `<div class="muted">You're offline — can't load games. <a href="#/">Lobby</a></div>`;
     return;
   }
   renderNotifySettings();
@@ -1516,13 +1610,16 @@ async function renderDashboard() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     games = await r.json();
   } catch (e) {
-    list.innerHTML = `<div class="err">Couldn't load your games.
+    controls.classList.add('hidden');
+    sections.innerHTML = `<div class="err">Couldn't load your games.
       <a href="#/dashboard">Retry</a>.</div>`;
     toast('Couldn’t load your games.', { kind: 'error' });
     return;
   }
+  dashState.games = games;
   if (!games.length) {
-    list.innerHTML = `
+    controls.classList.add('hidden');
+    sections.innerHTML = `
       <div class="empty-state">
         <p>You haven’t played a game yet.</p>
         <div class="row">
@@ -1532,50 +1629,273 @@ async function renderDashboard() {
       </div>`;
     return;
   }
-  list.innerHTML = games.map(g => {
-    const opp = g.host_user_id === me.id ? (g.join_name || '(waiting for opponent)')
-                                          : (g.host_name || '(waiting for opponent)');
-    const ts = new Date(g.last_move_at || g.created_at).toLocaleString();
-    const tag = g.status === 'complete'  ? 'complete'
-              : g.status === 'waiting'   ? 'awaiting opponent'
-              : 'in progress';
-    const modeBit = (g.mode && g.mode !== 'standard')
-      ? ` · ${escapeHtml(modeLabel(g.mode))}`
-      : '';
-    return `<div class="game-row" data-game-id="${g.id}" data-room="${escapeHtml(g.room_code)}">
-              <a class="game-row-link" href="#/g/${g.room_code}">
-                <div class="g-opp">vs ${escapeHtml(opp)}</div>
-                <div class="g-status">${tag}</div>
-                <div class="g-meta muted">${ts} · room ${g.room_code}${modeBit}</div>
-              </a>
-              <button class="game-row-delete" type="button"
-                      title="Remove from my games"
-                      aria-label="Remove game vs ${escapeHtml(opp)} from my games">×</button>
-            </div>`;
-  }).join('');
-  list.querySelectorAll('.game-row-delete').forEach((btn) => {
-    btn.onclick = async (ev) => {
+  controls.classList.remove('hidden');
+  mountDashboardShell();
+  rerenderDashboardBody();
+}
+
+function mountDashboardShell() {
+  if (dashState.shellMounted) return;
+  dashState.shellMounted = true;
+
+  const search = $('dash-search');
+  let debounce;
+  search.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      dashState.query = search.value.trim();
+      rerenderDashboardBody();
+    }, 120);
+  });
+
+  // Click delegation across the whole sections container handles delete
+  // buttons (one listener regardless of how many cards exist) and the
+  // collapsed/expanded toggle on the Completed section header.
+  const sections = $('dashboard-sections');
+  sections.addEventListener('click', async (ev) => {
+    const del = ev.target.closest('[data-action="delete"]');
+    if (del) {
       ev.preventDefault();
       ev.stopPropagation();
-      const row = btn.closest('.game-row');
-      const id = row?.dataset.gameId;
-      const room = row?.dataset.room || '';
-      if (!id) return;
-      if (!confirm(`Remove game ${room} from your dashboard?\n\nThis hides it from your list. Completed games stay in the leaderboard / Elo history; an opponent who already joined will still see the game on their side.`)) return;
-      btn.disabled = true;
-      try {
-        const r = await fetch(`/api/games/${encodeURIComponent(id)}`, { method: 'DELETE' });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        row.remove();
-        if (!list.querySelector('.game-row')) renderDashboard();
-        toast('Removed from your games.', { kind: 'success', timeoutMs: 2500 });
-      } catch (e) {
-        btn.disabled = false;
-        toast(`Couldn't remove game: ${e.message || e}`, { kind: 'error' });
-      }
-    };
+      await handleDeleteClick(del);
+      return;
+    }
+    const toggle = ev.target.closest('[data-action="toggle-completed"]');
+    if (toggle) {
+      ev.preventDefault();
+      dashState.collapsedCompleted = !dashState.collapsedCompleted;
+      rerenderDashboardBody();
+    }
+  });
+
+  // Chips render once into #dash-chips; clicks update dashState.chip.
+  const chipRow = $('dash-chips');
+  chipRow.innerHTML = DASH_CHIPS.map((c) => `
+    <button class="chip" type="button" role="tab" data-chip="${c.id}"
+            aria-selected="${c.id === dashState.chip}">
+      ${escapeHtml(c.label)}<span class="chip-count" data-count="${c.id}"></span>
+    </button>`).join('');
+  chipRow.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.chip');
+    if (!btn) return;
+    dashState.chip = btn.dataset.chip;
+    chipRow.querySelectorAll('.chip').forEach((b) =>
+      b.setAttribute('aria-selected', b.dataset.chip === dashState.chip));
+    rerenderDashboardBody();
   });
 }
+
+function rerenderDashboardBody() {
+  const sections = $('dashboard-sections');
+  const buckets = bucketGames(dashState.games);
+
+  // Live counts inside the chip pills, computed from un-search-filtered
+  // buckets so the numbers stay stable as the user types.
+  const chipRow = $('dash-chips');
+  if (chipRow) {
+    const counts = {
+      all:       dashState.games.length,
+      your_turn: buckets.yourTurn.length,
+      waiting:   buckets.waiting.length,
+      completed: buckets.completed.length,
+    };
+    chipRow.querySelectorAll('[data-count]').forEach((el) => {
+      const n = counts[el.dataset.count] ?? 0;
+      el.textContent = n ? ` · ${n}` : '';
+    });
+  }
+
+  const filtered = filterGames(dashState.games, dashState.query, dashState.chip);
+  if (!filtered.length) {
+    sections.innerHTML = renderFilterEmptyState();
+    return;
+  }
+
+  if (dashState.chip !== 'all') {
+    sections.innerHTML = filtered.map(renderGameCard).join('');
+    return;
+  }
+  const fb = bucketGames(filtered);
+  const html = [
+    renderSection('Your turn',  fb.yourTurn,  { emphasize: true }),
+    renderSection('Their turn', fb.theirTurn, {}),
+    renderSection('Waiting for opponent', fb.waiting, {}),
+    renderSection('Completed', fb.completed,
+      { collapsible: true, collapsed: dashState.collapsedCompleted, capVisible: 20 }),
+  ].filter(Boolean).join('');
+  sections.innerHTML = html;
+}
+
+function bucketGames(games) {
+  const out = { yourTurn: [], theirTurn: [], waiting: [], completed: [] };
+  for (const g of games) {
+    if (g.status === 'complete')      out.completed.push(g);
+    else if (g.status === 'waiting')  out.waiting.push(g);
+    else if (g.your_turn)             out.yourTurn.push(g);
+    else                              out.theirTurn.push(g);
+  }
+  return out;
+}
+
+function filterGames(games, query, chip) {
+  let pool = games;
+  if (chip === 'your_turn') pool = pool.filter((g) => g.status === 'playing' && g.your_turn);
+  else if (chip === 'waiting')   pool = pool.filter((g) => g.status === 'waiting');
+  else if (chip === 'completed') pool = pool.filter((g) => g.status === 'complete');
+  if (!query) return pool;
+  const q = query.toLowerCase();
+  return pool.filter((g) => {
+    const opp = (opponentNameFor(g) || '').toLowerCase();
+    const room = (g.room_code || '').toLowerCase();
+    return opp.includes(q) || room.includes(q);
+  });
+}
+
+function renderSection(title, games, opts) {
+  if (!games.length) return '';
+  const cap = opts.capVisible || games.length;
+  const visible = games.slice(0, cap);
+  const hidden = games.length - visible.length;
+  const collapsedClass = opts.collapsed ? ' collapsed' : '';
+  const headerTag = opts.collapsible ? 'button' : 'div';
+  const headerAttrs = opts.collapsible
+    ? `type="button" data-action="toggle-completed" aria-expanded="${!opts.collapsed}"`
+    : '';
+  const chevron = opts.collapsible
+    ? `<span class="dash-section-chevron" aria-hidden="true">▾</span>`
+    : '';
+  const more = hidden > 0
+    ? `<div class="gc-meta" style="text-align:center;padding:6px 0;">+ ${hidden} older</div>`
+    : '';
+  return `
+    <section class="dash-section${collapsedClass}">
+      <${headerTag} class="dash-section-header" ${headerAttrs}>
+        ${escapeHtml(title)}
+        <span class="dash-section-count">(${games.length})</span>
+        ${chevron}
+      </${headerTag}>
+      <div class="dash-section-body">
+        ${visible.map(renderGameCard).join('')}
+        ${more}
+      </div>
+    </section>`;
+}
+
+function renderGameCard(g) {
+  const oppName  = opponentNameFor(g);
+  const oppLabel = g.opponent_is_ai ? 'AI' : (oppName || '(waiting for opponent)');
+  const avatarClass = g.opponent_is_ai ? 'gc-avatar gc-avatar--ai' : 'gc-avatar';
+  const avatarChar  = g.opponent_is_ai ? '🤖' : initialsFor(oppName);
+  const yourTurn = g.status === 'playing' && g.your_turn;
+  const cardClass = yourTurn ? 'game-card your-turn' : 'game-card';
+
+  const ts = g.status === 'complete'
+    ? (g.ended_at || g.last_move_at || g.created_at)
+    : (g.last_move_at || g.created_at);
+  const ago = relativeTime(ts);
+
+  let meta;
+  if (g.status === 'waiting') {
+    meta = `Waiting for opponent · room ${escapeHtml(g.room_code)}`;
+  } else if (g.status === 'complete') {
+    meta = `${ago} · room ${escapeHtml(g.room_code)}`;
+  } else if (yourTurn) {
+    meta = `Your move · ${ago}`;
+  } else if (g.active_index == null && g.my_role) {
+    meta = `Either side can flip first · ${ago}`;
+  } else {
+    meta = `${escapeHtml(oppLabel)}'s move · ${ago}`;
+  }
+
+  const badges = [];
+  if (g.status === 'complete') {
+    const myId = me?.id;
+    const oppId = g.host_user_id === myId ? g.join_user_id : g.host_user_id;
+    if (g.winner_user_id == null)            badges.push('<span class="badge badge--draw">Draw</span>');
+    else if (g.winner_user_id === myId)      badges.push('<span class="badge badge--win">Won</span>');
+    else if (g.winner_user_id === oppId)     badges.push('<span class="badge badge--loss">Lost</span>');
+  }
+  if (g.opponent_is_ai && g.ai_difficulty) {
+    badges.push(`<span class="badge badge--ai">AI · ${escapeHtml(aiDifficultyLabel(g.ai_difficulty))}</span>`);
+  }
+  if (g.mode && g.mode !== 'standard') {
+    badges.push(`<span class="badge badge--mode">${escapeHtml(modeLabel(g.mode))}</span>`);
+  }
+  if (g.status === 'playing' && g.time_limit_ms != null) {
+    badges.push(`<span class="badge badge--clock">${escapeHtml(timeControlLabel(g.time_limit_ms, g.increment_ms))}</span>`);
+  }
+
+  const dot = yourTurn ? `<span class="gc-turn-dot" aria-hidden="true"></span>` : '';
+
+  // Wrap card body in an <a> (no nested button — invalid HTML) and sit the
+  // delete button beside it as an absolutely-positioned sibling.
+  return `
+    <div class="${cardClass}" data-game-id="${g.id}" data-room="${escapeHtml(g.room_code)}">
+      <a class="game-card-link" href="#/g/${escapeHtml(g.room_code)}">
+        <div class="${avatarClass}" aria-hidden="true">${avatarChar}</div>
+        <div class="gc-main">
+          ${dot}<span class="gc-name">vs ${escapeHtml(oppLabel)}</span>
+        </div>
+        <div class="gc-meta">${meta}</div>
+        <div class="gc-badges">${badges.join('')}</div>
+      </a>
+      <button class="gc-delete" type="button" data-action="delete"
+              title="Remove from my games"
+              aria-label="Remove game vs ${escapeHtml(oppLabel)} from my games">×</button>
+    </div>`;
+}
+
+function renderFilterEmptyState() {
+  const q = dashState.query;
+  const chipLabel = (DASH_CHIPS.find((c) => c.id === dashState.chip) || {}).label || '';
+  const detail = q
+    ? `No games match “${escapeHtml(q)}”${chipLabel && chipLabel !== 'All' ? ` in ${escapeHtml(chipLabel)}` : ''}.`
+    : `No games in ${escapeHtml(chipLabel)}.`;
+  return `<div class="dash-empty-filter">${detail}
+            <a href="#" class="link-btn" data-action="clear-filters">Clear filters</a>
+          </div>`;
+}
+
+function opponentNameFor(g) {
+  if (!me) return g.host_name || g.join_name || '';
+  return g.host_user_id === me.id ? (g.join_name || '') : (g.host_name || '');
+}
+
+async function handleDeleteClick(btn) {
+  const card = btn.closest('.game-card');
+  const id = card?.dataset.gameId;
+  const room = card?.dataset.room || '';
+  if (!id) return;
+  if (!confirm(`Remove game ${room} from your dashboard?\n\nThis hides it from your list. Completed games stay in the leaderboard / Elo history; an opponent who already joined will still see the game on their side.`)) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/games/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    dashState.games = dashState.games.filter((g) => String(g.id) !== String(id));
+    if (!dashState.games.length) renderDashboard();
+    else rerenderDashboardBody();
+    toast('Removed from your games.', { kind: 'success', timeoutMs: 2500 });
+  } catch (e) {
+    btn.disabled = false;
+    toast(`Couldn't remove game: ${e.message || e}`, { kind: 'error' });
+  }
+}
+
+// "Clear filters" link inside the empty-filter state and any future inline
+// resets live here so they don't need their own listener inside render fns.
+document.addEventListener('click', (ev) => {
+  const clear = ev.target.closest('[data-action="clear-filters"]');
+  if (!clear) return;
+  ev.preventDefault();
+  dashState.query = '';
+  dashState.chip = 'all';
+  const search = document.getElementById('dash-search');
+  if (search) search.value = '';
+  const chipRow = document.getElementById('dash-chips');
+  if (chipRow) chipRow.querySelectorAll('.chip').forEach((b) =>
+    b.setAttribute('aria-selected', b.dataset.chip === 'all'));
+  rerenderDashboardBody();
+});
 
 // ---- notification settings (rendered in the dashboard view) ----
 function ensureNotifySettingsPanel() {
@@ -1585,9 +1905,10 @@ function ensureNotifySettingsPanel() {
   const panel = document.createElement('div');
   panel.id = 'notify-settings';
   panel.className = 'notify-settings';
-  // Insert just above the games list so users can flip it on without scrolling.
-  const list = $('dashboard-list');
-  view.insertBefore(panel, list);
+  // Sit just above the search/chip controls so users can flip notifications
+  // on without scrolling past their actual games.
+  const anchor = $('dash-controls') || $('dashboard-sections');
+  view.insertBefore(panel, anchor);
 }
 
 async function renderNotifySettings() {
@@ -1865,6 +2186,22 @@ function timeControlLabel(timeLimitMs, incrementMs = 0) {
   const baseMin = Math.round(timeLimitMs / 60000);
   const incSec  = Math.round((incrementMs || 0) / 1000);
   return `${baseMin}+${incSec}`;
+}
+
+// Compact human-readable "time since" string. Falls back to an absolute
+// date for events older than a week so we don't bury the year in a "Nd ago".
+function relativeTime(ts) {
+  if (!ts) return '';
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (sec < 45)        return 'just now';
+  if (sec < 90)        return '1m ago';
+  const min = Math.round(sec / 60);
+  if (min < 60)        return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr  < 24)        return `${hr}h ago`;
+  const day = Math.round(hr / 24);
+  if (day < 7)         return `${day}d ago`;
+  return new Date(ts).toLocaleDateString();
 }
 
 // Per-perspective chip text. Outgoing = the viewer is the challenger;
@@ -2328,6 +2665,70 @@ function toast(message, opts = {}) {
 }
 
 // ---- modal dialog ----
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  return !!el.isContentEditable;
+}
+
+function infoModal({ title, html, closeLabel = 'Close' } = {}) {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(); return; }
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal modal-info" role="dialog" aria-modal="true" aria-labelledby="modal-title"
+           aria-describedby="modal-body" tabindex="-1">
+        <h2 id="modal-title"></h2>
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-close primary"></button>
+        </div>
+      </div>`;
+    overlay.querySelector('#modal-title').textContent = title || '';
+    overlay.querySelector('#modal-body').innerHTML = html || '';
+    const btnClose = overlay.querySelector('.btn-close');
+    btnClose.textContent = closeLabel;
+
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+      if (e.key === 'Tab') { btnClose.focus(); e.preventDefault(); }
+    };
+    btnClose.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    btnClose.focus();
+  });
+}
+
+function showKeyboardHelp() {
+  if (document.querySelector('.modal-overlay')) return;
+  const html = `
+    <p class="muted small" style="margin-top:0">Shortcuts work anywhere unless you're typing in a text field.</p>
+    <dl class="kbd-help">
+      <dt><kbd>?</kbd></dt>            <dd>Show this help</dd>
+      <dt><kbd>Esc</kbd></dt>          <dd>Close a dialog</dd>
+      <dt><kbd>Tab</kbd></dt>          <dd>Move focus between controls</dd>
+    </dl>
+    <h3 class="kbd-help-section">Board (when a cell is focused)</h3>
+    <dl class="kbd-help">
+      <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move focus between cells</dd>
+      <dt><kbd>Home</kbd> / <kbd>End</kbd></dt><dd>Jump to row start / end</dd>
+      <dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Flip, select, or move to the focused cell</dd>
+    </dl>`;
+  infoModal({ title: 'Keyboard shortcuts', html });
+}
+
 function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = {}) {
   return new Promise((resolve) => {
     const root = document.getElementById('modal-root');
@@ -2547,7 +2948,26 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// First letter of a display name, uppercased, for avatar initials. Strips
+// emoji/punctuation so we land on a letter when one is available.
+function initialsFor(name) {
+  const ch = String(name || '').replace(/[^\p{L}\p{N}]+/gu, '').charAt(0);
+  return ch ? ch.toUpperCase() : '?';
+}
+
 // ---- boot ----
+document.addEventListener('keydown', (e) => {
+  if (e.key !== '?') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (isTypingTarget(e.target)) return;
+  if (document.querySelector('.modal-overlay')) return;
+  e.preventDefault();
+  showKeyboardHelp();
+});
+
+const btnHelp = document.getElementById('btn-keyboard-help');
+if (btnHelp) btnHelp.addEventListener('click', showKeyboardHelp);
+
 await refreshSession();
 applyNavAuthState();
 route();
