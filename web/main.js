@@ -10,7 +10,7 @@
 // Module.Game on the client; the server is the only authority.
 //
 // Hash routing: #/ (lobby), #/g/<roomCode> (game), #/otb, #/ai,
-//               #/dashboard, #/leaderboard, #/profile/<id>.
+//               #/dashboard, #/leaderboard, #/history, #/profile/<id>.
 
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
@@ -77,6 +77,7 @@ const views = {
   ai:          $('view-ai'),
   dashboard:   $('view-dashboard'),
   leaderboard: $('view-leaderboard'),
+  history:     $('view-history'),
   profile:     $('view-profile'),
   friends:     $('view-friends'),
   challenge:   $('view-challenge'),
@@ -195,6 +196,7 @@ async function route() {
     case '#/ai':          announce('Vs AI game');       return openAIGame();
     case '#/dashboard':   announce('My games');         return renderDashboard();
     case '#/leaderboard': announce('Leaderboard');      return renderLeaderboard();
+    case '#/history':     announce('Game history');     return renderHistory();
     case '#/friends':     announce('Friends');          return renderFriends();
     default:              announce('Lobby');            return renderLobby();
   }
@@ -1449,7 +1451,7 @@ function renderPieceCountsHtml(counts) {
       if (n > 0) {
         const name = PIECE_NAMES[t];
         const label = `${name} ${category}: ${n}`;
-        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}">${glyphs[t]}<span class="pc-chip-n">${n}</span></span>`);
+        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}"><span class="pc-chip-g">${glyphs[t]}</span><span class="pc-chip-r" aria-hidden="true">${t}</span><span class="pc-chip-n">${n}</span></span>`);
       }
     }
     return parts.length
@@ -1501,18 +1503,19 @@ function attachBoardKeyNav(boardEl) {
   if (boardEl.dataset.keyNav === '1') return;
   boardEl.dataset.keyNav = '1';
   boardEl.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const target = e.target.closest('[data-cell-index]');
     if (!target || target.parentElement !== boardEl) return;
     const idx = parseInt(target.dataset.cellIndex, 10);
     if (isNaN(idx)) return;
     let handled = true;
-    switch (e.key) {
-      case 'ArrowLeft':  boardArrowFocus(boardEl, idx, 0, -1); break;
-      case 'ArrowRight': boardArrowFocus(boardEl, idx, 0,  1); break;
-      case 'ArrowUp':    boardArrowFocus(boardEl, idx, -1, 0); break;
-      case 'ArrowDown':  boardArrowFocus(boardEl, idx,  1, 0); break;
-      case 'Home':       boardArrowFocus(boardEl, idx, 0, -8); break;
-      case 'End':        boardArrowFocus(boardEl, idx, 0,  8); break;
+    switch (e.key.toLowerCase()) {
+      case 'w':    boardArrowFocus(boardEl, idx, -1, 0); break;
+      case 'a':    boardArrowFocus(boardEl, idx,  0, -1); break;
+      case 's':    boardArrowFocus(boardEl, idx,  1, 0); break;
+      case 'd':    boardArrowFocus(boardEl, idx,  0, 1); break;
+      case 'home': boardArrowFocus(boardEl, idx,  0, -8); break;
+      case 'end':  boardArrowFocus(boardEl, idx,  0, 8); break;
       default: handled = false;
     }
     if (handled) e.preventDefault();
@@ -2059,6 +2062,169 @@ async function renderLeaderboard() {
         <td>${u.elo}</td><td>${u.wins}</td><td>${u.losses}</td>
       </tr>`).join('')}
     </tbody></table>`;
+}
+
+// ---- public game history ------------------------------------------------
+//
+// Lists all completed games on the server, paginated by the most recent
+// ended_at. Public — no sign-in required, mirrors the leaderboard's access
+// model. Mode chips filter the in-memory list AND the next fetch.
+
+const HISTORY_CHIPS = [
+  { id: 'all',              label: 'All',                  mode: null },
+  { id: 'standard',         label: 'Standard',             mode: 'standard' },
+  { id: 'capture_general',  label: 'Capture the General',  mode: 'capture_general' },
+];
+
+const historyState = {
+  chip: 'all',
+  games: [],
+  nextBefore: null,
+  shellMounted: false,
+  loading: false,
+};
+
+async function renderHistory() {
+  showView('history');
+  if (!online) {
+    $('history-body').innerHTML = `<div class="muted">You're offline — can't load history. <a href="#/">Lobby</a></div>`;
+    $('history-more').classList.add('hidden');
+    return;
+  }
+  mountHistoryShell();
+  historyState.games = [];
+  historyState.nextBefore = null;
+  $('history-body').innerHTML = `<div class="muted">Loading…</div>`;
+  $('history-more').classList.add('hidden');
+  await loadMoreHistory({ replace: true });
+}
+
+function mountHistoryShell() {
+  if (historyState.shellMounted) return;
+  historyState.shellMounted = true;
+  const chipRow = $('history-chips');
+  chipRow.innerHTML = HISTORY_CHIPS.map((c) => `
+    <button class="chip" type="button" role="tab" data-chip="${c.id}"
+            aria-selected="${c.id === historyState.chip}">
+      ${escapeHtml(c.label)}
+    </button>`).join('');
+  chipRow.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.chip');
+    if (!btn || btn.dataset.chip === historyState.chip) return;
+    historyState.chip = btn.dataset.chip;
+    chipRow.querySelectorAll('.chip').forEach((b) =>
+      b.setAttribute('aria-selected', b.dataset.chip === historyState.chip));
+    renderHistory();
+  });
+  $('history-more').addEventListener('click', () => loadMoreHistory({ replace: false }));
+}
+
+async function loadMoreHistory({ replace }) {
+  if (historyState.loading) return;
+  historyState.loading = true;
+  const more = $('history-more');
+  more.disabled = true;
+  const chip = HISTORY_CHIPS.find((c) => c.id === historyState.chip);
+  const params = new URLSearchParams();
+  params.set('limit', '50');
+  if (chip?.mode) params.set('mode', chip.mode);
+  if (!replace && historyState.nextBefore) {
+    params.set('before', String(historyState.nextBefore));
+  }
+  try {
+    const r = await fetch(`/api/history?${params.toString()}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    historyState.games = replace
+      ? (data.games || [])
+      : historyState.games.concat(data.games || []);
+    historyState.nextBefore = data.next_before || null;
+  } catch (e) {
+    $('history-body').innerHTML = `<div class="err">Couldn't load history.
+      <a href="#/history">Retry</a>.</div>`;
+    toast('Couldn’t load history.', { kind: 'error' });
+    historyState.loading = false;
+    more.disabled = false;
+    return;
+  } finally {
+    historyState.loading = false;
+    more.disabled = false;
+  }
+  renderHistoryBody();
+}
+
+function renderHistoryBody() {
+  const body = $('history-body');
+  if (!historyState.games.length) {
+    body.innerHTML = `<div class="empty-state">
+      <p>No completed games yet.</p>
+      <div class="row"><a href="#/" class="primary">Start a game</a></div>
+    </div>`;
+    $('history-more').classList.add('hidden');
+    return;
+  }
+  body.innerHTML = `
+    <ul class="history-list">
+      ${historyState.games.map(renderHistoryRow).join('')}
+    </ul>`;
+  $('history-more').classList.toggle('hidden', !historyState.nextBefore);
+}
+
+// One row per completed game. Winner is bolded; loser is dimmed; AI rows
+// don't link to a profile (AI profiles exist but the global feed isn't a
+// natural surface for them yet).
+function renderHistoryRow(g) {
+  const ago = relativeTime(g.ended_at || g.last_move_at || g.created_at);
+  const winnerId = g.winner_user_id;
+  const isDraw = g.winner_color === 0 || g.winner_color == null;
+  const tc = g.time_limit_ms != null
+    ? ` · ${escapeHtml(timeControlLabel(g.time_limit_ms, g.increment_ms || 0))}`
+    : '';
+  const moves = `${g.move_count} move${g.move_count === 1 ? '' : 's'}`;
+  const endTag = endKindLabel(g);
+  const host = renderHistoryPlayer(g, 'host', winnerId, isDraw);
+  const join = renderHistoryPlayer(g, 'join', winnerId, isDraw);
+  const result = isDraw ? 'Draw'
+    : winnerId === g.host_user_id ? '1 – 0'
+    : winnerId === g.join_user_id ? '0 – 1'
+    : '—';
+  return `
+    <li class="history-row">
+      <div class="history-players">${host}<span class="history-vs">vs</span>${join}</div>
+      <div class="history-result">${escapeHtml(result)}</div>
+      <div class="history-meta">
+        ${escapeHtml(modeLabel(g.mode))}${tc} · ${moves}
+        ${endTag ? ` · ${escapeHtml(endTag)}` : ''} · ${escapeHtml(ago)}
+      </div>
+    </li>`;
+}
+
+function renderHistoryPlayer(g, side, winnerUserId, isDraw) {
+  const name = g[`${side}_name`] || (side === 'join' ? '(no opponent)' : '?');
+  const userId = g[`${side}_user_id`];
+  const provider = g[`${side}_provider`];
+  const providerId = g[`${side}_provider_id`];
+  const isAi = provider === 'ai';
+  const won = !isDraw && userId && winnerUserId === userId;
+  const lost = !isDraw && userId && winnerUserId && winnerUserId !== userId;
+  const cls = `history-player${won ? ' winner' : lost ? ' loser' : ''}`;
+  const aiTag = isAi ? ` <span class="muted small">· ${escapeHtml(aiDifficultyLabel(providerId))}</span>` : '';
+  // Guests have a user row but no profile page (404s on the route). Skip the
+  // link for guests too.
+  const noLink = !userId || provider === 'guest' || provider === 'ai';
+  const inner = noLink
+    ? escapeHtml(name)
+    : `<a href="#/profile/${userId}">${escapeHtml(name)}</a>`;
+  return `<span class="${cls}">${inner}${aiTag}</span>`;
+}
+
+function endKindLabel(g) {
+  switch (g.end_kind) {
+    case 'resign':       return 'by resignation';
+    case 'timeout':      return 'on time';
+    case 'accept_draw':  return 'by agreement';
+    default:             return null;
+  }
 }
 
 // ---- profile ----
@@ -2744,9 +2910,14 @@ function showKeyboardHelp() {
       <dt><kbd>Esc</kbd></dt>          <dd>Close a dialog</dd>
       <dt><kbd>Tab</kbd></dt>          <dd>Move focus between controls</dd>
     </dl>
+    <h3 class="kbd-help-section">Move history (in a game)</h3>
+    <dl class="kbd-help">
+      <dt><kbd>←</kbd> / <kbd>→</kbd></dt><dd>Previous / next move</dd>
+      <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Jump to first move / return to live</dd>
+    </dl>
     <h3 class="kbd-help-section">Board (when a cell is focused)</h3>
     <dl class="kbd-help">
-      <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move focus between cells</dd>
+      <dt><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></dt><dd>Move focus between cells</dd>
       <dt><kbd>Home</kbd> / <kbd>End</kbd></dt><dd>Jump to row start / end</dd>
       <dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Flip, select, or move to the focused cell</dd>
     </dl>`;
@@ -3083,6 +3254,30 @@ document.addEventListener('keydown', (e) => {
   if (document.querySelector('.modal-overlay')) return;
   e.preventDefault();
   showKeyboardHelp();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const key = e.key;
+  if (key !== 'ArrowLeft' && key !== 'ArrowRight' && key !== 'ArrowUp' && key !== 'ArrowDown') return;
+  if (isTypingTarget(e.target)) return;
+  if (document.querySelector('.modal-overlay')) return;
+
+  let refresh = null;
+  if (active?.isOnline && !views.game?.classList.contains('hidden')) refresh = refreshGame;
+  else if (active?.isOTB && !views.otb?.classList.contains('hidden')) refresh = refreshOTB;
+  else if (active?.isAI && !views.ai?.classList.contains('hidden')) refresh = refreshAI;
+  if (!refresh) return;
+  if (!active?.replay || active.replay.totalMoves() === 0) return;
+
+  switch (key) {
+    case 'ArrowLeft':  active.replay.goPrev();  break;
+    case 'ArrowRight': active.replay.goNext();  break;
+    case 'ArrowUp':    active.replay.goFirst(); break;
+    case 'ArrowDown':  active.replay.goLast();  break;
+  }
+  e.preventDefault();
+  refresh();
 });
 
 const btnHelp = document.getElementById('btn-keyboard-help');

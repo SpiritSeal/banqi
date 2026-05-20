@@ -43,6 +43,7 @@
       Friends<span id="nav-notif-badge" class="app-nav-notif hidden"></span>
     </a>
     <a href="#/leaderboard" data-route="#/leaderboard" class="nav-item" data-not-guest>Leaderboard</a>
+    <a href="#/history" data-route="#/history" class="nav-item">History</a>
     <span class="nav-spacer"></span>
     <button type="button" class="nav-item" id="btn-open-rules" aria-label="Open rules">
       <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -194,6 +195,21 @@
   <section id="view-leaderboard" class="panel hidden" aria-labelledby="leaderboard-heading">
     <h2 id="leaderboard-heading" tabindex="-1">Leaderboard</h2>
     <div id="leaderboard-table"></div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="view-history" class="panel hidden" aria-labelledby="history-heading">
+    <header class="dash-header">
+      <h2 id="history-heading" tabindex="-1">Game history</h2>
+    </header>
+    <p class="muted small">Every completed game on the server, newest first.</p>
+    <div class="dash-controls">
+      <div id="history-chips" class="chip-row" role="tablist" aria-label="Filter by mode"></div>
+    </div>
+    <div id="history-body"></div>
+    <div class="row" style="justify-content:center;margin-top:16px">
+      <button id="history-more" class="link-btn hidden" type="button">Load more</button>
+    </div>
   </section>
 
   <!-- PROFILE -->
