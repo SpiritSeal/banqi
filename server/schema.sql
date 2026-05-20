@@ -166,5 +166,7 @@ ALTER TABLE games          ADD COLUMN IF NOT EXISTS increment_ms  INTEGER NOT NU
 ALTER TABLE games ADD COLUMN IF NOT EXISTS clock_state_json TEXT;
 
 -- Why a player lost (for analytics / "Won on time" UI). NULL for wins and
--- draws. Today only 'timeout' is written; resignations remain unmarked.
+-- draws. 'timeout' is written when the clock falls; other losses (resign,
+-- stalemate-loss) remain unmarked. Draws are tagged via game_events.payload
+-- .end_reason instead (mutual_agreement | threefold_repetition | no_progress).
 ALTER TABLE elo_history ADD COLUMN IF NOT EXISTS loss_reason TEXT;

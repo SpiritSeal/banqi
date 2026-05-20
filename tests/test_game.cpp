@@ -80,7 +80,8 @@ TEST_CASE("Game: state_json filters legal_moves per viewer") {
 TEST_CASE("Game: full game with greedy heuristic remains consistent") {
     // Drive a game to either terminal state or a generous step cap, asserting
     // legal_moves stays non-empty (the engine must always offer side-to-move
-    // a move) and that game_over implies a winner.
+    // a move) and that game_over implies a coherent terminal state — either
+    // a winner or an automatic draw with a populated terminal_reason.
     MockPrng p(99);
     auto g = Game::create(p);
 
@@ -108,7 +109,14 @@ TEST_CASE("Game: full game with greedy heuristic remains consistent") {
         else                g.apply_move(stm, pick.from, pick.to);
     }
     if (g.game_over()) {
-        CHECK(g.winner() != Color::None);
+        // Either someone won (winner color is set), or it's an automatic
+        // draw — in which case the rule engine must have flagged the reason.
+        if (g.winner() == Color::None) {
+            CHECK((g.rules().terminal_reason() == TerminalReason::ThreefoldRepetition
+                || g.rules().terminal_reason() == TerminalReason::NoProgress));
+        } else {
+            CHECK(g.rules().terminal_reason() != TerminalReason::None);
+        }
     }
     CHECK(captures >= 4);   // any reasonable play makes progress
 }
@@ -285,4 +293,101 @@ TEST_CASE("Game: restoring a resigned snapshot preserves terminal state") {
     CHECK(g2.rules().legal_moves(1).empty());
     auto s = g2.state_json(-1);
     CHECK(s.find("\"legal_moves_for_me\":[]") != std::string::npos);
+}
+
+TEST_CASE("Game: resignation populates terminal_reason in state_json") {
+    MockPrng p(42);
+    auto g = Game::create(p);
+    g.apply_flip(0, 0);
+    g.apply_resign(1);
+    CHECK(g.rules().terminal_reason() == TerminalReason::Resigned);
+    auto s = g.state_json(-1);
+    CHECK(s.find("\"terminal_reason\":\"resigned\"") != std::string::npos);
+}
+
+TEST_CASE("Game: snapshot round-trip preserves repetition + no-progress state") {
+    MockPrng p(7);
+    auto g = Game::create(p);
+
+    // Build up a mid-game state by hand: force a known color assignment,
+    // place a couple of pieces, then drive a few reversible moves so the
+    // engine has a non-empty repetition window + non-zero ply counter.
+    // (We can't easily do this with the deck-driven Game, so we go through
+    // the snapshot path instead.)
+    g.apply_flip(0, 0);                     // arbitrary first flip
+    auto mid_snap = g.snapshot_json();
+    auto g2 = Game::from_snapshot_json(mid_snap);
+    CHECK(g2.snapshot_json() == mid_snap);  // byte-identity round-trip
+
+    // The snapshot JSON must include the new fields so a future server
+    // restart can re-detect a brewing draw.
+    CHECK(mid_snap.find("\"reversible_positions\"") != std::string::npos);
+    CHECK(mid_snap.find("\"plies_since_progress\"") != std::string::npos);
+    CHECK(mid_snap.find("\"terminal_reason\"") != std::string::npos);
+}
+
+TEST_CASE("Game: state_json surfaces draw progress fields") {
+    MockPrng p(5);
+    auto g = Game::create(p);
+    auto s = g.state_json(-1);
+    CHECK(s.find("\"plies_since_progress\":0") != std::string::npos);
+    CHECK(s.find("\"no_progress_plies_max\":") != std::string::npos);
+    CHECK(s.find("\"terminal_reason\":\"none\"") != std::string::npos);
+}
+
+TEST_CASE("Game: from_snapshot_json accepts legacy snapshots without draw fields") {
+    // Older server snapshots, written before automatic draws existed, lack
+    // the new fields. They must still restore cleanly with the new code.
+    MockPrng p(7);
+    auto g = Game::create(p);
+    g.apply_flip(0, 0);
+    auto good = g.snapshot_json();
+
+    // Strip the new fields from the JSON to simulate an old snapshot.
+    auto strip_field = [](std::string s, const std::string& key) {
+        auto pos = s.find("\"" + key + "\"");
+        if (pos == std::string::npos) return s;
+        // Find the value end: handle string, number, or array values.
+        auto colon = s.find(':', pos);
+        if (colon == std::string::npos) return s;
+        size_t end = colon + 1;
+        // Skip whitespace.
+        while (end < s.size() && std::isspace((unsigned char)s[end])) ++end;
+        if (end >= s.size()) return s;
+        char c = s[end];
+        if (c == '"') {
+            ++end;
+            while (end < s.size() && s[end] != '"') ++end;
+            if (end < s.size()) ++end;  // include closing quote
+        } else if (c == '[') {
+            int depth = 0;
+            do {
+                if (s[end] == '[') ++depth;
+                else if (s[end] == ']') --depth;
+                ++end;
+            } while (end < s.size() && depth > 0);
+        } else {
+            // number or literal — read until comma/brace.
+            while (end < s.size() && s[end] != ',' && s[end] != '}') ++end;
+        }
+        // Strip the leading comma if there is one (we're cutting a field).
+        size_t cut_from = pos;
+        if (pos > 0 && s[pos - 1] == ',') cut_from = pos - 1;
+        // Or strip the trailing comma.
+        else if (end < s.size() && s[end] == ',') ++end;
+        return s.substr(0, cut_from) + s.substr(end);
+    };
+    std::string legacy = good;
+    legacy = strip_field(legacy, "reversible_positions");
+    legacy = strip_field(legacy, "plies_since_progress");
+    legacy = strip_field(legacy, "terminal_reason");
+
+    // Sanity: the fields really are gone now.
+    CHECK(legacy.find("\"reversible_positions\"") == std::string::npos);
+    CHECK(legacy.find("\"plies_since_progress\"") == std::string::npos);
+
+    auto g3 = Game::from_snapshot_json(legacy);
+    CHECK(g3.rules().plies_since_progress() == 0);
+    CHECK(g3.rules().repetition_history().empty());
+    CHECK(g3.rules().terminal_reason() == TerminalReason::None);
 }

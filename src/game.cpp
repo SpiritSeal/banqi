@@ -22,6 +22,29 @@ static GameMode mode_from_str(const std::string& s) {
     return GameMode::Standard;
 }
 
+static const char* terminal_reason_to_str(TerminalReason r) {
+    switch (r) {
+        case TerminalReason::None:                return "none";
+        case TerminalReason::NoLegalMoves:        return "no_legal_moves";
+        case TerminalReason::CaptureGeneral:      return "capture_general";
+        case TerminalReason::Resigned:            return "resigned";
+        case TerminalReason::ThreefoldRepetition: return "threefold_repetition";
+        case TerminalReason::NoProgress:          return "no_progress";
+        case TerminalReason::MutualAgreement:     return "mutual_agreement";
+    }
+    return "none";
+}
+
+static TerminalReason terminal_reason_from_str(const std::string& s) {
+    if (s == "no_legal_moves")        return TerminalReason::NoLegalMoves;
+    if (s == "capture_general")       return TerminalReason::CaptureGeneral;
+    if (s == "resigned")              return TerminalReason::Resigned;
+    if (s == "threefold_repetition")  return TerminalReason::ThreefoldRepetition;
+    if (s == "no_progress")           return TerminalReason::NoProgress;
+    if (s == "mutual_agreement")      return TerminalReason::MutualAgreement;
+    return TerminalReason::None;
+}
+
 Game::Game() {
     rules_.set_all_facedown();
     auto deck = initial_deck();
@@ -78,7 +101,7 @@ void Game::apply_resign(int player_index) {
     resign_winner_ = other;
     // Propagate the terminal state into the rule engine so legal_moves /
     // state_json reflect the resignation consistently.
-    rules_.force_terminal(other);
+    rules_.force_terminal(other, TerminalReason::Resigned);
 }
 
 std::string Game::state_json(int viewer_player_index) const {
@@ -91,6 +114,9 @@ std::string Game::state_json(int viewer_player_index) const {
     j["game_over"]       = game_over();
     j["winner"]          = (int)winner();
     j["mode"]            = mode_to_str(rules_.mode());
+    j["terminal_reason"] = terminal_reason_to_str(rules_.terminal_reason());
+    j["plies_since_progress"] = rules_.plies_since_progress();
+    j["no_progress_plies_max"] = BanqiRules::NO_PROGRESS_PLIES;
 
     if (viewer >= 0) {
         j["my_color"] = (int)rules_.color_for_player(viewer);
@@ -168,6 +194,13 @@ std::string Game::snapshot_json() const {
     // (not derivable from the board layout alone), so persist it directly.
     j["game_over"]          = rules_.game_over();
     j["winner"]             = (int)rules_.winner();
+    j["terminal_reason"]    = terminal_reason_to_str(rules_.terminal_reason());
+    j["plies_since_progress"] = rules_.plies_since_progress();
+    // Reversible position history — needed to detect threefold repetition
+    // after a restore. Each entry is a position_key() string.
+    json hist = json::array();
+    for (const auto& k : rules_.repetition_history()) hist.push_back(k);
+    j["reversible_positions"] = hist;
     return j.dump();
 }
 
@@ -236,6 +269,19 @@ Game Game::from_snapshot_json(const std::string& s) {
         }
         g.rules_.force_color_assignment(stm, p0c);
     }
+
+    // Restore repetition / no-progress tracking. Both fields are optional for
+    // backward compatibility with snapshots written before draw rules existed.
+    if (j.contains("reversible_positions")) {
+        std::vector<std::string> hist;
+        const auto& arr = j.at("reversible_positions");
+        for (const auto& v : arr) hist.push_back(v.get<std::string>());
+        g.rules_.set_repetition_history(std::move(hist));
+    }
+    int plies = j.value("plies_since_progress", 0);
+    if (plies < 0) plies = 0;
+    g.rules_.set_plies_since_progress(plies);
+
     g.rules_.recheck_terminal();
 
     g.resigned_       = j.value("resigned", false);
@@ -245,12 +291,14 @@ Game Game::from_snapshot_json(const std::string& s) {
         if (g.resign_player_ != 0 && g.resign_player_ != 1) {
             throw std::runtime_error("from_snapshot_json: bad resign_player");
         }
-        g.rules_.force_terminal(g.resign_winner_);
+        g.rules_.force_terminal(g.resign_winner_, TerminalReason::Resigned);
     } else if (j.value("game_over", false)) {
         // Capture-general mode (or any rule that ends the game via a specific
         // capture) needs its terminal flag persisted directly: recheck_terminal
         // can't re-derive it from the board layout alone.
-        g.rules_.force_terminal(check_color(j.value("winner", 0)));
+        TerminalReason reason = terminal_reason_from_str(
+            j.value("terminal_reason", std::string("none")));
+        g.rules_.force_terminal(check_color(j.value("winner", 0)), reason);
     }
     return g;
 }

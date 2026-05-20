@@ -285,6 +285,7 @@ export async function appendGameEvent(db, gameId, event) {
     capture: event.capture,
     game_over: event.game_over,
     winner: event.winner,
+    end_reason: event.end_reason || null,
     draw_offered: event.draw_offered || false,
     clocks_after: event.clocks_after || null,
   });

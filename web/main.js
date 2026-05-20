@@ -15,7 +15,7 @@
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
-import { Replay, renderTranscript, exportPgn } from './replay.js';
+import { Replay, renderTranscript, exportPgn, endReasonLabel } from './replay.js';
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
@@ -1049,7 +1049,8 @@ function localApply(intent) {
   const game = active.game;
   const stm = game.sideToMovePlayer();
   let event = { seq: active.replay.totalMoves(), ts: Date.now(), mover: stm, action: null,
-                revealed: null, capture: null, game_over: false, winner: 0 };
+                revealed: null, capture: null, game_over: false, winner: 0,
+                end_reason: null };
   if (intent.kind === 'flip') {
     const piece = JSON.parse(game.applyFlip(stm, intent.cell));
     event.action = { kind: 'flip', to: intent.cell };
@@ -1066,6 +1067,14 @@ function localApply(intent) {
   }
   event.game_over = game.gameOver();
   event.winner = game.winner();
+  if (event.game_over) {
+    // Engine surfaces "no_legal_moves" / "threefold_repetition" / etc. via
+    // stateJson. We re-read it to tag the synthesized event.
+    try {
+      const post = JSON.parse(game.stateJson(-1));
+      event.end_reason = post.terminal_reason || null;
+    } catch (_) { /* swallow — banner falls back to a generic string */ }
+  }
   active.replay.appendEvent(event);
   playMoveSound(event);
   return event;
@@ -1087,7 +1096,9 @@ function refreshOTB() {
     banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}${modeBadge}`;
+    const reasonText = otbEndReasonText(active, liveState);
+    const head = w === 1 ? 'Red wins' : w === 2 ? 'Black wins' : 'Draw';
+    banner = `Game over — ${head}${reasonText ? ` (${reasonText})` : ''}${modeBadge}`;
   } else if (!view.first_flip_done) {
     banner = `Player 1 — flip a piece (your color is decided by your first flip)`;
   } else {
@@ -1273,9 +1284,11 @@ function refreshAI() {
     banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    if (w === view.my_color) banner = `You win! 🎉${modeBadge}`;
-    else if (w !== 0)         banner = `AI wins. Better luck next time.${modeBadge}`;
-    else                      banner = `Game over${modeBadge}`;
+    const reasonText = otbEndReasonText(active, liveState);
+    const reasonSuffix = reasonText ? ` (${reasonText})` : '';
+    if (w === view.my_color) banner = `You win!${reasonSuffix}${modeBadge}`;
+    else if (w !== 0)         banner = `AI wins${reasonSuffix}${modeBadge}`;
+    else                      banner = `Draw${reasonSuffix}${modeBadge}`;
   } else if (!view.first_flip_done) {
     banner = `Your turn — flip a piece to begin${modeBadge}`;
   } else if (view.side_to_move === 0) {
@@ -2847,6 +2860,17 @@ function seedConfetti(container) {
   }
 }
 
+// Why this local (OTB / AI) game ended, as a short human-readable phrase
+// pulled from either liveState.terminal_reason (online + the engine's view)
+// or the last replay event's end_reason. Returns "" if no reason is known.
+function otbEndReasonText(act, liveState) {
+  const lastSnap = act?.replay?.snapshots?.[act.replay.snapshots.length - 1];
+  const reason = lastSnap?.event?.end_reason
+              || liveState?.terminal_reason
+              || null;
+  return endReasonLabel(reason) || '';
+}
+
 // Decides what to show in the game-over modal for the current active session
 // and triggers it (idempotent — calls itself only once per game).
 function maybeShowGameOver(view) {
@@ -2855,25 +2879,32 @@ function maybeShowGameOver(view) {
   active._gameOverShown = true;
 
   const winner = view.winner;
+  // Reason rides on either the state (set by the server / engine) or the
+  // last event (set by the action that finalized the game). Prefer the
+  // event-level reason — it's authoritative for the action that ended things.
+  const lastSnap = active.replay?.snapshots?.[active.replay.snapshots.length - 1];
+  const reason = lastSnap?.event?.end_reason || view.terminal_reason || null;
+  const reasonText = endReasonLabel(reason);
+  const drawSubtitle = reasonText ? `By ${reasonText}.` : null;
   // Online: my_color is the side YOU play. If winner === my_color, you won.
   // OTB: nobody is "you"; use a generic banner.
   // AI: my_color === 1 for player 0 (human).
   let outcome, title, subtitle;
   if (active.isOnline) {
     const myColor = view.my_color;
-    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
-    else if (winner === myColor) { outcome = 'win'; title = 'You win!'; subtitle = 'Nicely played.'; }
-    else { outcome = 'loss'; title = 'You lost'; subtitle = 'Good game — review the moves to learn.'; }
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; subtitle = drawSubtitle; }
+    else if (winner === myColor) { outcome = 'win'; title = 'You win!'; subtitle = reasonText ? `Won by ${reasonText}.` : 'Nicely played.'; }
+    else { outcome = 'loss'; title = 'You lost'; subtitle = reasonText ? `Lost by ${reasonText}.` : 'Good game — review the moves to learn.'; }
   } else if (active.isAI) {
-    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
-    else if (winner === view.my_color) { outcome = 'win'; title = 'You beat the AI!'; subtitle = 'Try a harder difficulty.'; }
-    else { outcome = 'loss'; title = 'The AI wins'; subtitle = "Try again — the AI doesn't get tired."; }
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; subtitle = drawSubtitle; }
+    else if (winner === view.my_color) { outcome = 'win'; title = 'You beat the AI!'; subtitle = reasonText ? `Won by ${reasonText}.` : 'Try a harder difficulty.'; }
+    else { outcome = 'loss'; title = 'The AI wins'; subtitle = reasonText ? `By ${reasonText}.` : "Try again — the AI doesn't get tired."; }
   } else {
     // OTB
     const name = winner === 1 ? 'Red' : winner === 2 ? 'Black' : null;
     outcome = name ? 'win' : 'draw';
     title = name ? `${name} wins!` : "It's a draw";
-    subtitle = name ? 'Good game.' : null;
+    subtitle = name ? (reasonText ? `By ${reasonText}.` : 'Good game.') : drawSubtitle;
   }
 
   const actions = [];
