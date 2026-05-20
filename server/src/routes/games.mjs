@@ -168,6 +168,22 @@ function decorate(myUserId) {
       opponentIsAi = true;
       aiDifficulty = g.host_provider_id;
     }
+    // Whose-turn-it-is. Only meaningful for 'playing' games. The WASM rules
+    // alternate side_to_move on every flip/move/capture/draw-offer, so for
+    // any non-terminal event the next active side is 1 - last_mover. Pre-
+    // first-flip with an unset first_mover_index is left null (either side
+    // may flip first).
+    let activeIndex = null;
+    if (g.status === 'playing') {
+      if (g.last_event_mover === 0 || g.last_event_mover === 1) {
+        activeIndex = 1 - g.last_event_mover;
+      } else if (g.first_mover_index === 0 || g.first_mover_index === 1) {
+        activeIndex = g.first_mover_index;
+      }
+    }
+    const yourTurn = myRole != null && activeIndex != null
+      && ((activeIndex === 0 && myRole === 'host')
+          || (activeIndex === 1 && myRole === 'join'));
     return {
       id:                g.id,
       room_code:         g.room_code,
@@ -190,6 +206,8 @@ function decorate(myUserId) {
       my_role:           myRole,
       opponent_is_ai:    opponentIsAi,
       ai_difficulty:     aiDifficulty,
+      active_index:      activeIndex,
+      your_turn:         yourTurn,
     };
   };
 }

@@ -156,6 +156,44 @@ describe('banqi server-authoritative backend', () => {
     a.close(); b.close();
   });
 
+  it('/api/games surfaces your_turn / active_index from event log', async () => {
+    const alice = await signInDev('AliceTurn');
+    const bob   = await signInDev('BobTurn');
+    const game  = await (await authedFetch(alice, '/api/games', {
+      method: 'POST', body: '{}',
+    })).json();
+    await authedFetch(bob, `/api/games/${game.id}/join`, { method: 'POST' });
+
+    // Pre-flip free-for-all: first_mover_index is NULL, no events yet.
+    // active_index is ambiguous → null, so your_turn is false for both.
+    const preA = (await (await authedFetch(alice, '/api/games')).json())
+      .find((g) => g.id === game.id);
+    const preB = (await (await authedFetch(bob,   '/api/games')).json())
+      .find((g) => g.id === game.id);
+    assert.equal(preA.active_index, null);
+    assert.equal(preA.your_turn, false);
+    assert.equal(preB.active_index, null);
+    assert.equal(preB.your_turn, false);
+
+    // Alice flips first → side_to_move flips → it's now Bob's turn.
+    const a = await openWs(alice, game.id);
+    const b = await openWs(bob,   game.id);
+    a.send({ kind: 'flip', cell: 7 });
+    await a.waitNext((f) => f.type === 'event');
+    await b.waitNext((f) => f.type === 'event');
+
+    const postA = (await (await authedFetch(alice, '/api/games')).json())
+      .find((g) => g.id === game.id);
+    const postB = (await (await authedFetch(bob,   '/api/games')).json())
+      .find((g) => g.id === game.id);
+    assert.equal(postA.active_index, 1, 'join (Bob) is active after Alice flips');
+    assert.equal(postA.your_turn, false, 'not Alice’s turn');
+    assert.equal(postB.active_index, 1);
+    assert.equal(postB.your_turn, true, 'is Bob’s turn');
+
+    a.close(); b.close();
+  });
+
   it('rejects an illegal intent without advancing state', async () => {
     const alice = await signInDev('Alice');
     const bob   = await signInDev('Bob');

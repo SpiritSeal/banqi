@@ -141,6 +141,14 @@ describe('vs-AI persisted games', () => {
     assert.ok(aiEvent.event.action);
     assert.ok(['flip', 'move'].includes(aiEvent.event.action.kind));
 
+    // After the AI replies, the dashboard should flag this game as the
+    // human's turn (last_event_mover = 1 → active = 0 → host = Alice).
+    const list = await (await authedFetch(alice, '/api/games')).json();
+    const row = list.find((g) => g.id === created.id);
+    assert.equal(row.active_index, 0);
+    assert.equal(row.your_turn, true);
+    assert.equal(row.opponent_is_ai, true);
+
     a.close();
   });
 
