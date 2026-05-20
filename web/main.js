@@ -1477,18 +1477,19 @@ function attachBoardKeyNav(boardEl) {
   if (boardEl.dataset.keyNav === '1') return;
   boardEl.dataset.keyNav = '1';
   boardEl.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const target = e.target.closest('[data-cell-index]');
     if (!target || target.parentElement !== boardEl) return;
     const idx = parseInt(target.dataset.cellIndex, 10);
     if (isNaN(idx)) return;
     let handled = true;
-    switch (e.key) {
-      case 'ArrowLeft':  boardArrowFocus(boardEl, idx, 0, -1); break;
-      case 'ArrowRight': boardArrowFocus(boardEl, idx, 0,  1); break;
-      case 'ArrowUp':    boardArrowFocus(boardEl, idx, -1, 0); break;
-      case 'ArrowDown':  boardArrowFocus(boardEl, idx,  1, 0); break;
-      case 'Home':       boardArrowFocus(boardEl, idx, 0, -8); break;
-      case 'End':        boardArrowFocus(boardEl, idx, 0,  8); break;
+    switch (e.key.toLowerCase()) {
+      case 'w':    boardArrowFocus(boardEl, idx, -1, 0); break;
+      case 'a':    boardArrowFocus(boardEl, idx,  0, -1); break;
+      case 's':    boardArrowFocus(boardEl, idx,  1, 0); break;
+      case 'd':    boardArrowFocus(boardEl, idx,  0, 1); break;
+      case 'home': boardArrowFocus(boardEl, idx,  0, -8); break;
+      case 'end':  boardArrowFocus(boardEl, idx,  0, 8); break;
       default: handled = false;
     }
     if (handled) e.preventDefault();
@@ -2720,9 +2721,14 @@ function showKeyboardHelp() {
       <dt><kbd>Esc</kbd></dt>          <dd>Close a dialog</dd>
       <dt><kbd>Tab</kbd></dt>          <dd>Move focus between controls</dd>
     </dl>
+    <h3 class="kbd-help-section">Move history (in a game)</h3>
+    <dl class="kbd-help">
+      <dt><kbd>←</kbd> / <kbd>→</kbd></dt><dd>Previous / next move</dd>
+      <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Jump to first move / return to live</dd>
+    </dl>
     <h3 class="kbd-help-section">Board (when a cell is focused)</h3>
     <dl class="kbd-help">
-      <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move focus between cells</dd>
+      <dt><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></dt><dd>Move focus between cells</dd>
       <dt><kbd>Home</kbd> / <kbd>End</kbd></dt><dd>Jump to row start / end</dd>
       <dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Flip, select, or move to the focused cell</dd>
     </dl>`;
@@ -2963,6 +2969,30 @@ document.addEventListener('keydown', (e) => {
   if (document.querySelector('.modal-overlay')) return;
   e.preventDefault();
   showKeyboardHelp();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const key = e.key;
+  if (key !== 'ArrowLeft' && key !== 'ArrowRight' && key !== 'ArrowUp' && key !== 'ArrowDown') return;
+  if (isTypingTarget(e.target)) return;
+  if (document.querySelector('.modal-overlay')) return;
+
+  let refresh = null;
+  if (active?.isOnline && !views.game?.classList.contains('hidden')) refresh = refreshGame;
+  else if (active?.isOTB && !views.otb?.classList.contains('hidden')) refresh = refreshOTB;
+  else if (active?.isAI && !views.ai?.classList.contains('hidden')) refresh = refreshAI;
+  if (!refresh) return;
+  if (!active?.replay || active.replay.totalMoves() === 0) return;
+
+  switch (key) {
+    case 'ArrowLeft':  active.replay.goPrev();  break;
+    case 'ArrowRight': active.replay.goNext();  break;
+    case 'ArrowUp':    active.replay.goFirst(); break;
+    case 'ArrowDown':  active.replay.goLast();  break;
+  }
+  e.preventDefault();
+  refresh();
 });
 
 const btnHelp = document.getElementById('btn-keyboard-help');
