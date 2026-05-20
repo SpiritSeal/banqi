@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "wasm-test": "node tests/wasm_smoke.mjs"
+    "wasm-test": "node tests/wasm_smoke.mjs",
+    "test:board-input": "node tests/board_input_unit.mjs",
+    "test:board-input-browser": "node tests/board_input_browser.mjs"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
