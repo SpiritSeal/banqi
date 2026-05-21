@@ -13,11 +13,10 @@
 //   BASE_REF=origin/develop node scripts/check-buildid.mjs
 
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO = join(__dirname, '..');
+// Run from wherever the script is invoked. The Makefile target runs from
+// the repo root; tests spin up ephemeral repos and chdir into them.
+const REPO = process.cwd();
 const BASE_REF = process.env.BASE_REF || 'origin/main';
 
 function git(args) {

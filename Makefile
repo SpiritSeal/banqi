@@ -122,11 +122,13 @@ buildid-check:
 
 # PWA validation. The manifest check is fast and dependency-free; it asserts
 # the BUILD_ID hash format and that sw.js + index.html agree, so it doubles
-# as a stamper sanity check. The buildid test exercises the stamper itself.
+# as a stamper sanity check. The buildid + check-buildid tests exercise the
+# stamper and the cross-commit CI guard themselves.
 .PHONY: pwa-test
 pwa-test: stamp-sw
 	node tests/pwa_manifest.mjs
 	node tests/sw_buildid.mjs
+	node tests/check_buildid.mjs
 
 # Real-browser smoke. Needs a stamped SW so the precache list reflects the
 # files actually served (otherwise cache.addAll 404s on banqi.wasm).

@@ -130,5 +130,8 @@ jobs:
       - name: Service-worker BUILD_ID test
         run: node tests/sw_buildid.mjs
 
+      - name: check-buildid test
+        run: node tests/check_buildid.mjs
+
       - name: Cross-commit BUILD_ID guard
         run: node scripts/check-buildid.mjs

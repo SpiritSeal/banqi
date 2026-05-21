@@ -32,9 +32,17 @@ initSettings();
 
 // ---- service worker / PWA ----
 if ('serviceWorker' in navigator) {
+  // Track whether there was already a controller when this page loaded.
+  // The first `controllerchange` after a no-controller load is just the SW
+  // claiming this page — there's no stale code in scope to reload past, so
+  // a reload here would be a needless full nav (and races with anything
+  // running mid-load, e.g. test harnesses). Only reload when the
+  // controllerchange follows a SKIP_WAITING from the update banner.
+  let hadController = !!navigator.serviceWorker.controller;
   let _swReloading = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (_swReloading) return;
+    if (!hadController) { hadController = true; return; }
     _swReloading = true;
     location.reload();
   });
