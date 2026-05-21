@@ -638,7 +638,13 @@ export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode
     const timeLimitMs = req.time_limit_ms ?? null;
     const incrementMs = req.increment_ms ?? 0;
     let game = null;
+    // We're inside a BEGIN/COMMIT, so a failed INSERT (e.g. room_code
+    // unique-violation) would normally poison the whole transaction —
+    // every subsequent query would fail with "current transaction is
+    // aborted". Wrap each attempt in a SAVEPOINT so we can roll back
+    // just the failed INSERT and try a new room code.
     for (let i = 0; i < 5; ++i) {
+      await client.query('SAVEPOINT room_attempt');
       try {
         const { rows: gRows } = await client.query(`
           INSERT INTO games
@@ -649,8 +655,10 @@ export async function acceptMatchRequest(db, userId, requestId, allocateRoomCode
         `, [allocateRoomCode(), req.from_user_id, mode, firstMoverIndex,
             timeLimitMs, incrementMs, now]);
         game = gRows[0];
+        await client.query('RELEASE SAVEPOINT room_attempt');
         break;
       } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT room_attempt');
         if (i === 4) throw e;  // bubble up after exhausting retries
       }
     }
