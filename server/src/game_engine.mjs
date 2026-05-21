@@ -11,7 +11,7 @@ import { chooseMove } from '../../web/ai.js';
 import {
   findGameById, saveGameState, loadGameState,
   appendGameEvent, listGameEvents, markGameEnded,
-  saveClockState, getUser,
+  saveClockState, getUser, withTransaction,
 } from './db.mjs';
 
 // Delay before the server-side AI plays its move, so the human sees a
@@ -279,10 +279,15 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
     };
     session.events.push(event);
     session.lastTouched = now;
-    await saveGameState(db, session.gameId, session.wasm.snapshotJson());
-    await saveClockState(db, session.gameId, serializeClockState(session));
-    await appendGameEvent(db, session.gameId, event);
-    const endedNow = await markGameEnded(db, session.gameId, winnerColor);
+    // All four writes commit together or not at all — see withTransaction
+    // in db.mjs. Without this, a crash between the snapshot and the event
+    // append would leave game_state ahead of game_events on rehydrate.
+    const endedNow = await withTransaction(db, async (client) => {
+      await saveGameState(client, session.gameId, session.wasm.snapshotJson());
+      await saveClockState(client, session.gameId, serializeClockState(session));
+      await appendGameEvent(client, session.gameId, event);
+      return markGameEnded(client, session.gameId, winnerColor);
+    });
     return { ok: true, event, endedNow };
   }
 
@@ -439,16 +444,21 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
     session.lastTouched = eventTs;
 
     const snap = session.wasm.snapshotJson();
-    await saveGameState(db, session.gameId, snap);
-    if (session.clocks) {
-      await saveClockState(db, session.gameId, serializeClockState(session));
-    }
-    await appendGameEvent(db, session.gameId, event);
-
-    let endedNow = false;
-    if (event.game_over) {
-      endedNow = await markGameEnded(db, session.gameId, event.winner);
-    }
+    // All persistence for this intent commits together. See withTransaction
+    // in db.mjs — without it, a crash between any two writes leaves the
+    // WASM snapshot, the event log, the clock-state json, and the games-row
+    // status mutually inconsistent on rehydrate.
+    const endedNow = await withTransaction(db, async (client) => {
+      await saveGameState(client, session.gameId, snap);
+      if (session.clocks) {
+        await saveClockState(client, session.gameId, serializeClockState(session));
+      }
+      await appendGameEvent(client, session.gameId, event);
+      if (event.game_over) {
+        return markGameEnded(client, session.gameId, event.winner);
+      }
+      return false;
+    });
     return { ok: true, event, endedNow };
   }
 

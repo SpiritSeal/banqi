@@ -29,6 +29,36 @@ export async function openDb(connectionString) {
   return pool;
 }
 
+// Run `fn(client)` inside a single Postgres transaction. The client is a
+// dedicated pooled connection released back to the pool when this returns.
+// On any throw the transaction is rolled back and the error re-raised; on
+// successful return the transaction commits. Callers should pass `client`
+// into the pool-shaped functions in this module — every function below
+// takes a `db` argument and only ever calls `.query`, so a pg pool and a
+// pg client are interchangeable.
+//
+// Use this when a logical operation issues multiple writes that must land
+// all-or-nothing (e.g. saving a WASM snapshot + appending the matching
+// event row + flipping the games-row status to 'complete'). Without a
+// surrounding transaction a crash between the writes leaves persistent
+// state inconsistent.
+export async function withTransaction(db, fn) {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    }
+  } finally {
+    client.release();
+  }
+}
+
 // ---------- Users ----------
 
 export async function upsertOAuthUser(db, { provider, providerId, displayName, avatarUrl }) {
