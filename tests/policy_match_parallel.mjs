@@ -10,7 +10,7 @@
 
 import { fork } from 'node:child_process';
 import createBanqiModule from '../web/banqi.js';
-import { chooseMove, Difficulty } from '../web/ai.js';
+import { chooseMove, Difficulty } from '../ai/index.mjs';
 
 const argv = process.argv.slice(2);
 function flagVal(name, def) {

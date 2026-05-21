@@ -29,6 +29,7 @@ const PUBLIC_URL    = env.PUBLIC_URL    || `http://localhost:${PORT}`;
 const SERVER_SECRET = env.SERVER_SECRET || 'dev-insecure-secret-change-me';
 const DATABASE_URL  = env.DATABASE_URL  || 'postgresql://localhost/banqi';
 const WEB_DIR       = resolve(__dirname, '..', '..', 'web');
+const AI_DIR        = resolve(__dirname, '..', '..', 'ai');
 
 if (SERVER_SECRET === 'dev-insecure-secret-change-me' && env.NODE_ENV === 'production') {
   console.error('FATAL: SERVER_SECRET must be set in production.');
@@ -87,6 +88,11 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   });
 
   app.use(express.static(WEB_DIR, { index: 'index.html' }));
+  // The AI engine lives at top-level /ai/ (not under web/) so the server's
+  // Docker image doesn't have to ship the full web/ tree just to import it.
+  // The browser bundle still references it via `../ai/index.mjs`, which
+  // resolves to the URL /ai/index.mjs — served here.
+  app.use('/ai', express.static(AI_DIR));
 
   app.get('/api/config', (_req, res) => {
     res.json({

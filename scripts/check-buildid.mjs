@@ -33,14 +33,17 @@ if (verify.status !== 0) {
   process.exit(0);
 }
 
-const diff = git(['diff', '--name-only', `${BASE_REF}...HEAD`, '--', 'web/']);
+// Both web/ and ai/ feed into BUILD_ID (the stamper hashes both), so a change
+// in either tree must come with a BUILD_ID bump. Watching only web/ would
+// false-negative an AI-only edit that forgot `make stamp-sw`.
+const diff = git(['diff', '--name-only', `${BASE_REF}...HEAD`, '--', 'web/', 'ai/']);
 if (diff.status !== 0) {
   console.error(`check-buildid: \`git diff\` failed:\n${diff.stderr}`);
   process.exit(2);
 }
 const changedFiles = diff.stdout.split('\n').filter(Boolean);
 if (changedFiles.length === 0) {
-  console.log('check-buildid: ok (no web/ changes vs base)');
+  console.log('check-buildid: ok (no web/ or ai/ changes vs base)');
   process.exit(0);
 }
 
@@ -64,7 +67,7 @@ if (!baseId) {
 
 if (headId === baseId) {
   console.error(`check-buildid: FAIL`);
-  console.error(`  ${changedFiles.length} web/ file(s) changed vs ${BASE_REF}, but BUILD_ID is unchanged (${headId}).`);
+  console.error(`  ${changedFiles.length} web/ or ai/ file(s) changed vs ${BASE_REF}, but BUILD_ID is unchanged (${headId}).`);
   console.error(`  Run \`make stamp-sw\` and commit the result.`);
   console.error(`  Changed files:`);
   for (const f of changedFiles.slice(0, 20)) console.error(`    ${f}`);
@@ -72,4 +75,4 @@ if (headId === baseId) {
   process.exit(1);
 }
 
-console.log(`check-buildid: ok (${baseId} → ${headId}, ${changedFiles.length} web/ file(s) changed)`);
+console.log(`check-buildid: ok (${baseId} → ${headId}, ${changedFiles.length} web/+ai/ file(s) changed)`);

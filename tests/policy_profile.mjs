@@ -2,7 +2,7 @@
 // Used to compare difficulties under matching positions.
 
 import createBanqiModule from '../web/banqi.js';
-import { chooseMove, Difficulty } from '../web/ai.js';
+import { chooseMove, Difficulty } from '../ai/index.mjs';
 
 const Module = await createBanqiModule();
 

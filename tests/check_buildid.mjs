@@ -104,9 +104,9 @@ console.log('\n== happy paths ==');
   });
   try {
     const r = runChecker(dir, 'fakebase');
-    checkEq('no web/ changes → exit 0', r.code, 0);
+    checkEq('no web/ or ai/ changes → exit 0', r.code, 0);
     check('no-changes message in stdout',
-      /no web\/ changes vs base/.test(r.stdout),
+      /no web\/ or ai\/ changes vs base/.test(r.stdout),
       `stdout=${JSON.stringify(r.stdout)}`);
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
@@ -150,6 +150,35 @@ console.log('\n== the protected case ==');
       `stderr=${JSON.stringify(r.stderr)}`);
     check('stderr lists the changed file',
       /web\/main\.js/.test(r.stderr),
+      `stderr=${JSON.stringify(r.stderr)}`);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+{
+  // ai/ changed but BUILD_ID is identical: same failure mode as web/, since
+  // both directories feed into the stamper's content hash.
+  const dir = await mkdtemp(join(tmpdir(), 'banqi-cb-'));
+  try {
+    gitOk(dir, ['init', '--quiet', '-b', 'main']);
+    gitOk(dir, ['config', 'user.email', 't@e']);
+    gitOk(dir, ['config', 'user.name', 'T']);
+    gitOk(dir, ['config', 'commit.gpgsign', 'false']);
+    await mkdir(join(dir, 'web'), { recursive: true });
+    await mkdir(join(dir, 'ai'), { recursive: true });
+    await writeFile(join(dir, 'web', 'sw.js'), swWithBuildId('a'.repeat(12)));
+    await writeFile(join(dir, 'ai', 'index.mjs'), 'export const v = 1;\n');
+    gitOk(dir, ['add', '-A']);
+    gitOk(dir, ['commit', '--quiet', '-m', 'base']);
+    gitOk(dir, ['branch', 'fakebase']);
+    // Change ai/ but leave BUILD_ID alone.
+    await writeFile(join(dir, 'ai', 'index.mjs'), 'export const v = 2;\n');
+    gitOk(dir, ['add', '-A']);
+    gitOk(dir, ['commit', '--quiet', '-m', 'ai change without stamp']);
+
+    const r = runChecker(dir, 'fakebase');
+    checkEq('ai/ changed without BUILD_ID bump → exit 1', r.code, 1);
+    check('stderr lists the changed ai/ file',
+      /ai\/index\.mjs/.test(r.stderr),
       `stderr=${JSON.stringify(r.stderr)}`);
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
@@ -249,8 +278,8 @@ console.log('\n== edge cases ==');
 
     const r = runChecker(dir, 'fakebase');
     checkEq('server-only change → exit 0', r.code, 0);
-    check('non-web changes message',
-      /no web\/ changes/.test(r.stdout),
+    check('non-web/ai changes message',
+      /no web\/ or ai\/ changes/.test(r.stdout),
       `stdout=${JSON.stringify(r.stdout)}`);
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
