@@ -7,6 +7,9 @@ emsdk/
 .DS_Store
 node_modules/
 
+# Claude Code agent worktrees (per-subagent isolated checkouts).
+.claude/
+
 # Compiled WebAssembly artifacts — built locally via `make wasm` and in CI
 # via the emsdk install step. Not source.
 web/banqi.js
