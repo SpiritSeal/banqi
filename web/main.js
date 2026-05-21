@@ -56,6 +56,16 @@ if ('serviceWorker' in navigator) {
         if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdateBanner(nw);
       });
     });
+    // Browsers normally only check for an updated SW on navigation. A tab
+    // left open for days never notices a deploy. Re-check on a long interval
+    // (cheap — it's a single conditional GET against /sw.js) and whenever
+    // the tab returns to visible, so a user coming back from a backgrounded
+    // tab sees the update banner promptly instead of after the next reload.
+    const checkForUpdate = () => { reg.update().catch(() => {}); };
+    setInterval(checkForUpdate, 60 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') checkForUpdate();
+    });
   }).catch((e) => console.warn('SW registration failed:', e));
 }
 
