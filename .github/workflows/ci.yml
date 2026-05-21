@@ -80,6 +80,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # check-buildid compares HEAD to origin/main, which needs full
+          # history (default is a shallow clone with only HEAD).
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -117,5 +121,17 @@ jobs:
       - name: Board hints smoke
         run: node tests/board_hints_smoke.mjs
 
+      - name: Stamp service worker
+        run: node scripts/stamp-sw.mjs
+
       - name: PWA manifest check
         run: node tests/pwa_manifest.mjs
+
+      - name: Service-worker BUILD_ID test
+        run: node tests/sw_buildid.mjs
+
+      - name: check-buildid test
+        run: node tests/check_buildid.mjs
+
+      - name: Cross-commit BUILD_ID guard
+        run: node scripts/check-buildid.mjs

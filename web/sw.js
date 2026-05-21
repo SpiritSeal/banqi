@@ -10,40 +10,44 @@
 //     last-ditch fallback to offline.html.
 //   * Anything else same-origin: stale-while-revalidate.
 //
-// Bump BUILD_ID on every deploy; the new install drops the old caches in
-// activate(), and the new SW reaches the page via the "Update available"
-// banner wired up in main.js.
+// BUILD_ID and APP_SHELL are written by scripts/stamp-sw.mjs on every build
+// (Makefile + Dockerfile). BUILD_ID is the first 12 hex chars of a sha256
+// over every file in web/, so any change to the shipped bundle invalidates
+// the cache atomically (see activate handler) and surfaces the "Update
+// available" banner wired up in main.js.
 
-const BUILD_ID = '2026-05-16-ui-overhaul';
+const BUILD_ID = '20c4543f372c';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
+// AUTO-PRECACHE START
 const APP_SHELL = [
-  './',
-  './index.html',
-  './main.js',
-  './audio.js',
-  './relay.js',
-  './ai.js',
-  './replay.js',
-  './notifications.js',
-  './board-hints.js',
-  './board-input.js',
-  './settings.js',
-  './animations.js',
-  './style.css',
-  './favicon.svg',
-  './banqi.js',
-  './banqi.wasm',
-  './manifest.webmanifest',
-  './offline.html',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/icon-maskable-192.png',
-  './icons/icon-maskable-512.png',
-  './icons/apple-touch-icon-180.png',
-  './sounds/move.mp3',
+  "./",
+  "./ai.js",
+  "./animations.js",
+  "./audio.js",
+  "./banqi.js",
+  "./banqi.wasm",
+  "./board-hints.js",
+  "./board-input.js",
+  "./favicon.svg",
+  "./icons/apple-touch-icon-180.png",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png",
+  "./icons/icon-maskable-192.png",
+  "./icons/icon-maskable-512.png",
+  "./index.html",
+  "./main.js",
+  "./manifest.webmanifest",
+  "./notifications.js",
+  "./offline.html",
+  "./relay.js",
+  "./replay.js",
+  "./settings.js",
+  "./sounds/move.mp3",
+  "./style.css",
 ];
+// AUTO-PRECACHE END
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(SHELL).then((c) => c.addAll(APP_SHELL)));

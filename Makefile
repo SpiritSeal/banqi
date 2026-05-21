@@ -99,15 +99,41 @@ wasm-test: wasm
 	node tests/replay_smoke.mjs
 	node tests/board_hints_smoke.mjs
 
-# PWA validation. The manifest check is fast and dependency-free. The smoke
-# test boots a static server + Chromium and exercises the service worker, so
-# it needs the WASM build (the SW precaches banqi.wasm).
-.PHONY: pwa-test
-pwa-test:
-	node tests/pwa_manifest.mjs
+# Content-hash the service worker. Must run after `wasm` so banqi.{js,wasm}
+# are present and included in the precache list. Anything in web/ that
+# changes — source, icons, the wasm output — will produce a fresh BUILD_ID
+# and trigger the "Update available" banner on next client load.
+.PHONY: stamp-sw
+stamp-sw: wasm
+	node scripts/stamp-sw.mjs
 
+# CI-only: verify the stamper was run before commit (catches a forgotten
+# `make stamp-sw` after a web/ change). Doesn't mutate anything.
+.PHONY: stamp-sw-check
+stamp-sw-check:
+	node scripts/stamp-sw.mjs --check
+
+# CI-only: catch the cross-commit case where someone edits web/ but leaves
+# BUILD_ID alone (defeating the SW update banner). Stricter than
+# stamp-sw-check, which only validates the current tree against itself.
+.PHONY: buildid-check
+buildid-check:
+	node scripts/check-buildid.mjs
+
+# PWA validation. The manifest check is fast and dependency-free; it asserts
+# the BUILD_ID hash format and that sw.js + index.html agree, so it doubles
+# as a stamper sanity check. The buildid + check-buildid tests exercise the
+# stamper and the cross-commit CI guard themselves.
+.PHONY: pwa-test
+pwa-test: stamp-sw
+	node tests/pwa_manifest.mjs
+	node tests/sw_buildid.mjs
+	node tests/check_buildid.mjs
+
+# Real-browser smoke. Needs a stamped SW so the precache list reflects the
+# files actually served (otherwise cache.addAll 404s on banqi.wasm).
 .PHONY: pwa-smoke
-pwa-smoke: wasm
+pwa-smoke: stamp-sw
 	node tests/pwa_smoke.mjs
 
 # Touch / pointer input on the board. The unit test runs the pure gesture
@@ -128,6 +154,11 @@ board-input-smoke: wasm
 icons:
 	node scripts/gen-icons.mjs
 
+# Lightweight dev server. Deliberately does NOT depend on stamp-sw / wasm —
+# someone iterating on CSS / HTML shouldn't need an Emscripten toolchain. The
+# committed sw.js is good enough for visual dev; CI and the Dockerfile stamp
+# for real before anything ships. Run `make stamp-sw` manually if you need
+# the SW update banner to fire while testing locally.
 .PHONY: serve
 serve:
 	cd $(WEB_DIR) && python3 -m http.server 8080
