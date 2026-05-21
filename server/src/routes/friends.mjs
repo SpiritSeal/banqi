@@ -8,10 +8,22 @@
 import express from 'express';
 import { addFriend, listFriends, removeFriend, getUser } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
+import { rateLimit } from '../rate_limit.mjs';
 import {
   friendInviteToken, verifyFriendInviteToken, parseCombinedToken,
 } from '../friend_tokens.mjs';
 import { asyncRoute } from '../util.mjs';
+
+// by-token is the only path that mutates friendship via untrusted input
+// (a possibly-attacker-controlled token string), so the hourly budget is the
+// real backstop; remove is much cheaper but still gets a minute bucket so a
+// runaway client can't churn the friends table.
+const friendByTokenLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 30, name: 'friend add by token',
+});
+const friendRemoveLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 30, name: 'friend remove',
+});
 
 export function friendsRouter({ db, serverSecret, publicUrl }) {
   const r = express.Router();
@@ -29,7 +41,7 @@ export function friendsRouter({ db, serverSecret, publicUrl }) {
     });
   });
 
-  r.post('/friends/by-token', requireAuth, asyncRoute(async (req, res) => {
+  r.post('/friends/by-token', requireAuth, friendByTokenLimiter, asyncRoute(async (req, res) => {
     const parsed = parseCombinedToken(String(req.body?.token || ''));
     if (!parsed) return res.status(400).json({ error: 'malformed token' });
     if (parsed.userId === req.user.id) {
@@ -55,7 +67,7 @@ export function friendsRouter({ db, serverSecret, publicUrl }) {
     });
   }));
 
-  r.delete('/friends/:userId', requireAuth, asyncRoute(async (req, res) => {
+  r.delete('/friends/:userId', requireAuth, friendRemoveLimiter, asyncRoute(async (req, res) => {
     const otherId = parseInt(req.params.userId, 10);
     if (!Number.isFinite(otherId)) return res.status(400).json({ error: 'bad user id' });
     const removed = await removeFriend(db, req.user.id, otherId);

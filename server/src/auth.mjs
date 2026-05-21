@@ -9,6 +9,7 @@ import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import session from 'express-session';
 import { randomBytes } from 'node:crypto';
 import { upsertOAuthUser, getUser } from './db.mjs';
+import { makeRateLimiter } from './rate_limit.mjs';
 
 // Same-origin relative path or '/' — rejects protocol-relative ('//evil.com')
 // and absolute URLs so a crafted `?next=` can't turn the relay into an open
@@ -33,16 +34,10 @@ function popNext(req) {
 
 // Coarse per-IP guard for the guest endpoint: 5 new guest sessions per IP per
 // hour. Survives process restarts no, intentionally — guests are ephemeral.
+// Wraps the shared `makeRateLimiter` in rate_limit.mjs so the in-memory
+// sliding-window logic lives in one place.
 function makeGuestRateLimiter({ windowMs = 60 * 60 * 1000, max = 5 } = {}) {
-  const buckets = new Map();   // ip → [timestamp, ...]
-  return function check(ip) {
-    const now = Date.now();
-    const list = (buckets.get(ip) || []).filter((t) => t > now - windowMs);
-    if (list.length >= max) { buckets.set(ip, list); return false; }
-    list.push(now);
-    buckets.set(ip, list);
-    return true;
-  };
+  return makeRateLimiter({ windowMs, max });
 }
 
 const GUEST_ANIMALS = [
@@ -91,10 +86,15 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   };
 
   if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) {
+    // `state: true` makes the CSRF state parameter explicit. Modern
+    // passport-github2 enables it by default, but pinning it here documents
+    // the security posture and survives a future default flip. Requires the
+    // session middleware registered above (where it stashes the nonce).
     passport.use(new GitHubStrategy({
       clientID:     env.GITHUB_CLIENT_ID,
       clientSecret: env.GITHUB_CLIENT_SECRET,
       callbackURL:  `${publicUrl}/auth/callback/github`,
+      state:        true,
     }, adapt('github')));
 
     app.get('/auth/github', stashNext,
@@ -105,10 +105,15 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   }
 
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
+    // `state: true` mirrors the GitHub strategy above; `pkce: true` opts into
+    // Google's PKCE flow (best practice even with a confidential client) so
+    // the authorization code is bound to the originating browser session.
     passport.use(new GoogleStrategy({
       clientID:     env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
       callbackURL:  `${publicUrl}/auth/callback/google`,
+      state:        true,
+      pkce:         true,
     }, adapt('google')));
 
     app.get('/auth/google', stashNext,

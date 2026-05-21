@@ -19,8 +19,20 @@ import {
   TIME_LIMIT_MIN_MS, TIME_LIMIT_MAX_MS, INCREMENT_MAX_MS,
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
+import { rateLimit } from '../rate_limit.mjs';
 import { newRoomCode } from '../rooms.mjs';
 import { asyncRoute } from '../util.mjs';
+
+// Match-request creation triggers a push notification, so the hourly cap is
+// tight. Accept/decline/cancel are cheap state flips on existing rows but
+// share a minute-bucket so a double-click doesn't get rejected while a script
+// hammering them still gets stopped.
+const matchRequestCreateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 20, name: 'match request create',
+});
+const matchRequestActionLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 30, name: 'match request action',
+});
 
 // Trim + length-cap the optional challenger note. Empty string collapses to
 // null so the DB column stays neat. Strings over the cap return a sentinel
@@ -47,7 +59,7 @@ export function matchRequestsRouter({ db, engine }) {
     res.json({ incoming, outgoing });
   }));
 
-  r.post('/match-requests', requireAuth, asyncRoute(async (req, res) => {
+  r.post('/match-requests', requireAuth, matchRequestCreateLimiter, asyncRoute(async (req, res) => {
     const toUserId = parseInt(req.body?.to_user_id, 10);
     if (!Number.isFinite(toUserId)) {
       return res.status(400).json({ error: 'to_user_id required' });
@@ -102,7 +114,7 @@ export function matchRequestsRouter({ db, engine }) {
     res.json(created);
   }));
 
-  r.post('/match-requests/:id/accept', requireAuth, asyncRoute(async (req, res) => {
+  r.post('/match-requests/:id/accept', requireAuth, matchRequestActionLimiter, asyncRoute(async (req, res) => {
     const reqId = parseInt(req.params.id, 10);
     if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'bad id' });
     const result = await acceptMatchRequest(db, req.user.id, reqId, newRoomCode);
@@ -134,7 +146,7 @@ export function matchRequestsRouter({ db, engine }) {
     });
   }));
 
-  r.post('/match-requests/:id/decline', requireAuth, asyncRoute(async (req, res) => {
+  r.post('/match-requests/:id/decline', requireAuth, matchRequestActionLimiter, asyncRoute(async (req, res) => {
     const reqId = parseInt(req.params.id, 10);
     if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'bad id' });
     const ok = await declineMatchRequest(db, req.user.id, reqId);
@@ -142,7 +154,7 @@ export function matchRequestsRouter({ db, engine }) {
     res.json({ ok: true });
   }));
 
-  r.delete('/match-requests/:id', requireAuth, asyncRoute(async (req, res) => {
+  r.delete('/match-requests/:id', requireAuth, matchRequestActionLimiter, asyncRoute(async (req, res) => {
     const reqId = parseInt(req.params.id, 10);
     if (!Number.isFinite(reqId)) return res.status(400).json({ error: 'bad id' });
     const ok = await cancelMatchRequest(db, req.user.id, reqId);
