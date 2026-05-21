@@ -46,7 +46,10 @@ const STATIC_PRECACHE_ENTRIES = ['./'];
 // Files to exclude from BOTH the hash and the precache list.
 function isExcluded(relPath) {
   if (relPath === SW_FILENAME) return true;       // can't precache the SW itself
-  if (relPath.startsWith('.')) return true;        // dotfiles
+  // Any path segment starting with `.` — top-level dotfiles AND nested ones
+  // (icons/.DS_Store, .vscode/settings.json, etc.). Catches editor + OS
+  // artifacts so they don't leak into BUILD_ID.
+  if (/(^|\/)\.[^/]+/.test(relPath)) return true;
   if (relPath.endsWith('.tmp')) return true;       // editor swap files
   if (relPath.endsWith('.map')) return true;       // source maps — not needed offline
   return false;
@@ -109,18 +112,23 @@ function renderAppShell(files) {
 // Replace the BUILD_ID literal and the AUTO-PRECACHE block in sw.js. Returns
 // {before, after} for the --check path.
 function rewriteSw(swText, buildId, files) {
-  const buildIdRe = /^const BUILD_ID = '[^']*';$/m;
+  // Accept CRLF (Windows checkouts with core.autocrlf=true) by matching
+  // both `$` and `\r?\n`. Don't normalise the file — preserve the host's
+  // line endings so the stamper is a no-op on git's filter pipeline.
+  const buildIdRe = /^const BUILD_ID = '[^']*';\r?$/m;
   if (!buildIdRe.test(swText)) {
     throw new Error("sw.js: couldn't find the `const BUILD_ID = '…';` line");
   }
-  const markerRe = /\/\/ AUTO-PRECACHE START\n[\s\S]*?\/\/ AUTO-PRECACHE END/m;
-  if (!markerRe.test(swText)) {
+  const markerRe = /(\/\/ AUTO-PRECACHE START)(\r?\n)[\s\S]*?(\/\/ AUTO-PRECACHE END)/m;
+  const markerMatch = swText.match(markerRe);
+  if (!markerMatch) {
     throw new Error("sw.js: couldn't find AUTO-PRECACHE START/END markers");
   }
-  const appShellBlock = renderAppShell(files);
+  const nl = markerMatch[2];   // '\n' or '\r\n', whichever the file uses.
+  const appShellBlock = renderAppShell(files).split('\n').join(nl);
   return swText
-    .replace(buildIdRe, `const BUILD_ID = '${buildId}';`)
-    .replace(markerRe, `// AUTO-PRECACHE START\n${appShellBlock}\n// AUTO-PRECACHE END`);
+    .replace(buildIdRe, (m) => m.replace(/'[^']*'/, `'${buildId}'`))
+    .replace(markerRe, `$1${nl}${appShellBlock}${nl}$3`);
 }
 
 function rewriteIndex(htmlText, buildId) {

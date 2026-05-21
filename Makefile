@@ -154,8 +154,13 @@ board-input-smoke: wasm
 icons:
 	node scripts/gen-icons.mjs
 
+# Lightweight dev server. Deliberately does NOT depend on stamp-sw / wasm —
+# someone iterating on CSS / HTML shouldn't need an Emscripten toolchain. The
+# committed sw.js is good enough for visual dev; CI and the Dockerfile stamp
+# for real before anything ships. Run `make stamp-sw` manually if you need
+# the SW update banner to fire while testing locally.
 .PHONY: serve
-serve: stamp-sw
+serve:
 	cd $(WEB_DIR) && python3 -m http.server 8080
 
 # Federated relay server (Node.js + SQLite). For local dev, just run

@@ -158,7 +158,27 @@ await withFixture(async (dir) => {
   await writeFile(join(dir, '.DS_Store'), Buffer.from([0x00, 0x01]));
   await writeFile(join(dir, '.hidden-config'), 'secret\n');
   const after = await computeBuildId(dir);
-  checkEq('dotfiles excluded from hash', after, before);
+  checkEq('top-level dotfiles excluded from hash', after, before);
+});
+
+await withFixture(async (dir) => {
+  // Nested dotfiles — macOS sprinkles .DS_Store all over a tree once you
+  // open a Finder window. If those tripped BUILD_ID, every macOS contributor
+  // would see false-positive stamper drift.
+  const before = await computeBuildId(dir);
+  await writeFile(join(dir, 'icons', '.DS_Store'), Buffer.from([0x00, 0x01]));
+  await mkdir(join(dir, '.vscode'), { recursive: true });
+  await writeFile(join(dir, '.vscode', 'settings.json'), '{}\n');
+  const after = await computeBuildId(dir);
+  checkEq('nested dotfiles excluded from hash', after, before);
+
+  runStamper(dir);
+  const sw = await readFile(join(dir, 'sw.js'), 'utf-8');
+  const shell = appShellFromSw(sw);
+  check('APP_SHELL excludes ./icons/.DS_Store',
+    !shell.includes('./icons/.DS_Store'));
+  check('APP_SHELL excludes ./.vscode/settings.json',
+    !shell.some((p) => p.includes('/.vscode/')));
 });
 
 await withFixture(async (dir) => {
@@ -249,6 +269,48 @@ await withFixture(async (dir) => {
   check(`sw.js BUILD_ID is 12-hex (${swId})`, HEX12.test(swId || ''));
   check(`index.html build meta is 12-hex (${htmlId})`, HEX12.test(htmlId || ''));
   checkEq('sw.js and index.html BUILD_ID agree', swId, htmlId);
+});
+
+// ============ Cross-platform line endings ============
+
+console.log('\n== line endings ==');
+
+await withFixture(async (dir) => {
+  // Simulate a Windows checkout with core.autocrlf=true: CRLF in sw.js +
+  // index.html. The stamper must still parse the BUILD_ID line and the
+  // AUTO-PRECACHE markers, and must preserve the file's line-ending style
+  // when writing back (otherwise git keeps re-converting on every commit).
+  const toCRLF = (s) => s.replace(/\n/g, '\r\n');
+  await writeFile(join(dir, 'sw.js'), toCRLF(
+    "const BUILD_ID = 'dev';\n" +
+    "// AUTO-PRECACHE START\n" +
+    "const APP_SHELL = ['./'];\n" +
+    "// AUTO-PRECACHE END\n"));
+  await writeFile(join(dir, 'index.html'), toCRLF(
+    '<!doctype html>\n<html>\n<head>\n' +
+    '<meta name="build" content="dev">\n' +
+    '</head>\n<body>hi</body>\n</html>\n'));
+
+  const r = runStamper(dir);
+  checkEq('CRLF sw.js + index.html → stamp succeeds', r.code, 0);
+
+  const sw = await readFile(join(dir, 'sw.js'), 'utf-8');
+  check('stamped sw.js BUILD_ID is 12-hex',
+    HEX12.test(buildIdFromSw(sw) || ''));
+  const hasCrlf = sw.includes('\r\n');
+  const hasBareLf = /(?<!\r)\n/.test(sw);
+  check('stamped sw.js preserves CRLF line endings (no bare LF)',
+    hasCrlf && !hasBareLf,
+    `hasCrlf=${hasCrlf} hasBareLf=${hasBareLf}`);
+
+  // Re-stamping must remain idempotent under CRLF.
+  const id1 = buildIdFromSw(sw);
+  runStamper(dir);
+  const id2 = buildIdFromSw(await readFile(join(dir, 'sw.js'), 'utf-8'));
+  checkEq('CRLF re-stamp is idempotent', id1, id2);
+
+  const r3 = runStamper(dir, ['--check']);
+  checkEq('--check passes after CRLF stamp', r3.code, 0);
 });
 
 // ============ Error paths ============
