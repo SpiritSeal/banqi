@@ -11,8 +11,7 @@
 
 import express from 'express';
 import { listGlobalHistory, HISTORY_LIMIT_DEFAULT, HISTORY_LIMIT_MAX } from '../db.mjs';
-
-const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+import { asyncRoute } from '../util.mjs';
 
 function parseIntInRange(s, { min, max } = {}) {
   if (s == null) return null;

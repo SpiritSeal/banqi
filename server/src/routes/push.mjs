@@ -13,8 +13,7 @@ import {
   deletePushSubscriptionByEndpoint,
 } from '../db.mjs';
 import { configured, publicKey } from '../push.mjs';
-
-const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+import { asyncRoute } from '../util.mjs';
 
 export function pushRouter({ db }) {
   const r = express.Router();

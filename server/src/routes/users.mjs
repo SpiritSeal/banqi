@@ -3,8 +3,7 @@
 import express from 'express';
 import { getUser, headToHead, deleteUser } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
-
-const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+import { asyncRoute } from '../util.mjs';
 
 export function usersRouter({ db }) {
   const r = express.Router();

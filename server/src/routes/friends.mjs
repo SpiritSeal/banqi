@@ -11,8 +11,7 @@ import { requireAuth } from '../auth.mjs';
 import {
   friendInviteToken, verifyFriendInviteToken, parseCombinedToken,
 } from '../friend_tokens.mjs';
-
-const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+import { asyncRoute } from '../util.mjs';
 
 export function friendsRouter({ db, serverSecret, publicUrl }) {
   const r = express.Router();

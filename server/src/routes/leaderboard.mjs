@@ -1,7 +1,6 @@
 import express from 'express';
 import { topLeaderboard } from '../db.mjs';
-
-const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+import { asyncRoute } from '../util.mjs';
 
 export function leaderboardRouter({ db }) {
   const r = express.Router();
