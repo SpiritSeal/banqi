@@ -10,17 +10,21 @@
 // Module.Game on the client; the server is the only authority.
 //
 // Hash routing: #/ (lobby), #/g/<roomCode> (game), #/otb, #/ai,
-//               #/dashboard, #/leaderboard, #/profile/<id>.
+//               #/dashboard, #/leaderboard, #/history, #/profile/<id>.
 
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
 import { chooseMove, Difficulty } from './ai.js';
-import { Replay, renderTranscript, exportPgn } from './replay.js';
+import { Replay, renderTranscript, exportPgn, endReasonLabel } from './replay.js';
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
-import { initSettings, openSettingsDrawer, openRulesDrawer } from './settings.js';
-import { captureCellRect, playEventAnimation } from './animations.js';
+import {
+  initSettings, openSettingsDrawer, openRulesDrawer,
+  warnBeforeThreefold, setSetting,
+} from './settings.js';
+import { captureCellRect, playEventAnimation, animateCapture } from './animations.js';
+import { bindBoardInput } from './board-input.js';
 
 // Initialise settings (applies theme / animation toggles to <body>) before
 // anything paints, so the first render uses the chosen palette.
@@ -84,6 +88,7 @@ const views = {
   ai:          $('view-ai'),
   dashboard:   $('view-dashboard'),
   leaderboard: $('view-leaderboard'),
+  history:     $('view-history'),
   profile:     $('view-profile'),
   friends:     $('view-friends'),
   challenge:   $('view-challenge'),
@@ -202,6 +207,7 @@ async function route() {
     case '#/ai':          announce('Vs AI game');       return openAIGame();
     case '#/dashboard':   announce('My games');         return renderDashboard();
     case '#/leaderboard': announce('Leaderboard');      return renderLeaderboard();
+    case '#/history':     announce('Game history');     return renderHistory();
     case '#/friends':     announce('Friends');          return renderFriends();
     default:              announce('Lobby');            return renderLobby();
   }
@@ -554,9 +560,9 @@ function refreshGame() {
   if (!active.state) return;
   const liveState = active.state;
   const view = viewState(active, liveState);
-  renderBoard($('game-board'), view, (idx) => {
-    if (view.replayViewing) return;
-    onOnlineCellClick(idx, view);
+  renderBoard($('game-board'), view, {
+    onTap: (idx) => { if (!view.replayViewing) onOnlineCellClick(idx, view); },
+    onDragMove: (from, to) => { if (!view.replayViewing) onlineDragMove(from, to, view); },
   });
   const opp = active.role === 'host' ? active.info.join_name : active.info.host_name;
   const colorChip = liveState.my_color === 1
@@ -962,9 +968,14 @@ function statusLabel(state, info, replay) {
   return 'playing';
 }
 
-function onOnlineCellClick(idx, state) {
+async function onOnlineCellClick(idx, state) {
   if (state.game_over) return;
   if (state.replayViewing) return;
+  // idx === -1 is the "tap outside" signal from the pointer controller.
+  if (idx === -1) {
+    if (active.selected != null) { active.selected = null; refreshGame(); }
+    return;
+  }
   if (state.side_to_move !== state.my_player_index) return;
   // Pre-first-flip lock from a directed challenge: only the chosen first-mover
   // may make the opening flip. Server rejects either way; we just avoid round-trips.
@@ -989,6 +1000,10 @@ function onOnlineCellClick(idx, state) {
   }
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
+    if (!(await confirmThreefoldIfNeeded({ from, to: idx, state }))) {
+      // User cancelled — keep the source selected so they can pick again.
+      return;
+    }
     active.selected = null;
     const drawOffer = active.offerDraw;
     active.offerDraw = false;
@@ -998,6 +1013,23 @@ function onOnlineCellClick(idx, state) {
   if (idx === active.selected) { active.selected = null; refreshGame(); return; }
   active.selected = null;
   refreshGame();
+}
+
+// Drag-completed in an online game: skip the intermediate select step and
+// issue the move directly. Mirrors the move branch of onOnlineCellClick.
+async function onlineDragMove(from, to, state) {
+  if (state.game_over || state.replayViewing) return;
+  if (state.side_to_move !== state.my_player_index) return;
+  if (!state.first_flip_done
+      && (state.first_mover_index === 0 || state.first_mover_index === 1)
+      && state.first_mover_index !== state.my_player_index) return;
+  const legal = state.legal_moves_for_me || [];
+  if (!legal.some(m => m.from === from && m.to === to)) return;
+  if (!(await confirmThreefoldIfNeeded({ from, to, state }))) return;
+  active.selected = null;
+  const drawOffer = active.offerDraw;
+  active.offerDraw = false;
+  sendIntent({ kind: 'move', from, to, offer_draw: drawOffer });
 }
 
 async function copyInviteLink() {
@@ -1059,7 +1091,8 @@ function localApply(intent) {
   const game = active.game;
   const stm = game.sideToMovePlayer();
   let event = { seq: active.replay.totalMoves(), ts: Date.now(), mover: stm, action: null,
-                revealed: null, capture: null, game_over: false, winner: 0 };
+                revealed: null, capture: null, game_over: false, winner: 0,
+                end_reason: null };
   if (intent.kind === 'flip') {
     const piece = JSON.parse(game.applyFlip(stm, intent.cell));
     event.action = { kind: 'flip', to: intent.cell };
@@ -1076,6 +1109,14 @@ function localApply(intent) {
   }
   event.game_over = game.gameOver();
   event.winner = game.winner();
+  if (event.game_over) {
+    // Engine surfaces "no_legal_moves" / "threefold_repetition" / etc. via
+    // stateJson. We re-read it to tag the synthesized event.
+    try {
+      const post = JSON.parse(game.stateJson(-1));
+      event.end_reason = post.terminal_reason || null;
+    } catch (_) { /* swallow — banner falls back to a generic string */ }
+  }
   active.replay.appendEvent(event);
   playMoveSound(event);
   return event;
@@ -1085,9 +1126,9 @@ function refreshOTB() {
   if (!active?.isOTB) return;
   const liveState = JSON.parse(active.game.stateJson(-1));
   const view = viewState(active, liveState);
-  renderBoard($('otb-board'), view, (idx) => {
-    if (view.replayViewing) return;
-    onLocalCellClick(idx, view, 'otb');
+  renderBoard($('otb-board'), view, {
+    onTap: (idx) => { if (!view.replayViewing) onLocalCellClick(idx, view, 'otb'); },
+    onDragMove: (from, to) => { if (!view.replayViewing) localDragMove(from, to, view, 'otb'); },
   });
   const modeBadge = (active.mode && active.mode !== 'standard')
     ? ` · ${modeLabel(active.mode)}`
@@ -1097,7 +1138,9 @@ function refreshOTB() {
     banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    banner = `Game over — winner: ${w === 1 ? 'Red' : w === 2 ? 'Black' : '—'}${modeBadge}`;
+    const reasonText = otbEndReasonText(active, liveState);
+    const head = w === 1 ? 'Red wins' : w === 2 ? 'Black wins' : 'Draw';
+    banner = `Game over — ${head}${reasonText ? ` (${reasonText})` : ''}${modeBadge}`;
   } else if (!view.first_flip_done) {
     banner = `Player 1 — flip a piece (your color is decided by your first flip)`;
   } else {
@@ -1140,12 +1183,17 @@ function refreshOTB() {
 }
 function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
 
-function onLocalCellClick(idx, state, mode) {
+async function onLocalCellClick(idx, state, mode) {
   if (state.game_over) return;
   if (state.replayViewing) return;
+  const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
+  // idx === -1 is the "tap outside" signal from the pointer controller.
+  if (idx === -1) {
+    if (active.selected != null) { active.selected = null; refresh(); }
+    return;
+  }
   const c = state.cells[idx];
   const legal = state.legal_moves_for_me || [];
-  const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
   const boardEl = $(mode === 'otb' ? 'otb-board' : 'ai-board');
   const sideToMove = state.side_to_move;
   if (mode === 'ai' && sideToMove !== state.my_player_index) return;
@@ -1174,6 +1222,10 @@ function onLocalCellClick(idx, state, mode) {
   }
   if (legal.some(m => m.from === active.selected && m.to === idx)) {
     const from = active.selected;
+    if (!(await confirmThreefoldIfNeeded({ from, to: idx, state }))) {
+      // User cancelled — keep the source selected so they can pick again.
+      return;
+    }
     active.selected = null;
     // Snapshot the source rect + piece before state changes for the move
     // animation overlay.
@@ -1193,6 +1245,32 @@ function onLocalCellClick(idx, state, mode) {
   if (idx === active.selected) { active.selected = null; refresh(); return; }
   active.selected = null;
   refresh();
+}
+
+// Drag-completed in a local game (OTB or vs-AI). Skips the "select source"
+// intermediate state and applies the move atomically. Skips the move
+// animation since the drag ghost has already conveyed the motion — only
+// the capture-dissolve still plays.
+async function localDragMove(from, to, state, mode) {
+  if (state.game_over || state.replayViewing) return;
+  const refresh = () => mode === 'otb' ? refreshOTB() : refreshAI();
+  const boardEl = $(mode === 'otb' ? 'otb-board' : 'ai-board');
+  const sideToMove = state.side_to_move;
+  if (mode === 'ai' && sideToMove !== state.my_player_index) return;
+  if (mode === 'ai' && active.aiThinking) return;
+  const legal = state.legal_moves_for_me || [];
+  if (!legal.some(m => m.from === from && m.to === to)) return;
+  if (!(await confirmThreefoldIfNeeded({ from, to, state }))) return;
+  active.selected = null;
+  let event = null;
+  try { event = localApply({ kind: 'move', from, to }); }
+  catch (e) { console.warn(e); }
+  if (mode === 'ai') scheduleAIMove();
+  refresh();
+  // The user dragged the piece to the destination already — replaying the
+  // slide animation would feel laggy and redundant. Capture (if any) still
+  // animates so the captured piece visibly dissolves.
+  if (event?.capture) animateCapture(boardEl, event.action.to, event.capture);
 }
 
 // ---- vs AI (single local Game; human = player 0, AI = player 1) ----
@@ -1269,9 +1347,13 @@ function refreshAI() {
   // Human is player 0. Render from the human's POV.
   const liveState = JSON.parse(active.game.stateJson(0));
   const view = viewState(active, liveState);
-  renderBoard($('ai-board'), view, (idx) => {
-    if (view.replayViewing) return;
-    onLocalCellClick(idx, view, 'ai');
+  renderBoard($('ai-board'), view, {
+    onTap: (idx) => { if (!view.replayViewing) onLocalCellClick(idx, view, 'ai'); },
+    onDragMove: (from, to) => { if (!view.replayViewing) localDragMove(from, to, view, 'ai'); },
+    // While the AI is thinking, suppress drag on the human's pieces.
+    getDragSource: (idx) => active?.aiThinking
+      ? null
+      : defaultDragSource(view, $('ai-board'), idx),
   });
 
   const diffLabel = aiDifficultyLabel(active.difficulty);
@@ -1283,9 +1365,11 @@ function refreshAI() {
     banner = `Replay — viewing move ${active.replay.currentStep()} / ${active.replay.totalMoves()}${modeBadge}`;
   } else if (view.game_over) {
     const w = view.winner;
-    if (w === view.my_color) banner = `You win! 🎉${modeBadge}`;
-    else if (w !== 0)         banner = `AI wins. Better luck next time.${modeBadge}`;
-    else                      banner = `Game over${modeBadge}`;
+    const reasonText = otbEndReasonText(active, liveState);
+    const reasonSuffix = reasonText ? ` (${reasonText})` : '';
+    if (w === view.my_color) banner = `You win!${reasonSuffix}${modeBadge}`;
+    else if (w !== 0)         banner = `AI wins${reasonSuffix}${modeBadge}`;
+    else                      banner = `Draw${reasonSuffix}${modeBadge}`;
   } else if (!view.first_flip_done) {
     banner = `Your turn — flip a piece to begin${modeBadge}`;
   } else if (view.side_to_move === 0) {
@@ -1435,7 +1519,7 @@ function renderPieceCountsHtml(counts) {
       if (n > 0) {
         const name = PIECE_NAMES[t];
         const label = `${name} ${category}: ${n}`;
-        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}">${glyphs[t]}<span class="pc-chip-n">${n}</span></span>`);
+        parts.push(`<span class="pc-chip" title="${label}" aria-label="${label}"><span class="pc-chip-g">${glyphs[t]}</span><span class="pc-chip-r" aria-hidden="true">${t}</span><span class="pc-chip-n">${n}</span></span>`);
       }
     }
     return parts.length
@@ -1487,25 +1571,66 @@ function attachBoardKeyNav(boardEl) {
   if (boardEl.dataset.keyNav === '1') return;
   boardEl.dataset.keyNav = '1';
   boardEl.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const target = e.target.closest('[data-cell-index]');
     if (!target || target.parentElement !== boardEl) return;
     const idx = parseInt(target.dataset.cellIndex, 10);
     if (isNaN(idx)) return;
     let handled = true;
-    switch (e.key) {
-      case 'ArrowLeft':  boardArrowFocus(boardEl, idx, 0, -1); break;
-      case 'ArrowRight': boardArrowFocus(boardEl, idx, 0,  1); break;
-      case 'ArrowUp':    boardArrowFocus(boardEl, idx, -1, 0); break;
-      case 'ArrowDown':  boardArrowFocus(boardEl, idx,  1, 0); break;
-      case 'Home':       boardArrowFocus(boardEl, idx, 0, -8); break;
-      case 'End':        boardArrowFocus(boardEl, idx, 0,  8); break;
+    switch (e.key.toLowerCase()) {
+      case 'w':    boardArrowFocus(boardEl, idx, -1, 0); break;
+      case 'a':    boardArrowFocus(boardEl, idx,  0, -1); break;
+      case 's':    boardArrowFocus(boardEl, idx,  1, 0); break;
+      case 'd':    boardArrowFocus(boardEl, idx,  0, 1); break;
+      case 'home': boardArrowFocus(boardEl, idx,  0, -8); break;
+      case 'end':  boardArrowFocus(boardEl, idx,  0, 8); break;
       default: handled = false;
     }
     if (handled) e.preventDefault();
   });
 }
 
-function renderBoard(boardEl, state, onClick) {
+// Default drag-source resolver — mode-agnostic. Returns {piece, srcRect} if
+// the cell at `idx` is a faceup own-piece the active player can legally move,
+// else null. Call sites can wrap this to add mode-specific gates (e.g.
+// AI-thinking lock) before delegating.
+function defaultDragSource(state, boardEl, idx) {
+  if (idx == null || idx < 0 || idx >= 32) return null;
+  if (state.game_over || state.replayViewing) return null;
+  const c = state.cells[idx];
+  if (!c || c.state !== 'faceup') return null;
+  const legal = state.legal_moves_for_me || [];
+  const stm = state.side_to_move;
+  let actorColor;
+  if (state.my_player_index === -1) {
+    // OTB viewer: whoever is to move is the actor.
+    actorColor = stm === 0 ? state.player0_color : state.player1_color;
+  } else {
+    // Online / vs-AI: only the viewer can drag, and only on their turn.
+    if (stm !== state.my_player_index) return null;
+    actorColor = state.my_color;
+  }
+  if (c.color !== actorColor) return null;
+  if (!legal.some(m => m.from === idx)) return null;
+  const rect = captureCellRect(boardEl, idx);
+  if (!rect) return null;
+  return { piece: { color: c.color, glyph: c.glyph }, srcRect: rect };
+}
+
+function defaultIsLegalTarget(state, from, to) {
+  if (state.game_over || state.replayViewing) return false;
+  const legal = state.legal_moves_for_me || [];
+  return legal.some(m => m.from === from && m.to === to);
+}
+
+// `callbacks` shape:
+//   { onTap(idx), onDragMove(from, to), getDragSource?(idx), isLegalTarget?(from, to) }
+// Back-compat: a bare function is treated as onTap (and drag is disabled
+// via a stub getDragSource that always returns null).
+function renderBoard(boardEl, state, callbacks) {
+  if (typeof callbacks === 'function') {
+    callbacks = { onTap: callbacks, onDragMove: () => {}, getDragSource: () => null };
+  }
   const prevFocusIdx = boardEl.querySelector('[data-cell-index][tabindex="0"]')?.dataset.cellIndex;
   const hadDomFocus = boardEl.contains(document.activeElement);
 
@@ -1559,7 +1684,6 @@ function renderBoard(boardEl, state, onClick) {
     if (state.flashCellIdx === i) btn.classList.add('opp-move-flash');
     btn.setAttribute('aria-label', cellAriaLabel(i, c, opts));
     if (state.replayViewing) btn.setAttribute('aria-disabled', 'true');
-    btn.addEventListener('click', () => onClick(i));
     boardEl.appendChild(btn);
   }
 
@@ -1570,6 +1694,18 @@ function renderBoard(boardEl, state, onClick) {
     wm.setAttribute('aria-hidden', 'true');
     boardEl.appendChild(wm);
   }
+
+  // Wire pointer input. Idempotent per board element; subsequent renders
+  // just swap the callback closures (so they see the freshest state).
+  const getDragSource = callbacks.getDragSource
+    || ((idx) => defaultDragSource(state, boardEl, idx));
+  const isLegalTarget = callbacks.isLegalTarget
+    || ((from, to) => defaultIsLegalTarget(state, from, to));
+  bindBoardInput(boardEl, {
+    onTap: callbacks.onTap,
+    onDragMove: callbacks.onDragMove,
+    getDragSource, isLegalTarget,
+  });
 
   if (hadDomFocus) {
     const tgt = boardEl.querySelector(`[data-cell-index="${focusIdx}"]`);
@@ -2045,6 +2181,169 @@ async function renderLeaderboard() {
         <td>${u.elo}</td><td>${u.wins}</td><td>${u.losses}</td>
       </tr>`).join('')}
     </tbody></table>`;
+}
+
+// ---- public game history ------------------------------------------------
+//
+// Lists all completed games on the server, paginated by the most recent
+// ended_at. Public — no sign-in required, mirrors the leaderboard's access
+// model. Mode chips filter the in-memory list AND the next fetch.
+
+const HISTORY_CHIPS = [
+  { id: 'all',              label: 'All',                  mode: null },
+  { id: 'standard',         label: 'Standard',             mode: 'standard' },
+  { id: 'capture_general',  label: 'Capture the General',  mode: 'capture_general' },
+];
+
+const historyState = {
+  chip: 'all',
+  games: [],
+  nextBefore: null,
+  shellMounted: false,
+  loading: false,
+};
+
+async function renderHistory() {
+  showView('history');
+  if (!online) {
+    $('history-body').innerHTML = `<div class="muted">You're offline — can't load history. <a href="#/">Lobby</a></div>`;
+    $('history-more').classList.add('hidden');
+    return;
+  }
+  mountHistoryShell();
+  historyState.games = [];
+  historyState.nextBefore = null;
+  $('history-body').innerHTML = `<div class="muted">Loading…</div>`;
+  $('history-more').classList.add('hidden');
+  await loadMoreHistory({ replace: true });
+}
+
+function mountHistoryShell() {
+  if (historyState.shellMounted) return;
+  historyState.shellMounted = true;
+  const chipRow = $('history-chips');
+  chipRow.innerHTML = HISTORY_CHIPS.map((c) => `
+    <button class="chip" type="button" role="tab" data-chip="${c.id}"
+            aria-selected="${c.id === historyState.chip}">
+      ${escapeHtml(c.label)}
+    </button>`).join('');
+  chipRow.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.chip');
+    if (!btn || btn.dataset.chip === historyState.chip) return;
+    historyState.chip = btn.dataset.chip;
+    chipRow.querySelectorAll('.chip').forEach((b) =>
+      b.setAttribute('aria-selected', b.dataset.chip === historyState.chip));
+    renderHistory();
+  });
+  $('history-more').addEventListener('click', () => loadMoreHistory({ replace: false }));
+}
+
+async function loadMoreHistory({ replace }) {
+  if (historyState.loading) return;
+  historyState.loading = true;
+  const more = $('history-more');
+  more.disabled = true;
+  const chip = HISTORY_CHIPS.find((c) => c.id === historyState.chip);
+  const params = new URLSearchParams();
+  params.set('limit', '50');
+  if (chip?.mode) params.set('mode', chip.mode);
+  if (!replace && historyState.nextBefore) {
+    params.set('before', String(historyState.nextBefore));
+  }
+  try {
+    const r = await fetch(`/api/history?${params.toString()}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    historyState.games = replace
+      ? (data.games || [])
+      : historyState.games.concat(data.games || []);
+    historyState.nextBefore = data.next_before || null;
+  } catch (e) {
+    $('history-body').innerHTML = `<div class="err">Couldn't load history.
+      <a href="#/history">Retry</a>.</div>`;
+    toast('Couldn’t load history.', { kind: 'error' });
+    historyState.loading = false;
+    more.disabled = false;
+    return;
+  } finally {
+    historyState.loading = false;
+    more.disabled = false;
+  }
+  renderHistoryBody();
+}
+
+function renderHistoryBody() {
+  const body = $('history-body');
+  if (!historyState.games.length) {
+    body.innerHTML = `<div class="empty-state">
+      <p>No completed games yet.</p>
+      <div class="row"><a href="#/" class="primary">Start a game</a></div>
+    </div>`;
+    $('history-more').classList.add('hidden');
+    return;
+  }
+  body.innerHTML = `
+    <ul class="history-list">
+      ${historyState.games.map(renderHistoryRow).join('')}
+    </ul>`;
+  $('history-more').classList.toggle('hidden', !historyState.nextBefore);
+}
+
+// One row per completed game. Winner is bolded; loser is dimmed; AI rows
+// don't link to a profile (AI profiles exist but the global feed isn't a
+// natural surface for them yet).
+function renderHistoryRow(g) {
+  const ago = relativeTime(g.ended_at || g.last_move_at || g.created_at);
+  const winnerId = g.winner_user_id;
+  const isDraw = g.winner_color === 0 || g.winner_color == null;
+  const tc = g.time_limit_ms != null
+    ? ` · ${escapeHtml(timeControlLabel(g.time_limit_ms, g.increment_ms || 0))}`
+    : '';
+  const moves = `${g.move_count} move${g.move_count === 1 ? '' : 's'}`;
+  const endTag = endKindLabel(g);
+  const host = renderHistoryPlayer(g, 'host', winnerId, isDraw);
+  const join = renderHistoryPlayer(g, 'join', winnerId, isDraw);
+  const result = isDraw ? 'Draw'
+    : winnerId === g.host_user_id ? '1 – 0'
+    : winnerId === g.join_user_id ? '0 – 1'
+    : '—';
+  return `
+    <li class="history-row">
+      <div class="history-players">${host}<span class="history-vs">vs</span>${join}</div>
+      <div class="history-result">${escapeHtml(result)}</div>
+      <div class="history-meta">
+        ${escapeHtml(modeLabel(g.mode))}${tc} · ${moves}
+        ${endTag ? ` · ${escapeHtml(endTag)}` : ''} · ${escapeHtml(ago)}
+      </div>
+    </li>`;
+}
+
+function renderHistoryPlayer(g, side, winnerUserId, isDraw) {
+  const name = g[`${side}_name`] || (side === 'join' ? '(no opponent)' : '?');
+  const userId = g[`${side}_user_id`];
+  const provider = g[`${side}_provider`];
+  const providerId = g[`${side}_provider_id`];
+  const isAi = provider === 'ai';
+  const won = !isDraw && userId && winnerUserId === userId;
+  const lost = !isDraw && userId && winnerUserId && winnerUserId !== userId;
+  const cls = `history-player${won ? ' winner' : lost ? ' loser' : ''}`;
+  const aiTag = isAi ? ` <span class="muted small">· ${escapeHtml(aiDifficultyLabel(providerId))}</span>` : '';
+  // Guests have a user row but no profile page (404s on the route). Skip the
+  // link for guests too.
+  const noLink = !userId || provider === 'guest' || provider === 'ai';
+  const inner = noLink
+    ? escapeHtml(name)
+    : `<a href="#/profile/${userId}">${escapeHtml(name)}</a>`;
+  return `<span class="${cls}">${inner}${aiTag}</span>`;
+}
+
+function endKindLabel(g) {
+  switch (g.end_kind) {
+    case 'resign':       return 'by resignation';
+    case 'timeout':      return 'on time';
+    case 'accept_draw':  return 'by agreement';
+    default:             return null;
+  }
 }
 
 // ---- profile ----
@@ -2730,13 +3029,96 @@ function showKeyboardHelp() {
       <dt><kbd>Esc</kbd></dt>          <dd>Close a dialog</dd>
       <dt><kbd>Tab</kbd></dt>          <dd>Move focus between controls</dd>
     </dl>
+    <h3 class="kbd-help-section">Move history (in a game)</h3>
+    <dl class="kbd-help">
+      <dt><kbd>←</kbd> / <kbd>→</kbd></dt><dd>Previous / next move</dd>
+      <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Jump to first move / return to live</dd>
+    </dl>
     <h3 class="kbd-help-section">Board (when a cell is focused)</h3>
     <dl class="kbd-help">
-      <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move focus between cells</dd>
+      <dt><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></dt><dd>Move focus between cells</dd>
       <dt><kbd>Home</kbd> / <kbd>End</kbd></dt><dd>Jump to row start / end</dd>
       <dt><kbd>Enter</kbd> / <kbd>Space</kbd></dt><dd>Flip, select, or move to the focused cell</dd>
     </dl>`;
   infoModal({ title: 'Keyboard shortcuts', html });
+}
+
+// Looks up a move in the legal-moves array and returns true if it carries
+// the engine's `threefold` flag. Cheap — the legal moves array is short.
+function moveTriggersThreefold(state, from, to) {
+  const legal = state?.legal_moves_for_me || [];
+  for (const m of legal) {
+    if (m.from === from && m.to === to) return !!m.threefold;
+  }
+  return false;
+}
+
+// Returns true if the move was confirmed (caller should send it), false if
+// cancelled. When `warnBeforeThreefold` is off, returns true immediately —
+// no modal. The "Don't show again" checkbox toggles the setting.
+async function confirmThreefoldIfNeeded({ from, to, state }) {
+  if (!moveTriggersThreefold(state, from, to)) return true;
+  if (!warnBeforeThreefold()) return true;
+  return confirmThreefoldModal();
+}
+
+// Confirm-this-move dialog with a "Don't show again" checkbox. Resolves true
+// (commit the move) or false (cancel). On commit-with-checkbox, persists
+// warnBeforeThreefold = 'off' to settings.
+function confirmThreefoldModal() {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root');
+    if (!root) { resolve(true); return; }   // fail-open: if no modal root, just send.
+    const previouslyFocused = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true"
+           aria-labelledby="threefold-title" aria-describedby="threefold-body" tabindex="-1">
+        <h2 id="threefold-title">End the game by repetition?</h2>
+        <p id="threefold-body" class="modal-body">
+          This move recreates a position that has already occurred twice with
+          you to move. Playing it ends the game as a draw by threefold
+          repetition. Continue?
+        </p>
+        <label class="modal-checkbox">
+          <input type="checkbox" id="threefold-dont-show">
+          <span>Don't show this warning again</span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel">Cancel</button>
+          <button type="button" class="btn-confirm primary">Continue &amp; draw</button>
+        </div>
+      </div>`;
+    const btnCancel = overlay.querySelector('.btn-cancel');
+    const btnConfirm = overlay.querySelector('.btn-confirm');
+    const dontShow = overlay.querySelector('#threefold-dont-show');
+    const close = (result) => {
+      if (result && dontShow.checked) setSetting('warnBeforeThreefold', 'off');
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      try { previouslyFocused?.focus?.(); } catch (_) {}
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(false); return; }
+      if (e.key === 'Tab') {
+        const focusables = [btnCancel, btnConfirm, dontShow];
+        const idx = focusables.indexOf(document.activeElement);
+        if (idx === -1) { focusables[0].focus(); e.preventDefault(); return; }
+        const next = e.shiftKey ? (idx - 1 + focusables.length) % focusables.length
+                                : (idx + 1) % focusables.length;
+        focusables[next].focus();
+        e.preventDefault();
+      }
+    };
+    btnCancel.addEventListener('click', () => close(false));
+    btnConfirm.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', onKey, true);
+    root.appendChild(overlay);
+    btnCancel.focus();
+  });
 }
 
 function confirmModal({ title, body, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = {}) {
@@ -2857,6 +3239,17 @@ function seedConfetti(container) {
   }
 }
 
+// Why this local (OTB / AI) game ended, as a short human-readable phrase
+// pulled from either liveState.terminal_reason (online + the engine's view)
+// or the last replay event's end_reason. Returns "" if no reason is known.
+function otbEndReasonText(act, liveState) {
+  const lastSnap = act?.replay?.snapshots?.[act.replay.snapshots.length - 1];
+  const reason = lastSnap?.event?.end_reason
+              || liveState?.terminal_reason
+              || null;
+  return endReasonLabel(reason) || '';
+}
+
 // Decides what to show in the game-over modal for the current active session
 // and triggers it (idempotent — calls itself only once per game).
 function maybeShowGameOver(view) {
@@ -2865,25 +3258,32 @@ function maybeShowGameOver(view) {
   active._gameOverShown = true;
 
   const winner = view.winner;
+  // Reason rides on either the state (set by the server / engine) or the
+  // last event (set by the action that finalized the game). Prefer the
+  // event-level reason — it's authoritative for the action that ended things.
+  const lastSnap = active.replay?.snapshots?.[active.replay.snapshots.length - 1];
+  const reason = lastSnap?.event?.end_reason || view.terminal_reason || null;
+  const reasonText = endReasonLabel(reason);
+  const drawSubtitle = reasonText ? `By ${reasonText}.` : null;
   // Online: my_color is the side YOU play. If winner === my_color, you won.
   // OTB: nobody is "you"; use a generic banner.
   // AI: my_color === 1 for player 0 (human).
   let outcome, title, subtitle;
   if (active.isOnline) {
     const myColor = view.my_color;
-    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
-    else if (winner === myColor) { outcome = 'win'; title = 'You win!'; subtitle = 'Nicely played.'; }
-    else { outcome = 'loss'; title = 'You lost'; subtitle = 'Good game — review the moves to learn.'; }
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; subtitle = drawSubtitle; }
+    else if (winner === myColor) { outcome = 'win'; title = 'You win!'; subtitle = reasonText ? `Won by ${reasonText}.` : 'Nicely played.'; }
+    else { outcome = 'loss'; title = 'You lost'; subtitle = reasonText ? `Lost by ${reasonText}.` : 'Good game — review the moves to learn.'; }
   } else if (active.isAI) {
-    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; }
-    else if (winner === view.my_color) { outcome = 'win'; title = 'You beat the AI!'; subtitle = 'Try a harder difficulty.'; }
-    else { outcome = 'loss'; title = 'The AI wins'; subtitle = "Try again — the AI doesn't get tired."; }
+    if (winner === 0 || winner == null) { outcome = 'draw'; title = "It's a draw"; subtitle = drawSubtitle; }
+    else if (winner === view.my_color) { outcome = 'win'; title = 'You beat the AI!'; subtitle = reasonText ? `Won by ${reasonText}.` : 'Try a harder difficulty.'; }
+    else { outcome = 'loss'; title = 'The AI wins'; subtitle = reasonText ? `By ${reasonText}.` : "Try again — the AI doesn't get tired."; }
   } else {
     // OTB
     const name = winner === 1 ? 'Red' : winner === 2 ? 'Black' : null;
     outcome = name ? 'win' : 'draw';
     title = name ? `${name} wins!` : "It's a draw";
-    subtitle = name ? 'Good game.' : null;
+    subtitle = name ? (reasonText ? `By ${reasonText}.` : 'Good game.') : drawSubtitle;
   }
 
   const actions = [];
@@ -2973,6 +3373,30 @@ document.addEventListener('keydown', (e) => {
   if (document.querySelector('.modal-overlay')) return;
   e.preventDefault();
   showKeyboardHelp();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const key = e.key;
+  if (key !== 'ArrowLeft' && key !== 'ArrowRight' && key !== 'ArrowUp' && key !== 'ArrowDown') return;
+  if (isTypingTarget(e.target)) return;
+  if (document.querySelector('.modal-overlay')) return;
+
+  let refresh = null;
+  if (active?.isOnline && !views.game?.classList.contains('hidden')) refresh = refreshGame;
+  else if (active?.isOTB && !views.otb?.classList.contains('hidden')) refresh = refreshOTB;
+  else if (active?.isAI && !views.ai?.classList.contains('hidden')) refresh = refreshAI;
+  if (!refresh) return;
+  if (!active?.replay || active.replay.totalMoves() === 0) return;
+
+  switch (key) {
+    case 'ArrowLeft':  active.replay.goPrev();  break;
+    case 'ArrowRight': active.replay.goNext();  break;
+    case 'ArrowUp':    active.replay.goFirst(); break;
+    case 'ArrowDown':  active.replay.goLast();  break;
+  }
+  e.preventDefault();
+  refresh();
 });
 
 const btnHelp = document.getElementById('btn-keyboard-help');

@@ -16,7 +16,7 @@
 // the cache atomically (see activate handler) and surfaces the "Update
 // available" banner wired up in main.js.
 
-const BUILD_ID = 'bb45ace69304';
+const BUILD_ID = '9dd40276fec9';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
@@ -27,6 +27,7 @@ const APP_SHELL = [
   "./animations.js",
   "./audio.js",
   "./board-hints.js",
+  "./board-input.js",
   "./favicon.svg",
   "./icons/apple-touch-icon-180.png",
   "./icons/icon-192.png",

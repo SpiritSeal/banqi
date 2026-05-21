@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1c1c1e">
-<meta name="build" content="bb45ace69304">
+<meta name="build" content="9dd40276fec9">
 <title>Banqi (半棋) — online + over the board</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="manifest" href="manifest.webmanifest">
@@ -44,6 +44,7 @@
       Friends<span id="nav-notif-badge" class="app-nav-notif hidden"></span>
     </a>
     <a href="#/leaderboard" data-route="#/leaderboard" class="nav-item" data-not-guest>Leaderboard</a>
+    <a href="#/history" data-route="#/history" class="nav-item">History</a>
     <span class="nav-spacer"></span>
     <button type="button" class="nav-item" id="btn-open-rules" aria-label="Open rules">
       <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -197,6 +198,21 @@
     <div id="leaderboard-table"></div>
   </section>
 
+  <!-- HISTORY -->
+  <section id="view-history" class="panel hidden" aria-labelledby="history-heading">
+    <header class="dash-header">
+      <h2 id="history-heading" tabindex="-1">Game history</h2>
+    </header>
+    <p class="muted small">Every completed game on the server, newest first.</p>
+    <div class="dash-controls">
+      <div id="history-chips" class="chip-row" role="tablist" aria-label="Filter by mode"></div>
+    </div>
+    <div id="history-body"></div>
+    <div class="row" style="justify-content:center;margin-top:16px">
+      <button id="history-more" class="link-btn hidden" type="button">Load more</button>
+    </div>
+  </section>
+
   <!-- PROFILE -->
   <section id="view-profile" class="panel hidden" aria-labelledby="profile-heading">
     <h2 id="profile-heading" class="sr-only" tabindex="-1">Profile</h2>
@@ -247,6 +263,12 @@
           <li><b>Soldier</b> can capture <b>General</b> (1 beats 7). General cannot capture Soldier.</li>
           <li><b>Cannon</b> jumps along a row or column over exactly one piece to capture anything, ignoring rank.</li>
           <li>The first flipper plays the revealed color. You lose if you have no legal move.</li>
+        </ul>
+        <h3>Draws</h3>
+        <ul class="crib-rules">
+          <li><b>By agreement</b> &mdash; in online play, tick "Offer draw" on your move; the opponent can Accept (or just play, which declines).</li>
+          <li><b>Threefold repetition</b> &mdash; if the same position with the same side to move recurs three times with no flip or capture in between, the game is drawn automatically. You'll be asked to confirm the move that would seal it; turn the prompt off under Settings → "Confirm before threefold draw".</li>
+          <li><b>40-move rule</b> &mdash; if 40 consecutive half-moves go by with no flip and no capture, the game is drawn automatically. Flips and captures reset the counter.</li>
         </ul>
       </div>
     </div>

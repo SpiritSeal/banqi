@@ -11,6 +11,7 @@ import { configureAuth, authProviders } from './auth.mjs';
 import { gamesRouter } from './routes/games.mjs';
 import { usersRouter } from './routes/users.mjs';
 import { leaderboardRouter } from './routes/leaderboard.mjs';
+import { historyRouter } from './routes/history.mjs';
 import { friendsRouter } from './routes/friends.mjs';
 import { matchRequestsRouter } from './routes/match_requests.mjs';
 import { notificationsRouter } from './routes/notifications.mjs';
@@ -58,6 +59,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   app.use('/api', usersRouter({ db }));
   app.use('/api', gamesRouter({ db, engine }));
   app.use('/api', leaderboardRouter({ db }));
+  app.use('/api', historyRouter({ db }));
   app.use('/api', friendsRouter({ db, serverSecret, publicUrl }));
   app.use('/api', matchRequestsRouter({ db, engine }));
   app.use('/api', notificationsRouter({ db }));
@@ -65,7 +67,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
 
   // SPA-style fallback: send index.html for unknown GETs that look like
   // hash-routed pages, so deep links like /g/ROOMCODE work.
-  app.get(/^\/(g|dashboard|leaderboard|profile|friends|add-friend|challenge)\b/, (_req, res) => {
+  app.get(/^\/(g|dashboard|leaderboard|history|profile|friends|add-friend|challenge)\b/, (_req, res) => {
     res.sendFile(join(WEB_DIR, 'index.html'));
   });
 

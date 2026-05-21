@@ -555,7 +555,43 @@ button:focus-visible, a.primary:focus-visible {
     inset 0 1px 0 rgba(255, 230, 180, 0.04),
     inset 0 -1px 0 rgba(0, 0, 0, 0.45);
 }
-.cell:hover.legal { transform: scale(1.04); }
+/* Hover styles only on real hover-capable input (desktop mouse, pen).
+   On touch, :hover latches after a tap and leaves cells stuck scaled-up. */
+@media (hover: hover) and (pointer: fine) {
+  .cell:hover.legal { transform: scale(1.04); }
+}
+
+/* Immediate press feedback — fires on pointerdown for both mouse and touch.
+   `.is-pressing` is toggled by the pointer controller in board-input.js. */
+.cell:active.legal,
+.cell.is-pressing.legal,
+.cell:active.facedown.legal,
+.cell.is-pressing.facedown.legal {
+  transform: scale(0.96);
+  filter: brightness(1.08);
+}
+
+/* Drag-source cell while a drag is in flight: dim, no pulse. */
+.cell.is-dragging {
+  animation: none !important;
+}
+.cell.is-dragging .cell-glyph,
+.cell.is-dragging .cell-value {
+  opacity: 0.18;
+}
+
+/* Cell currently under the dragged piece, on a legal target — strong halo. */
+.cell.drag-over-legal {
+  transform: scale(1.06);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -3px 6px rgba(140, 90, 30, 0.32),
+    0 0 0 4px var(--accent),
+    0 6px 14px rgba(0, 0, 0, 0.55);
+}
+.cell.drag-over-illegal {
+  filter: saturate(0.55) brightness(0.85);
+}
 .cell.empty {
   background:
     radial-gradient(ellipse at 30% 25%, rgba(0, 0, 0, 0.25), transparent 65%),
@@ -694,17 +730,30 @@ body[data-piece-style="large"] .cell { font-size: 42px; }
 }
 
 .cell.last-move {
-  box-shadow: inset 0 0 0 3px rgba(255, 200, 90, 0.65),
-              0 2px 5px rgba(0, 0, 0, 0.4);
+  box-shadow:
+    inset 0 0 0 4px var(--accent),
+    0 0 0 2px var(--accent-strong),
+    0 0 12px 2px var(--accent-strong),
+    0 2px 5px rgba(0, 0, 0, 0.4);
+  z-index: 2;
 }
 .cell.replay-highlight {
-  box-shadow: inset 0 0 0 3px rgba(120, 180, 255, 0.85),
-              0 2px 5px rgba(0, 0, 0, 0.4);
+  box-shadow:
+    inset 0 0 0 4px rgba(140, 200, 255, 0.95),
+    0 0 0 2px rgba(120, 180, 255, 0.45),
+    0 0 12px 2px rgba(120, 180, 255, 0.45),
+    0 2px 5px rgba(0, 0, 0, 0.4);
+  z-index: 2;
 }
 .cell.last-move.selected {
-  box-shadow: inset 0 0 0 3px rgba(255, 200, 90, 0.65),
-              0 0 0 4px var(--accent-soft),
-              0 4px 10px rgba(0, 0, 0, 0.5);
+  outline: 3px solid var(--accent);
+  outline-offset: -1px;
+  box-shadow:
+    inset 0 0 0 4px var(--accent),
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -3px 6px rgba(140, 90, 30, 0.32),
+    0 0 0 4px var(--accent-soft),
+    0 4px 10px rgba(0, 0, 0, 0.5);
 }
 .cell:focus-visible {
   outline: 3px solid var(--accent);
@@ -765,6 +814,18 @@ button.cell:disabled, button.cell[aria-disabled="true"] { cursor: default; }
 }
 .anim-piece.dissolving {
   animation: piece-dissolve 320ms var(--ease-in-out) 1 forwards;
+}
+
+/* Drag preview piece that follows the finger / cursor during a drag-to-move.
+   pointer-events: none so document.elementFromPoint sees the cell under it. */
+.anim-piece.drag-ghost {
+  pointer-events: none;
+  opacity: 0.94;
+  transition: transform 60ms linear;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -3px 6px rgba(140, 90, 30, 0.32),
+    0 10px 24px rgba(0, 0, 0, 0.55);
 }
 @keyframes piece-dissolve {
   0%   { opacity: 1; transform: scale(1)   rotate(0deg); }
@@ -1205,6 +1266,60 @@ button.dash-section-header:hover { color: var(--fg); }
   .gc-badges { margin-right: 30px; gap: 3px; }
   .badge { font-size: 9px; padding: 2px 6px; }
   .gc-delete { opacity: 1; }
+  /* Tighten board chrome so each cell gets a few extra pixels of touch area. */
+  .board { padding: 4px; gap: 3px; }
+}
+
+/* ---- game history list -------------------------------------------- */
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.history-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "players  result"
+    "meta     meta";
+  align-items: center;
+  gap: 4px 12px;
+  padding: 10px 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+}
+.history-players {
+  grid-area: players;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.history-vs {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.history-player a { color: var(--accent); text-decoration: none; }
+.history-player a:hover { text-decoration: underline; }
+.history-player.winner { font-weight: 700; }
+.history-player.loser  { color: var(--muted); }
+.history-result {
+  grid-area: result;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.history-meta {
+  grid-area: meta;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 /* ---- tables (leaderboard / profile) -------------------------------- */
@@ -1444,6 +1559,16 @@ table a:hover { text-decoration: underline; }
   gap: 8px;
 }
 .modal .modal-actions button { min-width: 88px; justify-content: center; }
+.modal .modal-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px 0;
+  font-size: 13px;
+  color: var(--fg-muted, var(--fg));
+  cursor: pointer;
+}
+.modal .modal-checkbox input { margin: 0; }
 .modal .btn-danger {
   background: var(--err-border);
   color: #fff;
@@ -1958,6 +2083,40 @@ body.is-offline #btn-start-online { opacity: 0.55; }
 }
 .piece-counts .pc-row-red .pc-chip { color: #f5a5a5; }
 .piece-counts .pc-row-black .pc-chip { color: #e6e6e6; }
+
+/* Rank-number labels on captured-pieces chips. Off by default; revealed by
+   body[data-piece-numbers="..."] for users who identify pieces by rank. */
+.piece-counts .pc-chip-r { display: none; }
+
+body[data-piece-numbers="badge"] .piece-counts .pc-chip-r {
+  display: inline;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--muted);
+  margin-left: 1px;
+  font-variant-numeric: tabular-nums;
+  vertical-align: super;
+  font-weight: 600;
+}
+
+body[data-piece-numbers="full"] .piece-counts .pc-chip-r {
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  padding: 0 3px;
+  border-left: 1px solid rgba(255, 255, 255, 0.10);
+  margin-left: 4px;
+}
+
+body[data-piece-numbers="full"] .piece-counts .pc-chip-n::before {
+  content: "×";
+  margin-right: 1px;
+  color: var(--muted);
+  opacity: 0.7;
+}
 
 /* ---- sticky mobile game header -------------------------------- */
 @media (max-width: 700px) {

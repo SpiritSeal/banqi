@@ -285,6 +285,7 @@ export async function appendGameEvent(db, gameId, event) {
     capture: event.capture,
     game_over: event.game_over,
     winner: event.winner,
+    end_reason: event.end_reason || null,
     draw_offered: event.draw_offered || false,
     clocks_after: event.clocks_after || null,
   });
@@ -347,6 +348,90 @@ export async function topLeaderboard(db, limit = 50) {
      LIMIT $1
   `, [limit]);
   return rows;
+}
+
+// Global public game history. Returns recently completed games across all
+// players, with player metadata + move count joined in. Used by the public
+// `GET /api/history` endpoint, so the listing intentionally omits room codes
+// (the join credential) and any in-progress board state.
+//   - before:   only rows with ended_at < before (ms epoch); cursor pagination
+//   - mode:     'standard' | 'capture_general' (no filter when null)
+//   - playerId: only games involving this user as host or join
+//   - limit:    capped at 100; default 50
+export const HISTORY_LIMIT_MAX     = 100;
+export const HISTORY_LIMIT_DEFAULT = 50;
+export async function listGlobalHistory(db, {
+  limit = HISTORY_LIMIT_DEFAULT, before = null, mode = null, playerId = null,
+} = {}) {
+  const lim = Math.min(HISTORY_LIMIT_MAX, Math.max(1, limit | 0));
+  const params = [];
+  const where = ["g.status = 'complete'"];
+  if (Number.isInteger(before) && before > 0) {
+    params.push(before);
+    where.push(`g.ended_at < $${params.length}`);
+  }
+  if (mode === 'standard' || mode === 'capture_general') {
+    params.push(mode);
+    where.push(`g.mode = $${params.length}`);
+  }
+  if (Number.isInteger(playerId) && playerId > 0) {
+    params.push(playerId);
+    where.push(`(g.host_user_id = $${params.length} OR g.join_user_id = $${params.length})`);
+  }
+  params.push(lim);
+  const { rows } = await db.query(`
+    SELECT g.id, g.host_user_id, g.join_user_id, g.mode,
+           g.winner_color, g.winner_user_id,
+           g.time_limit_ms, g.increment_ms,
+           g.created_at, g.last_move_at, g.ended_at,
+           hu.display_name AS host_name, hu.provider AS host_provider,
+           hu.provider_id  AS host_provider_id,
+           ju.display_name AS join_name, ju.provider AS join_provider,
+           ju.provider_id  AS join_provider_id,
+           (SELECT COUNT(*)::int FROM game_events ge WHERE ge.game_id = g.id) AS move_count,
+           (SELECT le.payload_json
+              FROM game_events le
+             WHERE le.game_id = g.id
+             ORDER BY le.seq DESC
+             LIMIT 1) AS last_event_json
+      FROM games g
+      JOIN users hu ON hu.id = g.host_user_id
+      LEFT JOIN users ju ON ju.id = g.join_user_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY g.ended_at DESC NULLS LAST, g.id DESC
+     LIMIT $${params.length}
+  `, params);
+  return rows.map((r) => {
+    // Surface only the action.kind of the terminating event ('resign' /
+    // 'timeout' / 'flip' / 'move' / 'accept_draw'), so the UI can show
+    // "Won by resignation" without parsing the full payload.
+    let endKind = null;
+    if (r.last_event_json) {
+      try { endKind = JSON.parse(r.last_event_json)?.action?.kind ?? null; }
+      catch (_) { endKind = null; }
+    }
+    return {
+      id:                r.id,
+      host_user_id:      r.host_user_id,
+      join_user_id:      r.join_user_id,
+      host_name:         r.host_name,
+      host_provider:     r.host_provider,
+      host_provider_id:  r.host_provider_id,
+      join_name:         r.join_name,
+      join_provider:     r.join_provider,
+      join_provider_id:  r.join_provider_id,
+      mode:              r.mode || 'standard',
+      winner_color:      r.winner_color,
+      winner_user_id:    r.winner_user_id,
+      time_limit_ms:     r.time_limit_ms ?? null,
+      increment_ms:      r.increment_ms ?? 0,
+      created_at:        r.created_at,
+      last_move_at:      r.last_move_at,
+      ended_at:          r.ended_at,
+      move_count:        r.move_count,
+      end_kind:          endKind,
+    };
+  });
 }
 
 export async function headToHead(db, userId) {
