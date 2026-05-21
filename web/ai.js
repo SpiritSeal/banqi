@@ -317,58 +317,278 @@ function determinise(board, state) {
 }
 
 // ---------------------------------------------------------------------------
-// Alpha-beta minimax
+// Shared search infrastructure
+// ---------------------------------------------------------------------------
+
+// Banqi draw rules mirrored from src/banqi_rules.cpp:
+//   - Threefold repetition while the reversible-window is non-empty → draw.
+//   - 40 plies without any flip or capture (no-progress) → draw.
+// In-search detection lets the search return draw (0) instead of the static
+// eval at positions reached by forced shuffling, which is what stops a weaker
+// opponent from drawing a strong AI by repeating moves.
+const THREEFOLD_THRESHOLD = 3;
+const NO_PROGRESS_PLIES   = 40;
+
+// Default cap on TT entries per determinisation. Master/Policy at full
+// budget can otherwise accumulate ~800k+ entries during a single chooseMove
+// call, which produces visible GC pauses. 200k is large enough that the hit
+// rate is indistinguishable from unbounded in practice (verified via
+// tests/policy_profile.mjs) while bounding peak memory to a few MB.
+const TT_MAX_DEFAULT = 200_000;
+
+// FIFO-bounded transposition table. JS Maps preserve insertion order, so
+// the oldest key is always `keys().next().value` — eviction is O(1).
+// Refreshing an existing key on `set` doesn't change its insertion order,
+// which is the standard FIFO behaviour we want (replace value, keep age).
+function makeBoundedTT(maxSize = TT_MAX_DEFAULT) {
+  const m = new Map();
+  return {
+    get: (k) => m.get(k),
+    set: (k, v) => {
+      if (!m.has(k) && m.size >= maxSize) {
+        const oldest = m.keys().next().value;
+        m.delete(oldest);
+      }
+      m.set(k, v);
+    },
+    get size() { return m.size; },
+  };
+}
+
+// Move-ordering helpers used across engines.
+function isCaptureMove(board, m) {
+  return m.from >= 0 && board.cells[m.to] && !board.cells[m.to].fd;
+}
+function isFlipMove(m) { return m.from < 0; }
+
+// ---------------------------------------------------------------------------
+// Shared minimax kernel
+//
+// All three search engines (Hard, Expert, Master, Policy) descend through
+// the same tree-walking skeleton; they differ only in:
+//   - the leaf evaluator (Board.evaluate vs evaluateExpert vs evaluatePolicy)
+//   - whether the leaf runs quiescence (Expert/Master/Policy yes, Hard no)
+//   - whether a TT is consulted (Expert+ yes, Hard no)
+//   - whether killer-move / history ordering and LMR are applied (Policy yes)
+//
+// `ctx` carries the per-search state (TT, node counter, budget, killers,
+// history, repetition window). `S` carries the per-engine strategy
+// configuration. Passing both keeps the kernel call-site cheap (no
+// recreating strategy objects per node).
+//
+// In-search repetition (issue #58): the kernel maintains `ctx.repWindow`,
+// an array of post-move position keys since the last flip/capture, mirroring
+// C++ BanqiRules::reversible_position_hashes_. On each move:
+//   - flip or capture → save & clear the window for the subtree (restored on
+//     backtrack);
+//   - quiet move → compute post-move key, push it, recurse. If the post-move
+//     key now appears THREEFOLD_THRESHOLD times in the window, return 0
+//     (draw) without recursing. Also returns 0 once plies_since_progress
+//     reaches NO_PROGRESS_PLIES.
+//
+// The TT key incorporates `ctx.repWindow.length` so a position reached via a
+// repetition path doesn't collide with the same position reached fresh —
+// the cached score depends on the path through the reversible window.
+// ---------------------------------------------------------------------------
+function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
+  if (board.over) return S.leafEval(board, forColor, ctx);
+  if (depth <= 0) {
+    return S.quiesce
+      ? S.quiesce(board, forColor, alpha, beta, ctx.qdepth, ctx)
+      : S.leafEval(board, forColor, ctx);
+  }
+  // Per-node safety cap. Without this a pathological search could chew CPU
+  // forever; with the TT this almost never triggers in normal play.
+  if (S.useBudget && ++ctx.nodes > ctx.budget) return S.leafEval(board, forColor, ctx);
+
+  // TT probe. The key disambiguates positions by how many times the current
+  // position has already appeared in the reversible window — a position
+  // reached fresh (count 0) has a different threefold trajectory from the
+  // same position reached once (count 1) or twice (count 2 → next visit is
+  // a draw). Keys without a suffix (count 0) compare directly with fresh
+  // searches, preserving TT hit rate when no repetition is in play.
+  let ttKey = null;
+  let ttMove = null;
+  if (S.useTT) {
+    const posKey = boardKey(board);
+    let posCount = 0;
+    if (ctx.repWindow && ctx.repWindow.length > 0) {
+      for (let k = 0; k < ctx.repWindow.length; k++) if (ctx.repWindow[k] === posKey) posCount++;
+    }
+    ttKey = posCount > 0 ? posKey + '#' + posCount : posKey;
+    const cached = ctx.tt.get(ttKey);
+    if (cached) {
+      ttMove = cached.move;
+      if (cached.depth >= depth) {
+        if (cached.flag === TT_EXACT) return cached.score;
+        if (cached.flag === TT_LOWER) { if (cached.score > alpha) alpha = cached.score; }
+        else                          { if (cached.score < beta)  beta  = cached.score; }
+        if (alpha >= beta) return cached.score;
+      }
+    }
+  }
+
+  const moves = board.legalMoves(board.sidePlayer);
+  if (!moves.length) return S.leafEval(board, forColor, ctx);
+
+  const myTurn = board.playerColors[board.sidePlayer] === forColor;
+
+  // Move ordering (engine-supplied: Hard uses captures+flip priority, Expert
+  // uses TT-hint + captures, Policy uses TT + killers + history + captures).
+  S.orderMoves(moves, board, ctx, ply, ttMove);
+
+  const alphaOrig = alpha, betaOrig = beta;
+  let bestVal, bestMove = moves[0];
+  let i = 0;
+
+  // Repetition: save the current window state before iterating; we'll mutate
+  // it in-place per child for cheap push/pop, restoring on backtrack.
+  const repWindow = ctx.repWindow;
+  const savedProgress = ctx.pliesSinceProgress;
+
+  const tryChild = (m) => {
+    const cap = isCaptureMove(board, m);
+    const flip = isFlipMove(m);
+
+    // Apply the move once and reuse the resulting board for both repetition
+    // detection and the recursive call.
+    const nb = board.clone();
+    if (flip) nb.applyFlipKnown(m.to);
+    else      nb.applyMove(m.from, m.to);
+
+    // Threefold / no-progress detection. Captures and flips reset the
+    // window for the subtree (and don't themselves trigger a repetition
+    // because the resulting position has different material/visibility).
+    let drewRep = false;
+    let pushed = false;
+    let savedWindow = null;
+    if (repWindow) {
+      if (cap || flip) {
+        savedWindow = repWindow.slice();
+        repWindow.length = 0;
+        ctx.pliesSinceProgress = 0;
+      } else {
+        const childKey = boardKey(nb);
+        // A 3rd occurrence requires the same key to appear at least twice in
+        // the existing window. Skip the per-entry scan otherwise.
+        let count = 1;
+        if (repWindow.length >= 2) {
+          for (let k = 0; k < repWindow.length; k++) if (repWindow[k] === childKey) count++;
+        }
+        if (count >= THREEFOLD_THRESHOLD) {
+          drewRep = true;
+        } else {
+          repWindow.push(childKey);
+          ctx.pliesSinceProgress = savedProgress + 1;
+          pushed = true;
+          if (ctx.pliesSinceProgress >= NO_PROGRESS_PLIES) drewRep = true;
+        }
+      }
+    }
+
+    let score;
+    if (drewRep) {
+      score = 0; // draw
+    } else if (S.useLMR && depth >= 3 && i >= 4 && !cap && !flip &&
+               !(ttMove && S.sameMove(m, ttMove))) {
+      // LMR: reduce search depth on late quiet non-capture, non-flip moves.
+      score = minimaxKernel(nb, forColor, depth - 2, alpha, beta, ctx, ply + 1, S);
+      // Re-search at full depth if the reduced search beat the bound that
+      // matters for the side to move.
+      if (myTurn ? (score > alpha) : (score < beta)) {
+        score = minimaxKernel(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1, S);
+      }
+    } else {
+      score = minimaxKernel(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1, S);
+    }
+
+    // Restore window state.
+    if (repWindow) {
+      if (cap || flip) {
+        repWindow.length = 0;
+        for (const k of savedWindow) repWindow.push(k);
+        ctx.pliesSinceProgress = savedProgress;
+      } else if (pushed) {
+        repWindow.pop();
+        ctx.pliesSinceProgress = savedProgress;
+      }
+    }
+    return { score, cap, flip };
+  };
+
+  if (myTurn) {
+    bestVal = -Infinity;
+    for (const m of moves) {
+      const { score, cap, flip } = tryChild(m);
+      if (score > bestVal) { bestVal = score; bestMove = m; }
+      if (bestVal > alpha) alpha = bestVal;
+      if (alpha >= beta) {
+        if (S.onCutoff) S.onCutoff(m, board, ctx, ply, depth, cap, flip);
+        break;
+      }
+      i++;
+    }
+  } else {
+    bestVal = Infinity;
+    for (const m of moves) {
+      const { score, cap, flip } = tryChild(m);
+      if (score < bestVal) { bestVal = score; bestMove = m; }
+      if (bestVal < beta) beta = bestVal;
+      if (alpha >= beta) {
+        if (S.onCutoff) S.onCutoff(m, board, ctx, ply, depth, cap, flip);
+        break;
+      }
+      i++;
+    }
+  }
+
+  if (S.useTT) {
+    let flag;
+    if (bestVal <= alphaOrig)      flag = TT_UPPER;
+    else if (bestVal >= betaOrig)  flag = TT_LOWER;
+    else                           flag = TT_EXACT;
+    ctx.tt.set(ttKey, { depth, score: bestVal, flag, move: bestMove });
+  }
+  return bestVal;
+}
+
+// ---------------------------------------------------------------------------
+// Hard engine: shallow alpha-beta with no TT and a simple eval.
 // ---------------------------------------------------------------------------
 const HARD_DEPTH = 4;
 const HARD_DETERMINISATIONS = 6;
 
-function alphaBeta(board, forColor, depth, alpha, beta) {
-  if (board.over || depth === 0) return board.evaluate(forColor);
-
-  const moves = board.legalMoves(board.sidePlayer);
-  if (!moves.length) return board.evaluate(forColor);
-
-  const myTurn = board.playerColors[board.sidePlayer] === forColor;
-
-  // Order: captures / flips of likely-good pieces first (improves pruning)
+// Hard's move ordering: captures (by victim value) > flips > passive moves.
+// Flip priority is moderate — flips reduce hidden-piece variance and should
+// be tried before quiet moves, but real captures still come first.
+function orderMovesHard(moves, board, _ctx, _ply, _ttMove) {
   moves.sort((a, b) => {
-    const aCapture = a.from >= 0 && board.cells[a.to] && !board.cells[a.to].fd;
-    const bCapture = b.from >= 0 && board.cells[b.to] && !board.cells[b.to].fd;
-    if (aCapture && !bCapture) return -1;
-    if (!aCapture && bCapture) return 1;
-    if (aCapture && bCapture) {
+    const aCap = isCaptureMove(board, a);
+    const bCap = isCaptureMove(board, b);
+    if (aCap !== bCap) return aCap ? -1 : 1;
+    if (aCap && bCap) {
       const aVal = PIECE_VALUE[board.cells[a.to]?.type] || 0;
       const bVal = PIECE_VALUE[board.cells[b.to]?.type] || 0;
       return bVal - aVal;
     }
+    const aFlip = isFlipMove(a);
+    const bFlip = isFlipMove(b);
+    if (aFlip !== bFlip) return aFlip ? -1 : 1;
     return 0;
   });
+}
 
-  if (myTurn) {
-    let best = -Infinity;
-    for (const m of moves) {
-      const nb = board.clone();
-      if (m.from < 0) nb.applyFlipKnown(m.to);
-      else            nb.applyMove(m.from, m.to);
-      const score = alphaBeta(nb, forColor, depth - 1, alpha, beta);
-      if (score > best) best = score;
-      if (best > alpha) alpha = best;
-      if (alpha >= beta) break;
-    }
-    return best;
-  } else {
-    let best = Infinity;
-    for (const m of moves) {
-      const nb = board.clone();
-      if (m.from < 0) nb.applyFlipKnown(m.to);
-      else            nb.applyMove(m.from, m.to);
-      const score = alphaBeta(nb, forColor, depth - 1, alpha, beta);
-      if (score < best) best = score;
-      if (best < beta) beta = best;
-      if (alpha >= beta) break;
-    }
-    return best;
-  }
+const HARD_STRATEGIES = {
+  useTT: false,
+  useLMR: false,
+  useBudget: false,
+  leafEval: (b, c) => b.evaluate(c),
+  orderMoves: orderMovesHard,
+};
+
+function alphaBeta(board, forColor, depth, alpha, beta) {
+  return minimaxKernel(board, forColor, depth, alpha, beta,
+                       { repWindow: [], pliesSinceProgress: 0 }, 0, HARD_STRATEGIES);
 }
 
 // ---------------------------------------------------------------------------
@@ -716,44 +936,18 @@ function quiesce(board, forColor, alpha, beta, qdepth, ctx) {
   }
 }
 
-function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
-  if (board.over) return evaluateExpert(board, forColor, ctx);
-  if (depth <= 0) return quiesce(board, forColor, alpha, beta, ctx.qdepth ?? EXPERT_QUIESCE_DEPTH, ctx);
-  // Safety cap: in a pathological position fall back to a static score so the
-  // search can't run away. With the TT this almost never triggers.
-  if (++ctx.nodes > ctx.budget) return evaluateExpert(board, forColor, ctx);
-
-  const key = boardKey(board);
-  const cached = ctx.tt.get(key);
-  let ttMove = null;
-  if (cached) {
-    ttMove = cached.move;
-    if (cached.depth >= depth) {
-      if (cached.flag === TT_EXACT) return cached.score;
-      if (cached.flag === TT_LOWER) { if (cached.score > alpha) alpha = cached.score; }
-      else                          { if (cached.score < beta)  beta  = cached.score; }
-      if (alpha >= beta) return cached.score;
-    }
-  }
-
-  const moves = board.legalMoves(board.sidePlayer);
-  if (!moves.length) return evaluateExpert(board, forColor, ctx);
-
-  const myTurn = board.playerColors[board.sidePlayer] === forColor;
-
-  // Move ordering: TT-best first (huge pruning win), then captures by victim
-  // value, then everything else.
+// Expert/Master move ordering: TT-best hint first, then captures by victim
+// value, then everything else (face order).
+function orderMovesExpert(moves, board, _ctx, _ply, ttMove) {
   moves.sort((a, b) => {
     if (ttMove) {
       const aTT = a.from === ttMove.from && a.to === ttMove.to;
       const bTT = b.from === ttMove.from && b.to === ttMove.to;
-      if (aTT && !bTT) return -1;
-      if (!aTT && bTT) return 1;
+      if (aTT !== bTT) return aTT ? -1 : 1;
     }
-    const aCap = a.from >= 0 && board.cells[a.to] && !board.cells[a.to].fd;
-    const bCap = b.from >= 0 && board.cells[b.to] && !board.cells[b.to].fd;
-    if (aCap && !bCap) return -1;
-    if (!aCap && bCap) return 1;
+    const aCap = isCaptureMove(board, a);
+    const bCap = isCaptureMove(board, b);
+    if (aCap !== bCap) return aCap ? -1 : 1;
     if (aCap && bCap) {
       const aVal = PIECE_VALUE[board.cells[a.to]?.type] || 0;
       const bVal = PIECE_VALUE[board.cells[b.to]?.type] || 0;
@@ -761,40 +955,19 @@ function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
     }
     return 0;
   });
+}
 
-  const alphaOrig = alpha, betaOrig = beta;
-  let bestVal, bestMove = moves[0];
-  if (myTurn) {
-    bestVal = -Infinity;
-    for (const m of moves) {
-      const nb = board.clone();
-      if (m.from < 0) nb.applyFlipKnown(m.to);
-      else            nb.applyMove(m.from, m.to);
-      const score = alphaBetaExpert(nb, forColor, depth - 1, alpha, beta, ctx);
-      if (score > bestVal) { bestVal = score; bestMove = m; }
-      if (bestVal > alpha) alpha = bestVal;
-      if (alpha >= beta) break;
-    }
-  } else {
-    bestVal = Infinity;
-    for (const m of moves) {
-      const nb = board.clone();
-      if (m.from < 0) nb.applyFlipKnown(m.to);
-      else            nb.applyMove(m.from, m.to);
-      const score = alphaBetaExpert(nb, forColor, depth - 1, alpha, beta, ctx);
-      if (score < bestVal) { bestVal = score; bestMove = m; }
-      if (bestVal < beta) beta = bestVal;
-      if (alpha >= beta) break;
-    }
-  }
+const EXPERT_STRATEGIES = {
+  useTT: true,
+  useLMR: false,
+  useBudget: true,
+  leafEval: (b, c, ctx) => evaluateExpert(b, c, ctx),
+  quiesce: (b, c, a, be, qd, ctx) => quiesce(b, c, a, be, qd ?? EXPERT_QUIESCE_DEPTH, ctx),
+  orderMoves: orderMovesExpert,
+};
 
-  // Fail-soft bound classification.
-  let flag;
-  if (bestVal <= alphaOrig)      flag = TT_UPPER;
-  else if (bestVal >= betaOrig)  flag = TT_LOWER;
-  else                           flag = TT_EXACT;
-  ctx.tt.set(key, { depth, score: bestVal, flag, move: bestMove });
-  return bestVal;
+function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
+  return minimaxKernel(board, forColor, depth, alpha, beta, ctx, 0, EXPERT_STRATEGIES);
 }
 
 // ---- Expert: determinisation + deep alpha-beta with quiescence ----
@@ -821,7 +994,13 @@ function chooseMoveExpert(state, legal, playerIndex) {
     // One context (and TT) per determinisation, shared across all root moves.
     // The TT pays off doubly here: sibling root moves transpose constantly,
     // and the TT-best-move hint makes the next root's search prune harder.
-    const ctx = { nodes: 0, budget: EXPERT_NODE_BUDGET, tt: new Map() };
+    const ctx = {
+      nodes: 0,
+      budget: EXPERT_NODE_BUDGET,
+      tt: makeBoundedTT(),
+      repWindow: [],
+      pliesSinceProgress: 0,
+    };
     for (const m of legal) {
       const nb = det.clone();
       if (m.from < 0) nb.applyFlipKnown(m.to);
@@ -878,9 +1057,11 @@ function chooseMoveMaster(state, legal, playerIndex) {
     const ctx = {
       nodes: 0,
       budget: MASTER_NODE_BUDGET,
-      tt: new Map(),
+      tt: makeBoundedTT(),
       qdepth: MASTER_QUIESCE_DEPTH,
       mobilityWeight: MASTER_MOBILITY_WEIGHT,
+      repWindow: [],
+      pliesSinceProgress: 0,
     };
 
     // Iterative deepening with shared TT across iterations. The deepest
@@ -1251,113 +1432,58 @@ function quiescePolicy(board, forColor, alpha, beta, qdepth, ctx) {
   }
 }
 
-function alphaBetaPolicy(board, forColor, depth, alpha, beta, ctx, ply) {
-  if (board.over) return evaluatePolicy(board, forColor, ctx);
-  if (depth <= 0) return quiescePolicy(board, forColor, alpha, beta, ctx.qdepth, ctx);
-  if (++ctx.nodes > ctx.budget) return evaluatePolicy(board, forColor, ctx);
+// Helper used by Policy's killer/history bookkeeping and the kernel's LMR
+// guard. Null-safe so `sameMove(m, null)` cleanly returns false.
+const sameMove = (a, b) => !!(a && b && a.from === b.from && a.to === b.to);
 
-  const key = boardKey(board);
-  const cached = ctx.tt.get(key);
-  let ttMove = null;
-  if (cached) {
-    ttMove = cached.move;
-    if (cached.depth >= depth) {
-      if (cached.flag === TT_EXACT) return cached.score;
-      if (cached.flag === TT_LOWER) { if (cached.score > alpha) alpha = cached.score; }
-      else                          { if (cached.score < beta)  beta  = cached.score; }
-      if (alpha >= beta) return cached.score;
-    }
-  }
-
-  const moves = board.legalMoves(board.sidePlayer);
-  if (!moves.length) return evaluatePolicy(board, forColor, ctx);
-
-  const myTurn = board.playerColors[board.sidePlayer] === forColor;
-
+// Policy move ordering: TT-best (highest priority) > captures (MVV-LVA) >
+// killer slot 0 > killer slot 1 > history score. Banqi's small branching
+// factor amplifies the value of good ordering: a single re-order can shave
+// 30%+ off node counts at depth 6.
+function orderMovesPolicy(moves, board, ctx, ply, ttMove) {
   const k0 = ctx.killers[ply * 2]     || null;
   const k1 = ctx.killers[ply * 2 + 1] || null;
-  const sameMove = (a, b) => a && b && a.from === b.from && a.to === b.to;
   function moveScore(m) {
     if (ttMove && sameMove(m, ttMove)) return 1_000_000;
-    const cap = m.from >= 0 && board.cells[m.to] && !board.cells[m.to].fd;
-    if (cap) {
-      const victim = PIECE_VALUE[board.cells[m.to]?.type] || 0;
+    if (isCaptureMove(board, m)) {
+      const victim   = PIECE_VALUE[board.cells[m.to]?.type]   || 0;
       const attacker = PIECE_VALUE[board.cells[m.from]?.type] || 0;
       return 100_000 + victim * 10 - attacker;
     }
     if (sameMove(m, k0)) return 50_000;
     if (sameMove(m, k1)) return 49_000;
-    const h = ctx.history.get(`${m.from},${m.to}`) || 0;
-    return h;
+    return ctx.history.get(`${m.from},${m.to}`) || 0;
   }
   moves.sort((a, b) => moveScore(b) - moveScore(a));
+}
 
-  const alphaOrig = alpha, betaOrig = beta;
-  let bestVal, bestMove = moves[0];
-  let i = 0;
-
-  if (myTurn) {
-    bestVal = -Infinity;
-    for (const m of moves) {
-      const cap = m.from >= 0 && board.cells[m.to] && !board.cells[m.to].fd;
-      const nb = board.clone();
-      if (m.from < 0) nb.applyFlipKnown(m.to);
-      else            nb.applyMove(m.from, m.to);
-      let score;
-      // LMR: reduce search depth on late quiet non-capture moves; re-search
-      // at full depth if the reduced search beats alpha.
-      if (depth >= 3 && i >= 4 && !cap && m.from >= 0 && !sameMove(m, ttMove)) {
-        score = alphaBetaPolicy(nb, forColor, depth - 2, alpha, beta, ctx, ply + 1);
-        if (score > alpha) score = alphaBetaPolicy(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1);
-      } else {
-        score = alphaBetaPolicy(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1);
-      }
-      if (score > bestVal) { bestVal = score; bestMove = m; }
-      if (bestVal > alpha) alpha = bestVal;
-      if (alpha >= beta) {
-        if (!cap && m.from >= 0) {
-          if (!sameMove(m, k0)) { ctx.killers[ply * 2 + 1] = k0; ctx.killers[ply * 2] = m; }
-          const hk = `${m.from},${m.to}`;
-          ctx.history.set(hk, (ctx.history.get(hk) || 0) + depth * depth);
-        }
-        break;
-      }
-      i++;
-    }
-  } else {
-    bestVal = Infinity;
-    for (const m of moves) {
-      const cap = m.from >= 0 && board.cells[m.to] && !board.cells[m.to].fd;
-      const nb = board.clone();
-      if (m.from < 0) nb.applyFlipKnown(m.to);
-      else            nb.applyMove(m.from, m.to);
-      let score;
-      if (depth >= 3 && i >= 4 && !cap && m.from >= 0 && !sameMove(m, ttMove)) {
-        score = alphaBetaPolicy(nb, forColor, depth - 2, alpha, beta, ctx, ply + 1);
-        if (score < beta) score = alphaBetaPolicy(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1);
-      } else {
-        score = alphaBetaPolicy(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1);
-      }
-      if (score < bestVal) { bestVal = score; bestMove = m; }
-      if (bestVal < beta) beta = bestVal;
-      if (alpha >= beta) {
-        if (!cap && m.from >= 0) {
-          if (!sameMove(m, k0)) { ctx.killers[ply * 2 + 1] = k0; ctx.killers[ply * 2] = m; }
-          const hk = `${m.from},${m.to}`;
-          ctx.history.set(hk, (ctx.history.get(hk) || 0) + depth * depth);
-        }
-        break;
-      }
-      i++;
-    }
+// On a beta cutoff, update the killer-move slots (for quiet, non-flip moves)
+// and bump the history score so this move gets ordered earlier in sibling
+// subtrees.
+function recordPolicyCutoff(m, _board, ctx, ply, depth, cap, flip) {
+  if (cap || flip) return;
+  const k0 = ctx.killers[ply * 2] || null;
+  if (!sameMove(m, k0)) {
+    ctx.killers[ply * 2 + 1] = k0;
+    ctx.killers[ply * 2]     = m;
   }
+  const hk = `${m.from},${m.to}`;
+  ctx.history.set(hk, (ctx.history.get(hk) || 0) + depth * depth);
+}
 
-  let flag;
-  if (bestVal <= alphaOrig)      flag = TT_UPPER;
-  else if (bestVal >= betaOrig)  flag = TT_LOWER;
-  else                           flag = TT_EXACT;
-  ctx.tt.set(key, { depth, score: bestVal, flag, move: bestMove });
-  return bestVal;
+const POLICY_STRATEGIES = {
+  useTT: true,
+  useLMR: true,
+  useBudget: true,
+  leafEval: (b, c, ctx) => evaluatePolicy(b, c, ctx),
+  quiesce: (b, c, a, be, qd, ctx) => quiescePolicy(b, c, a, be, qd, ctx),
+  orderMoves: orderMovesPolicy,
+  onCutoff: recordPolicyCutoff,
+  sameMove,
+};
+
+function alphaBetaPolicy(board, forColor, depth, alpha, beta, ctx, ply) {
+  return minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, POLICY_STRATEGIES);
 }
 
 function chooseMovePolicy(state, legal, playerIndex, opts) {
@@ -1379,11 +1505,13 @@ function chooseMovePolicy(state, legal, playerIndex, opts) {
     const ctx = {
       nodes: 0,
       budget: POLICY_NODE_BUDGET,
-      tt: new Map(),
+      tt: makeBoundedTT(),
       qdepth: POLICY_QUIESCE_DEPTH,
       mobilityWeight: POLICY_MOBILITY_WEIGHT,
       killers: [],
       history: new Map(),
+      repWindow: [],
+      pliesSinceProgress: 0,
     };
 
     let lastCompleted = null;
