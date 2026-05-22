@@ -253,6 +253,12 @@ async function refreshSession() {
 // ---- routing ----
 async function route() {
   const hash = location.hash || '#/';
+  // Tear down any prior view's session resources first. Each view
+  // (`openOnlineGame`, `_startOTBGame`, `_startAIGame`) reassigns the
+  // module-level `active`; without this the previous session's WebSocket
+  // or local game state lingers, with handlers that close over `active`
+  // and end up mutating the new view's state.
+  disposeActive();
   updateNavActive(hash);
   applyNavAuthState();
   const m = hash.match(/^#\/g\/([0-9A-Za-z]+)$/);
@@ -422,7 +428,22 @@ async function startOnlineGame() {
 // ---- online (server-authoritative) game ----
 let active = null;
 
+// Tear down the previous view's session before entering a new one. Critical
+// for online games: the RelayConnection holds an open WebSocket and an
+// exponential-backoff reconnect timer; leaking it leaves frame handlers
+// (closures over the module-level `active`) firing against whichever game
+// the user navigated to next, painting the wrong board on screen.
+function disposeActive() {
+  if (!active) return;
+  try { active.conn?.close(); } catch (_) {}
+  active = null;
+}
+
 async function openOnlineGame(roomCode) {
+  // Belt-and-braces in case openOnlineGame is reached outside the normal
+  // router flow (e.g. the offline-retry button at #game-retry, which
+  // re-invokes openOnlineGame directly without going through route()).
+  disposeActive();
   showView('game');
   $('game-header').innerHTML = `<div class="muted">Connecting to room <code>${roomCode}</code>…</div>`;
 
@@ -484,11 +505,19 @@ async function openOnlineGame(roomCode) {
   };
   if (info.events) active.replay.setEvents(info.events);
 
-  conn.on('open',  () => { active.connState = 'live'; refreshGame(); });
-  conn.on('close', () => { active.connState = 'offline'; refreshGame(); });
-  conn.on('reconnecting', () => { active.connState = 'reconnecting'; refreshGame(); });
+  // Identity guard: an in-flight frame can still arrive after `conn.close()`
+  // is called (the close handshake is async). Capture the session this
+  // handler closes over, and ignore frames once `active` has moved on.
+  // Defends the cross-game "teleport" bug even if `disposeActive()` is ever
+  // forgotten at a future call site.
+  const mySession = active;
+  const isLive = () => active === mySession && active?.isOnline;
+
+  conn.on('open',  () => { if (!isLive()) return; active.connState = 'live'; refreshGame(); });
+  conn.on('close', () => { if (!isLive()) return; active.connState = 'offline'; refreshGame(); });
+  conn.on('reconnecting', () => { if (!isLive()) return; active.connState = 'reconnecting'; refreshGame(); });
   conn.on('frame', (frame) => {
-    if (!active?.isOnline) return;
+    if (!isLive()) return;
     if (frame.type === 'snapshot') {
       const wasMyTurnBefore = isMyTurn(active.state);
       active.state = frame.state;

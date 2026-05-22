@@ -135,3 +135,80 @@ jobs:
 
       - name: Cross-commit BUILD_ID guard
         run: node scripts/check-buildid.mjs
+
+  playwright:
+    name: Playwright end-to-end
+    runs-on: ubuntu-latest
+    # Postgres needed by tests that boot the real relay (e.g.
+    # online_game_teleport_smoke). The browser-only tests
+    # (board_input_browser, pwa_smoke) don't touch it but cohabit cheaply.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: banqi_test
+          POSTGRES_USER: banqi
+          POSTGRES_PASSWORD: banqi
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache Emscripten
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          key: emsdk-${{ runner.os }}-latest
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package.json') }}
+
+      - name: Install Emscripten (emsdk)
+        run: |
+          if [ ! -d emsdk ]; then
+            git clone https://github.com/emscripten-core/emsdk.git
+          fi
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build WebAssembly
+        run: |
+          source emsdk/emsdk_env.sh
+          make wasm
+
+      - name: Install root deps
+        run: npm install --no-audit --no-fund
+
+      - name: Install relay deps
+        working-directory: server
+        run: npm install --no-audit --no-fund
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Stamp service worker
+        run: node scripts/stamp-sw.mjs
+
+      - name: Online-game teleport regression (#98)
+        env:
+          DATABASE_URL: postgresql://banqi:banqi@localhost:5432/banqi_test
+        run: node tests/online_game_teleport_smoke.mjs
+
+      - name: Board input (touch + drag)
+        run: node tests/board_input_browser.mjs
+
+      - name: PWA offline smoke
+        run: node tests/pwa_smoke.mjs

@@ -147,6 +147,15 @@ board-input-test:
 board-input-smoke: wasm
 	node tests/board_input_browser.mjs
 
+# All Playwright end-to-end tests, including the ones that boot the real
+# relay (e.g. online_game_teleport_smoke — requires Postgres at
+# DATABASE_URL). Run after `npx playwright install chromium`.
+.PHONY: playwright
+playwright: stamp-sw
+	node tests/online_game_teleport_smoke.mjs
+	node tests/board_input_browser.mjs
+	node tests/pwa_smoke.mjs
+
 # Regenerate web/icons/*.png from web/favicon.svg. Run after editing the
 # favicon. Requires fonts-noto-cjk installed system-wide (for the 將 glyph)
 # and the @resvg/resvg-js dev dependency (already pinned in package.json).

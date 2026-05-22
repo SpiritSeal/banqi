@@ -46,12 +46,22 @@ function fail(msg) { console.error('FATAL:', msg); process.exit(1); }
 try { await stat(join(WEB_DIR, 'banqi.wasm')); }
 catch { fail('web/banqi.wasm not built — run `make wasm` first'); }
 
+// The SPA's main.js does `import { chooseMove } from '../ai/index.mjs'`,
+// so paths under /ai/ need to be served from the top-level ai/ directory
+// (the AI engine was hoisted out of web/ in #55). Without this the page
+// fails to load main.js and OTB never renders, so the cell-zero selector
+// times out.
+const AI_DIR = join(__dirname, '..', 'ai');
+
 async function startServer() {
   const server = createServer(async (req, res) => {
     let p = (req.url || '/').split('?')[0];
     if (p === '/' || p === '') p = '/index.html';
+    const [rootDir, relPath] = p.startsWith('/ai/')
+      ? [AI_DIR, p.slice(4)]
+      : [WEB_DIR, p];
     try {
-      const data = await readFile(join(WEB_DIR, p));
+      const data = await readFile(join(rootDir, relPath));
       res.setHeader('Content-Type', MIME[extname(p)] || 'application/octet-stream');
       res.end(data);
     } catch {

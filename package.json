@@ -6,10 +6,13 @@
   "scripts": {
     "wasm-test": "node tests/wasm_smoke.mjs",
     "test:board-input": "node tests/board_input_unit.mjs",
-    "test:board-input-browser": "node tests/board_input_browser.mjs"
+    "test:board-input-browser": "node tests/board_input_browser.mjs",
+    "test:teleport-smoke": "node tests/online_game_teleport_smoke.mjs",
+    "test:playwright": "node tests/online_game_teleport_smoke.mjs && node tests/board_input_browser.mjs && node tests/pwa_smoke.mjs"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
-    "playwright": "^1.49.0"
+    "playwright": "^1.49.0",
+    "ws": "^8.18.0"
   }
 }
