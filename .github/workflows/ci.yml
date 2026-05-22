@@ -212,6 +212,11 @@ jobs:
           DATABASE_URL: postgresql://banqi:banqi@localhost:5432/banqi_test
         run: node tests/view_lifecycle_smoke.mjs
 
+      - name: View-lifecycle fuzz (#100)
+        env:
+          DATABASE_URL: postgresql://banqi:banqi@localhost:5432/banqi_test
+        run: node tests/view_lifecycle_fuzz.mjs
+
       - name: Board input (touch + drag)
         run: node tests/board_input_browser.mjs
 
