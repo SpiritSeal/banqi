@@ -67,9 +67,15 @@ async function signInDev(name) {
 }
 
 async function authedFetch(cookie, path, init = {}) {
+  // Same Origin fix as #29af9b60 (ws_heartbeat_smoke, ws_upgrade_resilience_smoke,
+  // session_persistence_smoke) and #1c4a88ff (push_smoke): requireSameOrigin
+  // (server/src/csrf.mjs, added in #94) 403s state-changing fetches without
+  // an Origin header. Browsers populate Origin automatically; node-fetch
+  // does not, so the test must.
   return fetch(`${baseUrl}${path}`, {
     ...init,
     headers: { 'Cookie': cookie, 'Content-Type': 'application/json',
+               'Origin': baseUrl,
                ...(init.headers || {}) },
   });
 }
