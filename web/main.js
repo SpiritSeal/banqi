@@ -394,6 +394,12 @@ async function signOut() {
   // gets cleared whenever the server actually receives a logout.
   try { await fetch('/auth/logout', { method: 'POST' }); }
   catch (_) { /* still sign out locally */ }
+  // Tear down session-scoped background work BEFORE clearing `me`. The
+  // notification-badge poll lives at module scope and was leaking on
+  // sign-out: a signed-out user kept polling /api/notifications every
+  // 60s (each request 401s, but the timer never stopped). Same class
+  // of "resource outlives its owner" as the teleport bug from #98.
+  clearNotifPolling();
   me = null;
   route();
 }
@@ -3027,8 +3033,11 @@ async function renderFriends() {
 
 // Polls /api/notifications. Updates #nav-notif-badge if present.
 let _notifTimer = null;
-async function refreshNotificationBadge() {
+function clearNotifPolling() {
   if (_notifTimer) { clearInterval(_notifTimer); _notifTimer = null; }
+}
+async function refreshNotificationBadge() {
+  clearNotifPolling();
   if (!me) return;
   const tick = async () => {
     try {
