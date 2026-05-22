@@ -737,9 +737,20 @@ export async function deletePushSubscriptionByEndpoint(db, userId, endpoint) {
   );
 }
 
-// Called when the push service tells us an endpoint is permanently gone
-// (404/410). The user_id is not required to look it up; endpoints are unique
-// enough in practice and we want to drop the row even if it doesn't match.
+// Called when the push service tells us a specific user's endpoint is
+// permanently gone (404/410). Scoped to (endpoint, user_id) so a 410 from
+// one user's send can't evict rows for another user that happens to share
+// the same endpoint string. See issue #69.
+export async function deletePushSubscriptionByEndpointAndUser(db, endpoint, userId) {
+  await db.query(
+    'DELETE FROM push_subscriptions WHERE endpoint = $1 AND user_id = $2',
+    [endpoint, userId]
+  );
+}
+
+// Unscoped variant: drops the row(s) for an endpoint regardless of owner.
+// Retained for admin / cleanup paths and test fixtures; do NOT call this
+// from the 410 handler (see #69).
 export async function deletePushSubscriptionByEndpointAnyUser(db, endpoint) {
   await db.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [endpoint]);
 }

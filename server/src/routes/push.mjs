@@ -13,7 +13,7 @@ import {
   savePushSubscription,
   deletePushSubscriptionByEndpoint,
 } from '../db.mjs';
-import { configured, publicKey } from '../push.mjs';
+import { configured, publicKey, isAllowedPushEndpoint } from '../push.mjs';
 import { asyncRoute } from '../util.mjs';
 
 // Each subscribe call stores a row; a misbehaving client that keeps
@@ -47,6 +47,14 @@ export function pushRouter({ db }) {
     const auth   = String(sub?.keys?.auth   || '');
     if (!endpoint || !p256dh || !auth) {
       return res.status(400).json({ error: 'invalid subscription' });
+    }
+    // SSRF guard (#69): the endpoint is later fed to webpush.sendNotification,
+    // so we only accept HTTPS URLs targeting known browser push services.
+    // Reject IP literals / internal hosts so an attacker can't subscribe
+    // with e.g. http://169.254.169.254/computeMetadata/v1/ and turn every
+    // turn-flip notification into a request to internal infrastructure.
+    if (!isAllowedPushEndpoint(endpoint)) {
+      return res.status(400).json({ error: 'invalid push endpoint' });
     }
     await savePushSubscription(db, {
       userId: req.user.id, endpoint, p256dh, auth,
