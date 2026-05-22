@@ -16,14 +16,14 @@
 // the cache atomically (see activate handler) and surfaces the "Update
 // available" banner wired up in main.js.
 
-const BUILD_ID = '84a1075b366f';
+const BUILD_ID = '4102de2f6ed2';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
 // AUTO-PRECACHE START
 const APP_SHELL = [
   "./",
-  "./ai.js",
+  "../ai/index.mjs",
   "./animations.js",
   "./audio.js",
   "./board-hints.js",
