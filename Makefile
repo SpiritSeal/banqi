@@ -153,6 +153,7 @@ board-input-smoke: wasm
 .PHONY: playwright
 playwright: stamp-sw
 	node tests/online_game_teleport_smoke.mjs
+	node tests/view_lifecycle_smoke.mjs
 	node tests/board_input_browser.mjs
 	node tests/pwa_smoke.mjs
 
