@@ -24,6 +24,11 @@ let server, db, baseUrl, closeApp;
 before(async () => {
   process.env.AUTH_DEV = '1';
   process.env.SERVER_SECRET = 'test-secret-do-not-use-in-prod';
+  // TRUST_PROXY=1 mimics being behind a TLS-terminating proxy. After #78
+  // this is opt-in; without it Express ignores X-Forwarded-Proto and
+  // express-session refuses to send the Secure cookie. The whole point of
+  // this test is to exercise the proxy-trusted path.
+  process.env.TRUST_PROXY = '1';
   const built = await buildApp({
     databaseUrl: DATABASE_URL,
     serverSecret: process.env.SERVER_SECRET,
