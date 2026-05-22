@@ -176,7 +176,11 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   // leaderboard / profile pages.
   const guestLimit = makeGuestRateLimiter();
   app.get('/auth/guest', async (req, res, next) => {
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    // Trust ONLY req.ip here. When TRUST_PROXY is set (index.mjs), Express
+    // already populates req.ip from X-Forwarded-For; when it isn't, falling
+    // back to the raw header was the bypass — any caller could spoof a
+    // distinct XFF on each request to mint unlimited guest sessions.
+    const ip = req.ip || 'unknown';
     if (!guestLimit(String(ip))) {
       return res.status(429).send('Too many guest sessions from this network. Try again later.');
     }

@@ -20,21 +20,44 @@ import { pushRouter } from './routes/push.mjs';
 import { attachWebSocket } from './ws.mjs';
 import { createGameEngine } from './game_engine.mjs';
 import { configurePush } from './push.mjs';
+import { requireSameOrigin } from './csrf.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const env = process.env;
 
 const PORT          = parseInt(env.PORT || '8080', 10);
 const PUBLIC_URL    = env.PUBLIC_URL    || `http://localhost:${PORT}`;
-const SERVER_SECRET = env.SERVER_SECRET || 'dev-insecure-secret-change-me';
+const DEV_SECRET    = 'dev-insecure-secret-change-me';
+const SERVER_SECRET = env.SERVER_SECRET || DEV_SECRET;
 const DATABASE_URL  = env.DATABASE_URL  || 'postgresql://localhost/banqi';
 const WEB_DIR       = resolve(__dirname, '..', '..', 'web');
 const AI_DIR        = resolve(__dirname, '..', '..', 'ai');
 
-if (SERVER_SECRET === 'dev-insecure-secret-change-me' && env.NODE_ENV === 'production') {
-  console.error('FATAL: SERVER_SECRET must be set in production.');
+// SERVER_SECRET: refuse to boot when missing or left at the placeholder, in
+// any environment (NODE_ENV is intentionally not consulted — production
+// containers routinely run without it). The single escape hatch is
+// AUTH_DEV=1, which is already the gate for the local dev backdoor in
+// auth.mjs, so reusing it keeps "this is a dev process" expressed in one
+// place. With AUTH_DEV=1 the placeholder is silently accepted so `npm run
+// dev` keeps working out of the box.
+//
+// This check runs only when the file is invoked as `node src/index.mjs`,
+// not when buildApp() is imported by the test suite (which sets up its own
+// env and passes serverSecret explicitly). The boot smoke test spawns the
+// entry point so it exercises this real code path.
+function assertServerSecretOrExit(envSource) {
+  if (envSource.SERVER_SECRET && envSource.SERVER_SECRET !== DEV_SECRET) return;
+  if (envSource.AUTH_DEV === '1') return;
+  console.error(
+    'FATAL: SERVER_SECRET must be set to a long random string before the\n' +
+    '       server can start. Generate one with `openssl rand -hex 32` and\n' +
+    '       pass it via the SERVER_SECRET environment variable.\n' +
+    '       For local development only, set AUTH_DEV=1 to bypass this check\n' +
+    '       and fall back to the well-known dev secret.');
   process.exit(1);
 }
+// Exported so the boot smoke test can target it directly if needed.
+export { assertServerSecretOrExit };
 
 export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERVER_SECRET,
                                   publicUrl = PUBLIC_URL, envOverride = env,
@@ -44,7 +67,16 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   const engine = await createGameEngine({ db, banqiModule });
   configurePush({ env: envOverride });
   const app = express();
-  app.set('trust proxy', 1);
+  // trust proxy: opt-in. Express trusting X-Forwarded-* by default lets any
+  // client spoof `req.ip` (and therefore rate-limit buckets) when the server
+  // isn't actually behind a reverse proxy. Operators set TRUST_PROXY=1 (or a
+  // hop count) behind Cloud Run / nginx / Cloudflare; loopback / IP ranges
+  // are passed through unchanged so Express's full grammar is available.
+  const trustProxy = envOverride.TRUST_PROXY;
+  if (trustProxy != null && trustProxy !== '') {
+    const asNumber = Number(trustProxy);
+    app.set('trust proxy', Number.isFinite(asNumber) ? asNumber : trustProxy);
+  }
 
   // Security headers first so every response (static + API + auth redirects)
   // picks them up. The CSP allows:
@@ -82,6 +114,14 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   }));
 
   app.use(express.json({ limit: '64kb' }));
+
+  // Same-origin guard on state-changing methods: rejects any POST/PUT/PATCH/
+  // DELETE whose Origin (or, as a fallback, Referer) does not match our
+  // publicUrl. Browsers populate Origin on every cross-site fetch/submit, so
+  // a missing header on a state-changing request is itself a strong CSRF
+  // signal. Installed before the /auth/* mount so /auth/logout (POST) is
+  // covered too.
+  app.use(requireSameOrigin(publicUrl));
 
   const { sessionParser, passport, sessionStore } = configureAuth(app, {
     db, serverSecret, publicUrl, env: envOverride,
@@ -146,6 +186,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
 
 const isMain = import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
+  assertServerSecretOrExit(env);
   const { server } = await buildApp();
   server.listen(PORT, () => {
     console.log(`banqi relay listening on ${PUBLIC_URL} (port ${PORT})`);
