@@ -217,6 +217,11 @@ jobs:
           DATABASE_URL: postgresql://banqi:banqi@localhost:5432/banqi_test
         run: node tests/view_lifecycle_fuzz.mjs
 
+      - name: Sign-in / sign-out lifecycle smoke (#101)
+        env:
+          DATABASE_URL: postgresql://banqi:banqi@localhost:5432/banqi_test
+        run: node tests/lifecycle_signin_signout_smoke.mjs
+
       - name: Board input (touch + drag)
         run: node tests/board_input_browser.mjs
 
