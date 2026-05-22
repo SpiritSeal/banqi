@@ -466,7 +466,7 @@ describe('friends + match requests', () => {
     const bob   = await signInAs('Bob');
 
     const invite = await (await authedFetch(alice, '/api/friends/my-invite')).json();
-    assert.match(invite.token, /^\d+-[0-9a-f]{16}$/);
+    assert.match(invite.token, /^\d+-[0-9a-f]{32}$/);
 
     const r1 = await authedFetch(bob, '/api/friends/by-token', {
       method: 'POST', body: JSON.stringify({ token: invite.token }),

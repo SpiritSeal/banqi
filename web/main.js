@@ -207,7 +207,7 @@ async function route() {
   const mc = hash.match(/^#\/challenge\/(\d+)$/);
   if (mc) { announce('Challenge details'); return renderChallengeDetails(+mc[1]); }
 
-  const ma = hash.match(/^#\/add-friend\/(\d+-[0-9a-f]{16})$/);
+  const ma = hash.match(/^#\/add-friend\/(\d+-[0-9a-f]{32})$/);
   if (ma) { announce('Add friend'); return addFriendByToken(ma[1]); }
 
   switch (hash) {
