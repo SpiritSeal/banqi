@@ -28,24 +28,35 @@ import { fakeBanqiModule } from './fixtures/fake_banqi.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql:///banqi_test';
 
+async function pickFreePort() {
+  const { createServer } = await import('node:net');
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.listen(0, () => {
+      const p = probe.address().port;
+      probe.close(() => resolve(p));
+    });
+  });
+}
+
 let app, baseUrl, port;
 
 before(async () => {
   process.env.AUTH_DEV = '1';
   process.env.SERVER_SECRET = 'test-secret-do-not-use-in-prod';
+  port = await pickFreePort();
+  baseUrl = `http://localhost:${port}`;
   app = await buildApp({
     databaseUrl: DATABASE_URL,
     serverSecret: process.env.SERVER_SECRET,
-    publicUrl: 'http://localhost',
+    publicUrl: baseUrl,
     envOverride: process.env,
     banqiModule: fakeBanqiModule(),
   });
   await app.db.query(
     'TRUNCATE match_requests, friends, elo_history, game_events, game_state, games, users, "session" RESTART IDENTITY CASCADE'
   );
-  await new Promise((r) => app.server.listen(0, r));
-  port = app.server.address().port;
-  baseUrl = `http://localhost:${port}`;
+  await new Promise((r) => app.server.listen(port, r));
 });
 
 after(async () => {
@@ -64,6 +75,7 @@ async function authedFetch(cookie, path, init = {}) {
   return fetch(`${baseUrl}${path}`, {
     ...init,
     headers: { Cookie: cookie, 'Content-Type': 'application/json',
+               Origin: baseUrl,
                ...(init.headers || {}) },
   });
 }

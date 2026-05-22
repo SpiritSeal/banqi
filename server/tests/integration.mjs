@@ -35,9 +35,13 @@ async function signInGuest() {
 }
 
 async function authedFetch(cookie, path, init = {}) {
+  // Always set Origin to baseUrl: requireSameOrigin (#73) rejects state-
+  // changing requests with a missing/mismatched Origin, and browsers
+  // populate it automatically — tests need to do the same.
   return fetch(`${baseUrl}${path}`, {
     ...init,
     headers: { 'Cookie': cookie, 'Content-Type': 'application/json',
+               'Origin': baseUrl,
                ...(init.headers || {}) },
   });
 }

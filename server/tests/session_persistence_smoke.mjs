@@ -36,15 +36,29 @@ after(async () => {
   // the suite to drain here. Left as a hook for future shared fixtures.
 });
 
-// Bind to port 0 so the OS picks a free port — multiple sequential
-// startApp() calls in the same suite (and parallel test files) can never
-// EADDRINUSE-collide on a hard-coded port. The actual port is then read
-// back from server.address() and returned alongside the app.
+// Pick a free port via a throwaway listener so we can configure
+// publicUrl precisely (the requireSameOrigin guard matches by URL.origin,
+// including port). Once we know the port we tear the probe down and
+// re-listen on the same port in buildApp's server — racy in theory but
+// fine inside a single-process test runner.
+async function pickFreePort() {
+  const { createServer } = await import('node:net');
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.listen(0, () => {
+      const p = probe.address().port;
+      probe.close(() => resolve(p));
+    });
+  });
+}
+
 async function startApp({ truncate = false, port = 0 } = {}) {
+  const actualPort = port || (await pickFreePort());
+  const baseUrl = `http://localhost:${actualPort}`;
   const built = await buildApp({
     databaseUrl: DATABASE_URL,
     serverSecret: process.env.SERVER_SECRET,
-    publicUrl: 'http://localhost',
+    publicUrl: baseUrl,
     envOverride: process.env,
     banqiModule: fakeBanqiModule(),
   });
@@ -53,9 +67,8 @@ async function startApp({ truncate = false, port = 0 } = {}) {
       'TRUNCATE match_requests, friends, elo_history, game_events, game_state, games, users, "session" RESTART IDENTITY CASCADE'
     );
   }
-  await new Promise((r) => built.server.listen(port, r));
-  const actualPort = built.server.address().port;
-  return { ...built, baseUrl: `http://localhost:${actualPort}`, port: actualPort };
+  await new Promise((r) => built.server.listen(actualPort, r));
+  return { ...built, baseUrl, port: actualPort };
 }
 
 async function signInDev(baseUrl, name) {
@@ -124,7 +137,7 @@ describe('session persistence across server restarts', () => {
       assert.equal(meRes1.status, 200, 'baseline /api/me must succeed');
 
       const lo = await fetch(`${app.baseUrl}/auth/logout`, {
-        method: 'POST', headers: { Cookie: cookie },
+        method: 'POST', headers: { Cookie: cookie, Origin: app.baseUrl },
       });
       assert.equal(lo.status, 200, '/auth/logout should succeed');
 

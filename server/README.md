@@ -63,6 +63,7 @@ Required env vars:
 | `DATABASE_URL`          | `postgresql://user:pass@host/dbname`. Schema is applied on boot. |
 | `GITHUB_CLIENT_ID` / `_SECRET` | OAuth app at <https://github.com/settings/applications/new>. Callback: `${PUBLIC_URL}/auth/callback/github` |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | OAuth app at <https://console.cloud.google.com/apis/credentials>. Callback: `${PUBLIC_URL}/auth/callback/google` |
+| `TRUST_PROXY`           | **Required** when running behind a TLS-terminating reverse proxy (Cloud Run, nginx, Cloudflare). Set to `1` for a single hop, or to an Express trust-proxy expression (`loopback`, an IP range, etc.). Leave unset only when the server is directly exposed — trusting `X-Forwarded-*` without a proxy in front lets any client spoof their source IP and bypass per-IP rate limits. |
 
 Optional (push notifications):
 
@@ -76,7 +77,9 @@ If unset, push notifications are disabled and `/api/push/vapid-key` returns
 503; in-page sound + title-bar alerts still work.
 
 At least one OAuth provider must be configured for production. Do **not**
-set `AUTH_DEV=1` in production.
+set `AUTH_DEV=1` in production. The server refuses to boot if `SERVER_SECRET`
+is unset (or left at the `dev-insecure-...` placeholder); the only escape
+hatch is `AUTH_DEV=1`, which is intended for local development only.
 
 ### Docker
 
@@ -87,6 +90,7 @@ docker run -p 8080:8080 \
   -e DATABASE_URL=postgresql://user:pass@host/dbname \
   -e SERVER_SECRET=$(openssl rand -hex 32) \
   -e PUBLIC_URL=https://your-host \
+  -e TRUST_PROXY=1 \
   -e GITHUB_CLIENT_ID=... -e GITHUB_CLIENT_SECRET=... \
   banqi
 ```

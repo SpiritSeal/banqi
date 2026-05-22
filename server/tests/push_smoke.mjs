@@ -240,7 +240,8 @@ describe('/api/push/subscribe SSRF guard + 410 cleanup scope (#69)', () => {
     const cookie = await signInDev('SsrfAlice');
     const res = await fetch(`${baseUrl2}/api/push/subscribe`, {
       method: 'POST',
-      headers: { 'Cookie': cookie, 'Content-Type': 'application/json' },
+      headers: { 'Cookie': cookie, 'Content-Type': 'application/json',
+                 'Origin': baseUrl2 },
       body: JSON.stringify({
         endpoint: 'http://169.254.169.254/computeMetadata/v1/',
         keys: { p256dh: 'k', auth: 'a' },
@@ -255,7 +256,8 @@ describe('/api/push/subscribe SSRF guard + 410 cleanup scope (#69)', () => {
     const cookie = await signInDev('SsrfBob');
     const res = await fetch(`${baseUrl2}/api/push/subscribe`, {
       method: 'POST',
-      headers: { 'Cookie': cookie, 'Content-Type': 'application/json' },
+      headers: { 'Cookie': cookie, 'Content-Type': 'application/json',
+                 'Origin': baseUrl2 },
       body: JSON.stringify({
         endpoint: 'https://127.0.0.1:9200/_search',
         keys: { p256dh: 'k', auth: 'a' },
@@ -270,7 +272,8 @@ describe('/api/push/subscribe SSRF guard + 410 cleanup scope (#69)', () => {
     const cookie = await signInDev('SsrfCarol');
     const res = await fetch(`${baseUrl2}/api/push/subscribe`, {
       method: 'POST',
-      headers: { 'Cookie': cookie, 'Content-Type': 'application/json' },
+      headers: { 'Cookie': cookie, 'Content-Type': 'application/json',
+                 'Origin': baseUrl2 },
       body: JSON.stringify({
         endpoint: 'https://fcm.googleapis.com/fcm/send/legit-token-xyz',
         keys: { p256dh: 'k', auth: 'a' },
