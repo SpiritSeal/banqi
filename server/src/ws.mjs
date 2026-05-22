@@ -21,11 +21,74 @@ import {
 import { eloDelta } from './elo.mjs';
 import { sendToUser as sendPushToUser } from './push.mjs';
 
-export function attachWebSocket(server, { db, sessionParser, passport, engine }) {
-  const wss = new WebSocketServer({ noServer: true });
+// Whitelist of reject reasons we're willing to surface verbatim to the client.
+// Anything else thrown by the engine / wasm layer gets logged server-side and
+// the client only sees a generic 'rejected', so we don't leak internal error
+// strings like Emscripten's "Aborted(...)" or stack-trace fragments.
+const SAFE_REJECT_REASONS = new Set([
+  'malformed JSON',
+  'unknown frame type',
+  'unknown intent kind',
+  'illegal move',
+  'not your turn',
+  'game is over',
+  'bad coords',
+  'bad cell',
+  'no draw offer to accept',
+]);
+
+function safeRejectReason(reason) {
+  if (typeof reason === 'string' && SAFE_REJECT_REASONS.has(reason)) return reason;
+  console.error('ws: suppressed reject reason:', reason);
+  return 'rejected';
+}
+
+export function attachWebSocket(server, { db, sessionParser, passport, engine,
+                                          publicUrl, env = process.env }) {
+  // 4 KiB is well above the largest intent frame we send (a couple hundred
+  // bytes for a move with offer_draw) but small enough to make memory abuse
+  // via giant frames a non-starter. `ws` enforces this and closes oversize
+  // frames with close code 1009.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
 
   // gameId → Set of { ws, userId, playerIndex }
   const rooms = new Map();
+
+  // userId → live socket count, so we can cap simultaneous connections per
+  // user across rooms. Defaults to 4 (host + spectator + mobile + dev tab is
+  // already a stretch); override via WS_MAX_PER_USER for ops scenarios.
+  const MAX_PER_USER = Math.max(1, parseInt(env.WS_MAX_PER_USER || '4', 10) || 4);
+  const perUserCount = new Map();
+  function incUser(userId) {
+    perUserCount.set(userId, (perUserCount.get(userId) || 0) + 1);
+  }
+  function decUser(userId) {
+    const n = (perUserCount.get(userId) || 0) - 1;
+    if (n <= 0) perUserCount.delete(userId);
+    else perUserCount.set(userId, n);
+  }
+
+  // Parse the allowed origin set once. PUBLIC_URL alone is the common case;
+  // WS_EXTRA_ORIGINS is an opt-in comma list for staging / preview hosts.
+  const allowedOrigins = new Set();
+  if (publicUrl) {
+    try { allowedOrigins.add(new URL(publicUrl).origin); } catch (_) {}
+  }
+  if (env.WS_EXTRA_ORIGINS) {
+    for (const raw of String(env.WS_EXTRA_ORIGINS).split(',')) {
+      const s = raw.trim();
+      if (!s) continue;
+      try { allowedOrigins.add(new URL(s).origin); } catch (_) {}
+    }
+  }
+  function originAllowed(origin) {
+    // Missing Origin is allowed: non-browser clients (including the Node `ws`
+    // client our tests use) don't send one by default. Browsers always do,
+    // so a present-but-wrong Origin is the attack we actually care about.
+    if (!origin) return true;
+    try { return allowedOrigins.has(new URL(origin).origin); }
+    catch (_) { return false; }
+  }
 
   function viewerStateForUser(session, userId) {
     return engine.viewerStateForUser(session, userId);
@@ -156,11 +219,33 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     }
   });
 
+  // The wss object itself can emit 'error' (e.g. handshake failures before a
+  // connection makes it to 'connection'). Swallow + log to avoid unhandled
+  // EventEmitter errors crashing the process.
+  wss.on('error', (err) => {
+    console.warn('ws: server error:', err?.message || err);
+  });
+
   server.on('upgrade', (req, socket, head) => {
+    // Raw upgrade sockets can error out (client disconnects mid-handshake).
+    // Attach a no-op error handler so node doesn't surface this as an
+    // unhandled exception.
+    socket.on('error', (err) => {
+      console.warn('ws: upgrade socket error:', err?.message || err);
+    });
     const url = new URL(req.url, 'http://x');
     const m = url.pathname.match(/^\/ws\/(\d+)$/);
     if (!m) { socket.destroy(); return; }
     const gameId = +m[1];
+
+    // CSWSH defence: if the browser sent an Origin header that doesn't match
+    // our public URL, refuse the upgrade. A missing Origin (non-browser
+    // client) is allowed.
+    if (!originAllowed(req.headers.origin)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
 
     sessionParser(req, {}, () => {
       passport.initialize()(req, {}, () => {
@@ -176,6 +261,14 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
             if (!session) { socket.destroy(); return; }
             const pi = session.playerIndexFor(req.user.id);
             if (pi < 0) { socket.destroy(); return; }
+            // Per-user cap. Counted at upgrade time and decremented on close,
+            // so a 5th simultaneous tab from the same user is rejected with a
+            // 429 until one of the live sockets closes.
+            if ((perUserCount.get(req.user.id) || 0) >= MAX_PER_USER) {
+              socket.write('HTTP/1.1 429 Too Many Connections\r\n\r\n');
+              socket.destroy();
+              return;
+            }
             wss.handleUpgrade(req, socket, head, (ws) => {
               wss.emit('connection', ws, req, session, pi);
             });
@@ -202,6 +295,16 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     let peers = rooms.get(session.gameId);
     if (!peers) { peers = new Set(); rooms.set(session.gameId, peers); }
     peers.add(entry);
+    incUser(userId);
+
+    // Swallow per-socket errors. `ws` emits 'error' (RangeError for oversize
+    // frames hitting maxPayload, ECONNRESET on abrupt client drops, etc.) and
+    // an unhandled 'error' on an EventEmitter would crash the process. The
+    // socket is being torn down anyway — 'close' will run the per-user
+    // decrement — so we just log and move on.
+    ws.on('error', (err) => {
+      console.warn('ws: socket error:', err?.message || err);
+    });
 
     // Initial snapshot.
     pushTo(entry, {
@@ -224,7 +327,7 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
       }
       const result = await engine.applyIntent(session.gameId, userId, frame);
       if (!result.ok) {
-        pushTo(entry, { type: 'reject', reason: result.reason });
+        pushTo(entry, { type: 'reject', reason: safeRejectReason(result.reason) });
         return;
       }
       // Broadcast + Elo handled by the engine.onEvent subscriber above.
@@ -236,6 +339,7 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
         set.delete(entry);
         if (set.size === 0) rooms.delete(session.gameId);
       }
+      decUser(userId);
     });
   });
 

@@ -116,7 +116,9 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   });
 
   const server = createServer(app);
-  const ws = attachWebSocket(server, { db, sessionParser, passport, engine });
+  const ws = attachWebSocket(server, {
+    db, sessionParser, passport, engine, publicUrl, env: envOverride,
+  });
 
   // Unified teardown for tests + production shutdown. Order matters:
   //   1. Stop accepting new WS frames + clear the heartbeat interval.

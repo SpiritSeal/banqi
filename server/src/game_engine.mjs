@@ -351,6 +351,12 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
         case 'move': {
           const from = Number(intent.from), to = Number(intent.to);
           if (!Number.isInteger(from) || !Number.isInteger(to)) throw new Error('bad coords');
+          // Defence in depth: bound-check before we hand off to the wasm rules
+          // engine. Without this, a malformed client frame would surface as an
+          // Emscripten "Aborted(...)" abort string further down the stack.
+          if (from < 0 || to < 0 || from >= 32 || to >= 32 || from === to) {
+            throw new Error('bad coords');
+          }
           const beforeState = JSON.parse(session.wasm.stateJson(-1));
           const dst = beforeState.cells[to];
           session.wasm.applyMove(pi, from, to);

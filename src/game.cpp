@@ -84,6 +84,15 @@ Piece Game::apply_flip(int player_index, int cell) {
 
 MoveResult Game::apply_move(int player_index, int from, int to) {
     check_turn(player_index);
+    // Mirror the bounds check inside BanqiRules::apply_move so callers (incl.
+    // the wasm bridge) get a clean exception before is_legal runs — is_legal
+    // silently returns false for out-of-range cells, which would have surfaced
+    // as a misleading "illegal move".
+    if (from < 0 || from >= BanqiRules::CELLS ||
+        to   < 0 || to   >= BanqiRules::CELLS ||
+        from == to) {
+        throw std::runtime_error("apply_move: cells out of range");
+    }
     Move m{from, to};
     if (!rules_.is_legal(m, player_index)) throw std::runtime_error("illegal move");
     return rules_.apply_move(from, to);
