@@ -11,7 +11,7 @@
 // Exit code: 0 if the first agent wins >= 90% of decisive games, else 1.
 
 import createBanqiModule from '../web/banqi.js';
-import { chooseMove, Difficulty } from '../web/ai.js';
+import { chooseMove, Difficulty } from '../ai/index.mjs';
 
 const Module = await createBanqiModule();
 

@@ -14,7 +14,7 @@
 
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
-import { chooseMove, Difficulty } from './ai.js';
+import { chooseMove, Difficulty } from '../ai/index.mjs';
 import { Replay, renderTranscript, exportPgn, endReasonLabel } from './replay.js';
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';

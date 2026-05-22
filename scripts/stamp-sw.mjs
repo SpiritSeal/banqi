@@ -19,9 +19,13 @@
 // stamper's own output doesn't perturb its input.
 //
 // Usage:
-//   node scripts/stamp-sw.mjs [--web <path>] [--check]
+//   node scripts/stamp-sw.mjs [--web <path>] [--ai <path>] [--check]
 //
-//   --web <path>  Directory to walk (default: ./web). Overridden in Docker.
+//   --web <path>  Web directory to walk (default: ./web). Overridden in Docker.
+//   --ai  <path>  AI directory to walk (default: ./ai). The AI module lives
+//                 outside web/ so the server can import it without the web
+//                 bundle, but the browser still precaches it via the /ai
+//                 static mount. Pass an empty string to skip.
 //   --check       Exit non-zero if a stamp would change anything. Lets CI
 //                 verify the stamper was run without mutating the tree.
 
@@ -32,6 +36,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WEB_DIR = join(__dirname, '..', 'web');
+const DEFAULT_AI_DIR = join(__dirname, '..', 'ai');
 
 const SW_FILENAME = 'sw.js';
 const INDEX_FILENAME = 'index.html';
@@ -88,7 +93,7 @@ function normalizeForHash(relPath, bytes) {
   return Buffer.from(normalized, 'utf-8');
 }
 
-export async function computeBuildId(webDir) {
+export async function computeBuildId(webDir, aiDir) {
   const files = await walk(webDir);
   const lines = [];
   for (const rel of files) {
@@ -97,21 +102,42 @@ export async function computeBuildId(webDir) {
     const hash = createHash('sha256').update(normalized).digest('hex');
     lines.push(`${rel}|${hash}`);
   }
+  if (aiDir) {
+    const aiFiles = await walk(aiDir);
+    for (const rel of aiFiles) {
+      const bytes = await readFile(join(aiDir, rel));
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      // Prefix with `ai/` so the line is distinct from a web/ file of the
+      // same relative name, and to mirror the path the SW will fetch.
+      lines.push(`ai/${rel}|${hash}`);
+    }
+  }
   const digest = createHash('sha256').update(lines.join('\n')).digest('hex');
   return digest.slice(0, 12);
 }
 
 // Render the JS source for the auto-generated APP_SHELL block. Lives between
 // the AUTO-PRECACHE markers in web/sw.js.
-function renderAppShell(files) {
-  const all = [...STATIC_PRECACHE_ENTRIES, ...files.map((f) => `./${f}`)];
+//
+// `aiFiles` are paths relative to the ai/ dir and are emitted as `../ai/<rel>`
+// — the SW lives at /sw.js so its scope is /, and `../ai/` from web/sw.js
+// resolves to the /ai/* URLs Express serves via the second static mount.
+//
+// The static head entries (`./`) come first; the remainder is sorted so the
+// list is stable across walks and easy to eyeball-diff in code review.
+function renderAppShell(files, aiFiles = []) {
+  const rest = [
+    ...files.map((f) => `./${f}`),
+    ...aiFiles.map((f) => `../ai/${f}`),
+  ].sort();
+  const all = [...STATIC_PRECACHE_ENTRIES, ...rest];
   const lines = all.map((p) => `  ${JSON.stringify(p)},`);
   return `const APP_SHELL = [\n${lines.join('\n')}\n];`;
 }
 
 // Replace the BUILD_ID literal and the AUTO-PRECACHE block in sw.js. Returns
 // {before, after} for the --check path.
-function rewriteSw(swText, buildId, files) {
+function rewriteSw(swText, buildId, files, aiFiles = []) {
   // Accept CRLF (Windows checkouts with core.autocrlf=true) by matching
   // both `$` and `\r?\n`. Don't normalise the file — preserve the host's
   // line endings so the stamper is a no-op on git's filter pipeline.
@@ -125,7 +151,7 @@ function rewriteSw(swText, buildId, files) {
     throw new Error("sw.js: couldn't find AUTO-PRECACHE START/END markers");
   }
   const nl = markerMatch[2];   // '\n' or '\r\n', whichever the file uses.
-  const appShellBlock = renderAppShell(files).split('\n').join(nl);
+  const appShellBlock = renderAppShell(files, aiFiles).split('\n').join(nl);
   return swText
     .replace(buildIdRe, (m) => m.replace(/'[^']*'/, `'${buildId}'`))
     .replace(markerRe, `$1${nl}${appShellBlock}${nl}$3`);
@@ -143,9 +169,11 @@ function rewriteIndex(htmlText, buildId) {
 async function main() {
   const argv = process.argv.slice(2);
   let webDir = DEFAULT_WEB_DIR;
+  let aiDir = DEFAULT_AI_DIR;
   let check = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--web') webDir = argv[++i];
+    else if (argv[i] === '--ai') aiDir = argv[++i];
     else if (argv[i] === '--check') check = true;
     else { console.error(`unknown arg: ${argv[i]}`); process.exit(2); }
   }
@@ -153,14 +181,24 @@ async function main() {
   try { await stat(webDir); }
   catch { console.error(`web dir not found: ${webDir}`); process.exit(2); }
 
-  const buildId = await computeBuildId(webDir);
+  // An empty --ai value disables the AI scan entirely (no precache, no hash
+  // contribution). A non-empty value that points at a missing directory is
+  // an error — silently skipping it would corrupt BUILD_ID.
+  let effectiveAiDir = aiDir || null;
+  if (effectiveAiDir) {
+    try { await stat(effectiveAiDir); }
+    catch { console.error(`ai dir not found: ${effectiveAiDir}`); process.exit(2); }
+  }
+
+  const buildId = await computeBuildId(webDir, effectiveAiDir);
   const files = (await walk(webDir));
+  const aiFiles = effectiveAiDir ? (await walk(effectiveAiDir)) : [];
 
   const swPath = join(webDir, SW_FILENAME);
   const indexPath = join(webDir, INDEX_FILENAME);
   const swBefore = await readFile(swPath, 'utf-8');
   const indexBefore = await readFile(indexPath, 'utf-8');
-  const swAfter = rewriteSw(swBefore, buildId, files);
+  const swAfter = rewriteSw(swBefore, buildId, files, aiFiles);
   const indexAfter = rewriteIndex(indexBefore, buildId);
 
   if (check) {
@@ -175,7 +213,9 @@ async function main() {
 
   if (swAfter !== swBefore) await writeFile(swPath, swAfter);
   if (indexAfter !== indexBefore) await writeFile(indexPath, indexAfter);
-  console.log(`BUILD_ID=${buildId} (${files.length} files hashed)`);
+  const totalFiles = files.length + aiFiles.length;
+  console.log(`BUILD_ID=${buildId} (${totalFiles} files hashed`
+    + (aiFiles.length ? `, ${aiFiles.length} from ai/` : '') + `)`);
 }
 
 const invokedAsScript = process.argv[1]

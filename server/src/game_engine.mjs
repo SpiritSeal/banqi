@@ -7,7 +7,7 @@
 // Concurrency: each game's apply path is serialized via a per-game mutex so
 // two simultaneous intents from the same player can't race the WASM state.
 
-import { chooseMove } from '../../web/ai.js';
+import { chooseMove } from '../../ai/index.mjs';
 import {
   findGameById, saveGameState, loadGameState,
   appendGameEvent, listGameEvents, markGameEnded,

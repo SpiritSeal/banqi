@@ -18,12 +18,18 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY server/package.json server/schema.sql ./
 COPY server/src ./src
 COPY web /web
-# Stamp the service worker against the actual shipped web/ contents. Done
-# inside the image build so the BUILD_ID always matches what's served, even
-# if the developer forgot `make stamp-sw` locally. The script has no runtime
-# deps and the alpine image already has node, so this is a no-cost step.
+# The AI engine lives at top-level ai/ so the relay server can import it
+# without dragging the whole web/ tree into its own stability surface. The
+# browser still fetches it (via the /ai static mount in src/index.mjs) so we
+# ship it alongside the web bundle here.
+COPY ai /ai
+# Stamp the service worker against the actual shipped web/ + ai/ contents.
+# Done inside the image build so the BUILD_ID always matches what's served,
+# even if the developer forgot `make stamp-sw` locally. The script has no
+# runtime deps and the alpine image already has node, so this is a no-cost
+# step.
 COPY scripts/stamp-sw.mjs /tmp/stamp-sw.mjs
-RUN node /tmp/stamp-sw.mjs --web /web && rm /tmp/stamp-sw.mjs
+RUN node /tmp/stamp-sw.mjs --web /web --ai /ai && rm /tmp/stamp-sw.mjs
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080

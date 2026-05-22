@@ -159,6 +159,12 @@ icons:
 # committed sw.js is good enough for visual dev; CI and the Dockerfile stamp
 # for real before anything ships. Run `make stamp-sw` manually if you need
 # the SW update banner to fire while testing locally.
+#
+# Limitation: the AI engine now lives at top-level ai/ (see #55) and is
+# imported via `../ai/index.mjs`. python's http.server refuses to serve
+# paths outside its document root, so the vs-AI mode won't load under
+# `make serve`. Use `make server-dev` for that — its Express app mounts
+# both web/ and /ai.
 .PHONY: serve
 serve:
 	cd $(WEB_DIR) && python3 -m http.server 8080

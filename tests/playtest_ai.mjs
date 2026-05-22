@@ -3,7 +3,7 @@
 // and timing, and verifies that no illegal state is ever reached.
 
 import createBanqiModule from '../web/banqi.js';
-import { chooseMove, Difficulty } from '../web/ai.js';
+import { chooseMove, Difficulty } from '../ai/index.mjs';
 
 const Module = await createBanqiModule();
 
