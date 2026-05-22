@@ -1,7 +1,7 @@
-// Classic Elo with K=32 (typical for casual play). Draws aren't currently
-// produced by the rules engine; included for completeness.
+// Classic Elo with K=40. Draws aren't currently produced by the rules
+// engine; included for completeness.
 
-const K = 32;
+const K = 40;
 
 function expected(a, b) {
   return 1 / (1 + Math.pow(10, (b - a) / 400));

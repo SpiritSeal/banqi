@@ -226,7 +226,7 @@ describe('clock_state_json + loss_reason persistence', () => {
     const gameId = result.game.id;
     await recordEloChange(db, {
       userId: bob, gameId, opponentId: alice,
-      eloBefore: 1200, eloAfter: 1184, result: 'loss', lossReason: 'timeout',
+      eloBefore: 1200, eloAfter: 1180, result: 'loss', lossReason: 'timeout',
     });
     const { rows } = await db.query(
       `SELECT loss_reason FROM elo_history
@@ -246,7 +246,7 @@ describe('clock_state_json + loss_reason persistence', () => {
     const gameId = result.game.id;
     await recordEloChange(db, {
       userId: alice, gameId, opponentId: bob,
-      eloBefore: 1200, eloAfter: 1216, result: 'win',
+      eloBefore: 1200, eloAfter: 1220, result: 'win',
     });
     const { rows } = await db.query(
       `SELECT loss_reason FROM elo_history
