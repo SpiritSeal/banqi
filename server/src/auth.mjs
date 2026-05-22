@@ -4,7 +4,7 @@
 // stored in the session.
 
 import passportDefault, { Passport } from 'passport';
-import GitHubStrategy from 'passport-github2';
+import { Strategy as GitHubStrategy } from 'passport-github';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
@@ -133,10 +133,11 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
   };
 
   if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) {
-    // `state: true` makes the CSRF state parameter explicit. Modern
-    // passport-github2 enables it by default, but pinning it here documents
-    // the security posture and survives a future default flip. Requires the
-    // session middleware registered above (where it stashes the nonce).
+    // `state: true` makes the CSRF state parameter explicit. The underlying
+    // passport-oauth2 enables a nonce store when this is set, which uses the
+    // session to bind the OAuth callback to the originating browser. Pinning
+    // it here documents the security posture and survives a future default
+    // flip. Requires the session middleware registered above.
     passport.use(new GitHubStrategy({
       clientID:     env.GITHUB_CLIENT_ID,
       clientSecret: env.GITHUB_CLIENT_SECRET,
