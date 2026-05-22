@@ -219,7 +219,20 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine,
     }
   });
 
+  // The wss object itself can emit 'error' (e.g. handshake failures before a
+  // connection makes it to 'connection'). Swallow + log to avoid unhandled
+  // EventEmitter errors crashing the process.
+  wss.on('error', (err) => {
+    console.warn('ws: server error:', err?.message || err);
+  });
+
   server.on('upgrade', (req, socket, head) => {
+    // Raw upgrade sockets can error out (client disconnects mid-handshake).
+    // Attach a no-op error handler so node doesn't surface this as an
+    // unhandled exception.
+    socket.on('error', (err) => {
+      console.warn('ws: upgrade socket error:', err?.message || err);
+    });
     const url = new URL(req.url, 'http://x');
     const m = url.pathname.match(/^\/ws\/(\d+)$/);
     if (!m) { socket.destroy(); return; }
@@ -283,6 +296,15 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine,
     if (!peers) { peers = new Set(); rooms.set(session.gameId, peers); }
     peers.add(entry);
     incUser(userId);
+
+    // Swallow per-socket errors. `ws` emits 'error' (RangeError for oversize
+    // frames hitting maxPayload, ECONNRESET on abrupt client drops, etc.) and
+    // an unhandled 'error' on an EventEmitter would crash the process. The
+    // socket is being torn down anyway — 'close' will run the per-user
+    // decrement — so we just log and move on.
+    ws.on('error', (err) => {
+      console.warn('ws: socket error:', err?.message || err);
+    });
 
     // Initial snapshot.
     pushTo(entry, {
