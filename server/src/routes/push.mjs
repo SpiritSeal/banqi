@@ -8,12 +8,20 @@
 
 import express from 'express';
 import { requireAuth } from '../auth.mjs';
+import { rateLimit } from '../rate_limit.mjs';
 import {
   savePushSubscription,
   deletePushSubscriptionByEndpoint,
 } from '../db.mjs';
 import { configured, publicKey } from '../push.mjs';
 import { asyncRoute } from '../util.mjs';
+
+// Each subscribe call stores a row; a misbehaving client that keeps
+// re-subscribing on every page load shouldn't be able to burn through the
+// push quota or fill the table with duplicate rows.
+const pushSubscribeLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 10, name: 'push subscribe',
+});
 
 export function pushRouter({ db }) {
   const r = express.Router();
@@ -25,7 +33,7 @@ export function pushRouter({ db }) {
     res.json({ publicKey: publicKey() });
   });
 
-  r.post('/push/subscribe', requireAuth, asyncRoute(async (req, res) => {
+  r.post('/push/subscribe', requireAuth, pushSubscribeLimiter, asyncRoute(async (req, res) => {
     if (!configured()) {
       return res.status(503).json({ error: 'push not configured' });
     }

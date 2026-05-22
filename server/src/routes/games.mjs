@@ -12,13 +12,30 @@ import {
   getAiUserByDifficulty, AI_DIFFICULTIES,
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
+import { rateLimit, combineLimits } from '../rate_limit.mjs';
 import { newRoomCode } from '../rooms.mjs';
 import { asyncRoute } from '../util.mjs';
+
+// Per-route rate limits, keyed by user id (or IP for unauthenticated traffic;
+// these are all requireAuth-guarded, so in practice it's always user id).
+// Game create burns a finite room code on each call and writes three rows,
+// so it gets both a short and long bucket; join + claim-timeout are cheaper
+// but still worth a ceiling against scripted flooding.
+const gameCreateLimiter = combineLimits([
+  { windowMs: 60 * 1000,         max: 10,  name: 'game create (per minute)' },
+  { windowMs: 60 * 60 * 1000,    max: 100, name: 'game create (per hour)' },
+]);
+const gameJoinLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 30, name: 'game join',
+});
+const claimTimeoutLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 30, name: 'claim timeout',
+});
 
 export function gamesRouter({ db, engine }) {
   const r = express.Router();
 
-  r.post('/games', requireAuth, asyncRoute(async (req, res) => {
+  r.post('/games', requireAuth, gameCreateLimiter, asyncRoute(async (req, res) => {
     // Guests keep the legacy local-only AI flow; they can't host persistent
     // AI games (they're also excluded from Elo / leaderboard already).
     if (req.user.provider === 'guest' && typeof req.body?.opponent === 'string'
@@ -103,7 +120,7 @@ export function gamesRouter({ db, engine }) {
   // but isn't around to make a move, the opponent calls this to end the
   // game on time. The engine fires the terminal event via onEvent, so WS
   // broadcasts + Elo updates flow through the same path as in-game intents.
-  r.post('/games/:id/claim-timeout', requireAuth, asyncRoute(async (req, res) => {
+  r.post('/games/:id/claim-timeout', requireAuth, claimTimeoutLimiter, asyncRoute(async (req, res) => {
     const id = +req.params.id;
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ error: 'invalid id' });
@@ -113,7 +130,7 @@ export function gamesRouter({ db, engine }) {
     res.json({ ok: true, event: result.event });
   }));
 
-  r.post('/games/:id/join', requireAuth, asyncRoute(async (req, res) => {
+  r.post('/games/:id/join', requireAuth, gameJoinLimiter, asyncRoute(async (req, res) => {
     const g = await findGameById(db, +req.params.id);
     if (!g) return res.status(404).json({ error: 'not found' });
     if (g.host_user_id === req.user.id) {

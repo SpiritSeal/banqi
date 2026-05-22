@@ -1,6 +1,7 @@
 // Banqi relay server: HTTP (static + REST + OAuth) + WebSocket.
 
 import express from 'express';
+import helmet from 'helmet';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -43,6 +44,42 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   configurePush({ env: envOverride });
   const app = express();
   app.set('trust proxy', 1);
+
+  // Security headers first so every response (static + API + auth redirects)
+  // picks them up. The CSP allows:
+  //   - 'wasm-unsafe-eval' for the banqi.wasm rules module compiled into the
+  //     SPA (without it, WebAssembly.instantiate is blocked).
+  //   - data: images for embedded SVG previews and avatar fallbacks.
+  //   - the two OAuth-provider avatar CDNs (GitHub + Google) that
+  //     upsertOAuthUser stores in users.avatar_url.
+  //   - wss: / https: in connect-src so the WebSocket relay (same-origin,
+  //     but the scheme differs) and the Web Push endpoints
+  //     (fcm.googleapis.com, web.push.apple.com, etc.) keep working.
+  // crossOriginEmbedderPolicy is disabled because the WASM rules module is
+  // loaded same-origin without SharedArrayBuffer; enabling COEP would require
+  // every cross-origin resource (avatars) to opt in with CORP, which we can't
+  // control on the provider CDNs.
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc:  ["'self'", "'wasm-unsafe-eval'"],
+        styleSrc:   ["'self'"],
+        imgSrc:     ["'self'", 'data:',
+                     'https://avatars.githubusercontent.com',
+                     'https://lh3.googleusercontent.com'],
+        connectSrc: ["'self'", 'wss:', 'https:'],
+        manifestSrc:["'self'"],
+        workerSrc:  ["'self'"],
+        frameAncestors: ["'none'"],
+        objectSrc:  ["'none'"],
+        baseUri:    ["'self'"],
+        formAction: ["'self'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  }));
+
   app.use(express.json({ limit: '64kb' }));
 
   const { sessionParser, passport } = configureAuth(app, {
