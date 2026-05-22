@@ -47,6 +47,9 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q g++
           make test
 
+      - name: Stamp service worker with built WASM
+        run: node scripts/stamp-sw.mjs
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v4
 
