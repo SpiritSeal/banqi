@@ -14,7 +14,7 @@ import { WebSocket } from 'ws';
 const PORT = 19181;
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://localhost/banqi_test';
 
-let server, db, baseUrl;
+let server, db, baseUrl, closeApp;
 
 async function signInDev(name) {
   const res = await fetch(`${baseUrl}/auth/dev?name=${encodeURIComponent(name)}`, {
@@ -89,6 +89,7 @@ before(async () => {
   });
   db = built.db;
   server = built.server;
+  closeApp = built.close;
   await db.query(
     'TRUNCATE match_requests, friends, elo_history, game_events, game_state, games, users RESTART IDENTITY CASCADE'
   );
@@ -97,8 +98,7 @@ before(async () => {
 });
 
 after(async () => {
-  await new Promise((r) => server.close(r));
-  await db.end();
+  await closeApp();
 });
 
 describe('banqi server-authoritative backend', () => {

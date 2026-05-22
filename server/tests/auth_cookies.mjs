@@ -18,7 +18,7 @@ import { buildApp } from '../src/index.mjs';
 const PORT = 19182;
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://localhost/banqi_test';
 
-let server, db, baseUrl;
+let server, db, baseUrl, closeApp;
 
 before(async () => {
   process.env.AUTH_DEV = '1';
@@ -33,6 +33,7 @@ before(async () => {
   });
   db = built.db;
   server = built.server;
+  closeApp = built.close;
   await db.query(
     'TRUNCATE elo_history, game_events, game_state, games, users RESTART IDENTITY CASCADE'
   );
@@ -41,8 +42,7 @@ before(async () => {
 });
 
 after(async () => {
-  await new Promise((r) => server.close(r));
-  await db.end();
+  await closeApp();
 });
 
 describe('session cookies behind a TLS-terminating proxy', () => {

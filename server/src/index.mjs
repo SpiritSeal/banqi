@@ -35,10 +35,11 @@ if (SERVER_SECRET === 'dev-insecure-secret-change-me' && env.NODE_ENV === 'produ
 }
 
 export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERVER_SECRET,
-                                  publicUrl = PUBLIC_URL, envOverride = env } = {}) {
+                                  publicUrl = PUBLIC_URL, envOverride = env,
+                                  banqiModule = null } = {}) {
   const db = await openDb(databaseUrl);
   await ensureAiUsers(db);
-  const engine = await createGameEngine({ db });
+  const engine = await createGameEngine({ db, banqiModule });
   configurePush({ env: envOverride });
   const app = express();
   app.set('trust proxy', 1);
@@ -72,8 +73,27 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   });
 
   const server = createServer(app);
-  attachWebSocket(server, { db, sessionParser, passport, engine });
-  return { app, server, db, engine };
+  const ws = attachWebSocket(server, { db, sessionParser, passport, engine });
+
+  // Unified teardown for tests + production shutdown. Order matters:
+  //   1. Stop accepting new WS frames + clear the heartbeat interval.
+  //   2. Stop the engine (clears its evict timer, drops cached sessions).
+  //   3. Close the DB pool.
+  //   4. Close the HTTP listener last so in-flight requests can drain.
+  async function close() {
+    await ws.close();
+    engine.close();
+    await db.end();
+    await new Promise((resolve) => {
+      // server.close() errors with "Server is not running" if listen() was
+      // never called (e.g. lifecycle smoke tests). That's not a failure for
+      // teardown — swallow it and resolve.
+      if (!server.listening) { resolve(); return; }
+      server.close(() => resolve());
+    });
+  }
+
+  return { app, server, db, engine, close };
 }
 
 const isMain = import.meta.url === `file://${process.argv[1]}`;

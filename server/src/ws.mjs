@@ -221,12 +221,23 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     });
   });
 
-  // Heartbeat: drop dead connections every 30s.
-  setInterval(() => {
+  // Heartbeat: drop dead connections every 30s. Capture the handle so the
+  // returned close() can clear it; .unref() is belt-and-braces so a forgotten
+  // close() doesn't keep the process alive on its own.
+  const heartbeat = setInterval(() => {
     for (const set of rooms.values()) {
       for (const e of set) {
         try { e.ws.ping(); } catch (_) {}
       }
     }
-  }, 30_000).unref();
+  }, 30_000);
+  heartbeat.unref();
+
+  function close() {
+    clearInterval(heartbeat);
+    rooms.clear();
+    return new Promise((resolve) => wss.close(() => resolve()));
+  }
+
+  return { wss, close };
 }
