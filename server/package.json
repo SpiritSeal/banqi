@@ -17,11 +17,11 @@
     "express-session": "^1.18.0",
     "helmet": "^8.0.0",
     "passport": "^0.7.0",
-    "passport-github2": "^0.1.12",
+    "passport-github": "^1.1.0",
     "passport-google-oauth20": "^2.0.0",
     "pg": "^8.13.0",
     "web-push": "^3.6.7",
-    "ws": "^8.18.0"
+    "ws": "^8.20.1"
   },
   "engines": {
     "node": ">=20"

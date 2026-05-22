@@ -14,15 +14,21 @@ RUN npm ci --omit=dev --no-audit --no-fund
 
 FROM node:lts-alpine
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY server/package.json server/schema.sql ./
-COPY server/src ./src
-COPY web /web
+# The node:lts-alpine image ships a pre-created non-root `node` user (uid 1000).
+# Chown every COPY so the runtime user can read the files without needing to
+# run as root. The stamp-sw RUN step below still executes as root (the default)
+# because /tmp ownership and the cleanup `rm` are simpler that way; we drop
+# privileges with USER node right before CMD so only the long-running process
+# is non-root.
+COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node server/package.json server/schema.sql ./
+COPY --chown=node:node server/src ./src
+COPY --chown=node:node web /web
 # The AI engine lives at top-level ai/ so the relay server can import it
 # without dragging the whole web/ tree into its own stability surface. The
 # browser still fetches it (via the /ai static mount in src/index.mjs) so we
 # ship it alongside the web bundle here.
-COPY ai /ai
+COPY --chown=node:node ai /ai
 # Stamp the service worker against the actual shipped web/ + ai/ contents.
 # Done inside the image build so the BUILD_ID always matches what's served,
 # even if the developer forgot `make stamp-sw` locally. The script has no
@@ -33,4 +39,5 @@ RUN node /tmp/stamp-sw.mjs --web /web --ai /ai && rm /tmp/stamp-sw.mjs
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
+USER node
 CMD ["node", "src/index.mjs"]
