@@ -20,8 +20,7 @@ import {
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 import { newRoomCode } from '../rooms.mjs';
-
-const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+import { asyncRoute } from '../util.mjs';
 
 // Trim + length-cap the optional challenger note. Empty string collapses to
 // null so the DB column stays neat. Strings over the cap return a sentinel

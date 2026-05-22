@@ -13,8 +13,7 @@ import {
 } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
 import { newRoomCode } from '../rooms.mjs';
-
-const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+import { asyncRoute } from '../util.mjs';
 
 export function gamesRouter({ db, engine }) {
   const r = express.Router();

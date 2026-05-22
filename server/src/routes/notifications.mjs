@@ -4,8 +4,7 @@
 import express from 'express';
 import { notificationCounts } from '../db.mjs';
 import { requireAuth } from '../auth.mjs';
-
-const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+import { asyncRoute } from '../util.mjs';
 
 export function notificationsRouter({ db }) {
   const r = express.Router();
