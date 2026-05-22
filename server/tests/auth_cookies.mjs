@@ -14,6 +14,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildApp } from '../src/index.mjs';
+import { fakeBanqiModule } from './fixtures/fake_banqi.mjs';
 
 const PORT = 19182;
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://localhost/banqi_test';
@@ -30,12 +31,15 @@ before(async () => {
     // production behind a TLS-terminating proxy.
     publicUrl: 'https://example.invalid',
     envOverride: process.env,
+    // Inject the fake rules engine so this test runs in CI without a
+    // pre-built WASM blob next to web/banqi.js.
+    banqiModule: fakeBanqiModule(),
   });
   db = built.db;
   server = built.server;
   closeApp = built.close;
   await db.query(
-    'TRUNCATE elo_history, game_events, game_state, games, users RESTART IDENTITY CASCADE'
+    'TRUNCATE elo_history, game_events, game_state, games, users, "session" RESTART IDENTITY CASCADE'
   );
   await new Promise((r) => server.listen(PORT, r));
   baseUrl = `http://localhost:${PORT}`;

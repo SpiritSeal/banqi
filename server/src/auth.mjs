@@ -3,13 +3,31 @@
 // Session id sits in a signed cookie; the user row id is the only thing
 // stored in the session.
 
-import passport from 'passport';
+import passportDefault, { Passport } from 'passport';
 import GitHubStrategy from 'passport-github2';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import session from 'express-session';
+import connectPgSimple from 'connect-pg-simple';
 import { randomBytes } from 'node:crypto';
 import { upsertOAuthUser, getUser } from './db.mjs';
 import { makeRateLimiter } from './rate_limit.mjs';
+
+const PgSession = connectPgSimple(session);
+// passport's default singleton accumulates strategies + (de)serializers
+// across every configureAuth() call. That's harmless for one-shot
+// production boots, but in tests (and in any hot-reload scenario) a
+// stale deserializer from the previous build can short-circuit the chain
+// — `done(null, false)` from a closure pointing at an already-ended pg
+// pool stops the cascade before the live deserializer runs, silently
+// 401-ing every request. Instantiating a fresh Passport here per
+// buildApp() keeps the auth surface tied to the lifetime of its owning
+// db pool.
+function newPassport() {
+  // The constructor lives on the default export as `Passport`. Falling
+  // back to the named import keeps this resilient to bundler differences.
+  const PassportCtor = Passport || passportDefault.Passport;
+  return new PassportCtor();
+}
 
 // Same-origin relative path or '/' — rejects protocol-relative ('//evil.com')
 // and absolute URLs so a crafted `?next=` can't turn the relay into an open
@@ -50,10 +68,29 @@ function newGuestName() {
 }
 
 export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
+  // Persist sessions in Postgres. With the default MemoryStore the session
+  // record evaporates on every process restart (cold start on Cloud Run, a
+  // redeploy, the idle reaper), and every signed-in user gets silently
+  // logged out — the cookie is still valid client-side, but passport's
+  // deserializeUser sees nothing in the store and req.user becomes
+  // undefined. The schema for the `session` table lives in schema.sql so
+  // openDb() creates it before this constructor runs.
+  const sessionStore = new PgSession({
+    pool: db,
+    tableName: 'session',
+    // We create the table ourselves in schema.sql so the library doesn't
+    // need to do its own (separate, non-idempotent) bootstrap query.
+    createTableIfMissing: false,
+  });
   const sessionParser = session({
+    store: sessionStore,
     secret: serverSecret,
     resave: false,
     saveUninitialized: false,
+    // rolling: true keeps the cookie's 30-day window sliding on activity,
+    // so an actively-used session doesn't quietly age out from underneath
+    // someone who plays a couple games a week.
+    rolling: true,
     cookie: {
       httpOnly: true,
       sameSite: 'lax',
@@ -62,6 +99,7 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
     },
   });
   app.use(sessionParser);
+  const passport = newPassport();
   app.use(passport.initialize());
   app.use(passport.session());
 
@@ -70,7 +108,16 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
     try {
       const u = await getUser(db, id);
       done(null, u || null);
-    } catch (e) { done(e); }
+    } catch (e) {
+      // A transient DB error here used to bubble up as a 500 on every
+      // single request — sign-in pages, the lobby, the games list. Log it
+      // and tell passport "no user right now" instead: the cookie stays
+      // valid, the user appears signed out for the duration of the blip,
+      // and the next request succeeds once the pool recovers. Re-auth is
+      // not required because the session id in the cookie is untouched.
+      console.error('deserializeUser: db lookup failed, treating as logged-out:', e);
+      done(null, false);
+    }
   });
 
   const adapt = (provider) => async (accessToken, refreshToken, profile, done) => {
@@ -176,7 +223,7 @@ export function configureAuth(app, { db, serverSecret, publicUrl, env }) {
     });
   });
 
-  return { sessionParser, passport };
+  return { sessionParser, passport, sessionStore };
 }
 
 export function requireAuth(req, res, next) {

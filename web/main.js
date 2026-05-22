@@ -145,10 +145,67 @@ function setOnline(v) {
   document.body.classList.toggle('is-offline', !online);
   ensureOfflineBanner();
   if (!location.hash || location.hash === '#/' || location.hash === '#') renderLobby();
+  // When the browser comes back online, short-circuit any reconnect-backoff
+  // timer the relay is sitting on so the user doesn't stare at "Reconnecting…"
+  // for up to 30s when their network has actually recovered. Symmetrical:
+  // when the browser goes offline there's nothing to push.
+  if (v && active?.isOnline) {
+    try { active.conn?.reconnect?.(); } catch (_) {}
+  }
+  // Also re-validate the session: a long offline period (laptop suspend, a
+  // tab in the background overnight) is the most likely time for the server
+  // to have restarted and dropped our session record. revalidateSession
+  // forces a fresh /api/me round-trip and re-renders so a stale "signed in"
+  // UI flips to the sign-in buttons (or stays signed in if the session
+  // store kept us alive).
+  if (v) revalidateSession();
 }
 window.addEventListener('online',  () => setOnline(true));
 window.addEventListener('offline', () => setOnline(false));
 if (!online) document.body.classList.add('is-offline');
+
+// Re-check session when the tab regains focus, for the same reason: a long
+// background period is when the server is most likely to have lost our
+// session, and we don't want the user to attempt a game action and only
+// then discover they've been logged out.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && online) revalidateSession();
+});
+
+// Force a /api/me check; if the server-side session is gone, drop `me`
+// locally and re-render so the UI reflects reality instead of showing a
+// stale "Hi, Alice" with all signed-in actions silently 401-ing. Skips
+// when no me was set (we'd already be in the signed-out state).
+let _revalidateInFlight = null;
+async function revalidateSession() {
+  if (_revalidateInFlight) return _revalidateInFlight;
+  _revalidateInFlight = (async () => {
+    try {
+      const r = await fetch('/api/me', { cache: 'no-store' });
+      if (r.ok) {
+        const fresh = await r.json();
+        if (!me || me.id !== fresh.id) {
+          me = fresh;
+          if (typeof route === 'function') route();
+        } else {
+          me = fresh;
+        }
+      } else if (r.status === 401) {
+        if (me !== null) {
+          me = null;
+          if (typeof route === 'function') route();
+        }
+      }
+      // Any other status (500, network blip) is left untouched — we don't
+      // want a transient backend error to mark the user as signed out.
+    } catch (_) {
+      /* network error: leave `me` alone, the UI will retry on next visibility/online event */
+    } finally {
+      _revalidateInFlight = null;
+    }
+  })();
+  return _revalidateInFlight;
+}
 
 // ---- iOS A2H hint ----
 function isIOSSafari() {
@@ -324,7 +381,13 @@ function renderLobby() {
 }
 
 async function signOut() {
-  await fetch('/auth/logout', { method: 'POST' });
+  // Always wipe the local view of `me`, even if the network call to
+  // /auth/logout fails — otherwise a user clicking "Sign out" on a flaky
+  // connection sees nothing happen and the UI keeps showing them as signed
+  // in. The server-side session ages out on its own; the local cookie also
+  // gets cleared whenever the server actually receives a logout.
+  try { await fetch('/auth/logout', { method: 'POST' }); }
+  catch (_) { /* still sign out locally */ }
   me = null;
   route();
 }

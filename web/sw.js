@@ -16,7 +16,7 @@
 // the cache atomically (see activate handler) and surfaces the "Update
 // available" banner wired up in main.js.
 
-const BUILD_ID = '2f592a2d0818';
+const BUILD_ID = '4341235b7dd1';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
