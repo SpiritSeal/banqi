@@ -40,6 +40,22 @@ TEST_CASE("Game: rejects move when game is terminal (after resign)") {
     CHECK_THROWS(g.apply_flip(0, 1));
 }
 
+// Regression for #77: Game::apply_move used to fall straight into is_legal
+// without an explicit bounds check, so a from < 0 (e.g. a flip-shaped intent
+// the JS layer didn't intercept) would surface as a confusing "illegal move"
+// or, in some build modes, an Emscripten abort. The explicit range check now
+// throws "apply_move: cells out of range" before is_legal is even consulted.
+TEST_CASE("Game: apply_move rejects out-of-range cells with a clean throw") {
+    MockPrng p(11);
+    auto g = Game::create(p);
+    CHECK_THROWS_WITH_AS(g.apply_move(0, -1, 0),
+                         "apply_move: cells out of range", std::runtime_error);
+    CHECK_THROWS_WITH_AS(g.apply_move(0, 0, BanqiRules::CELLS),
+                         "apply_move: cells out of range", std::runtime_error);
+    CHECK_THROWS_WITH_AS(g.apply_move(0, 5, 5),
+                         "apply_move: cells out of range", std::runtime_error);
+}
+
 TEST_CASE("Game: snapshot round-trip preserves layout and state") {
     MockPrng p(7);
     auto g = Game::create(p);
