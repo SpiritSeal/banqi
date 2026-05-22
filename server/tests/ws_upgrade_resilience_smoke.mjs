@@ -23,23 +23,34 @@ import { fakeBanqiModule } from './fixtures/fake_banqi.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql:///banqi_test';
 
+async function pickFreePort() {
+  const { createServer } = await import('node:net');
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.listen(0, () => {
+      const p = probe.address().port;
+      probe.close(() => resolve(p));
+    });
+  });
+}
+
 let app, port;
 
 before(async () => {
   process.env.AUTH_DEV = '1';
   process.env.SERVER_SECRET = 'test-secret-do-not-use-in-prod';
+  port = await pickFreePort();
   app = await buildApp({
     databaseUrl: DATABASE_URL,
     serverSecret: process.env.SERVER_SECRET,
-    publicUrl: 'http://localhost',
+    publicUrl: `http://localhost:${port}`,
     envOverride: process.env,
     banqiModule: fakeBanqiModule(),
   });
   await app.db.query(
     'TRUNCATE match_requests, friends, elo_history, game_events, game_state, games, users, "session" RESTART IDENTITY CASCADE'
   );
-  await new Promise((r) => app.server.listen(0, r));
-  port = app.server.address().port;
+  await new Promise((r) => app.server.listen(port, r));
 });
 
 after(async () => {
@@ -97,7 +108,8 @@ describe('WebSocket upgrade resilience', () => {
     const bob   = await signInDev('UpgradeIntruder');
     const game = await (await fetch(`http://localhost:${port}/api/games`, {
       method: 'POST',
-      headers: { Cookie: alice, 'Content-Type': 'application/json' },
+      headers: { Cookie: alice, 'Content-Type': 'application/json',
+                 Origin: `http://localhost:${port}` },
       body: '{}',
     })).json();
     // Bob is a real user but never joined Alice's game; the upgrade must
@@ -115,7 +127,8 @@ describe('WebSocket upgrade resilience', () => {
     const alice = await signInDev('UpgradeAliceThrow');
     const game = await (await fetch(`http://localhost:${port}/api/games`, {
       method: 'POST',
-      headers: { Cookie: alice, 'Content-Type': 'application/json' },
+      headers: { Cookie: alice, 'Content-Type': 'application/json',
+                 Origin: `http://localhost:${port}` },
       body: '{}',
     })).json();
 
