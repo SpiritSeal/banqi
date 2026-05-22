@@ -2,7 +2,15 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+# Same ref (PR or branch) cancels older in-progress runs. Pushes to main
+# don't cancel each other so every merge commit gets verified end-to-end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -227,3 +235,39 @@ jobs:
 
       - name: PWA offline smoke
         run: node tests/pwa_smoke.mjs
+
+  timing:
+    name: Timing summary
+    needs: [test, server, wasm-smoke, playwright]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Per-step durations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '
+              .jobs
+              | map(select(.name != "Timing summary"))
+              | .[]
+              | (
+                  "## \(.name) — \(if .started_at and .completed_at
+                    then (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) | floor | tostring) + "s"
+                    else "n/a" end) (\(.conclusion // "running"))"
+                ),
+                "",
+                "| Step | Seconds |",
+                "|------|---------|",
+                (
+                  .steps[]
+                  | "| \(.name) | \(if .started_at and .completed_at
+                      then (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) | floor | tostring)
+                      else "-" end) |"
+                ),
+                ""
+            ' >> "$GITHUB_STEP_SUMMARY"
