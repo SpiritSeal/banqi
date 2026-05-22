@@ -154,6 +154,7 @@ board-input-smoke: wasm
 playwright: stamp-sw
 	node tests/online_game_teleport_smoke.mjs
 	node tests/view_lifecycle_smoke.mjs
+	node tests/view_lifecycle_fuzz.mjs
 	node tests/board_input_browser.mjs
 	node tests/pwa_smoke.mjs
 
