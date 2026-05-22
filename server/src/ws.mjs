@@ -165,14 +165,24 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     sessionParser(req, {}, () => {
       passport.initialize()(req, {}, () => {
         passport.session()(req, {}, async () => {
-          if (!req.user) { socket.destroy(); return; }
-          const session = await engine.getSession(gameId);
-          if (!session) { socket.destroy(); return; }
-          const pi = session.playerIndexFor(req.user.id);
-          if (pi < 0) { socket.destroy(); return; }
-          wss.handleUpgrade(req, socket, head, (ws) => {
-            wss.emit('connection', ws, req, session, pi);
-          });
+          // Wrap the async DB-lookup path so a thrown engine.getSession
+          // (e.g. transient pg pool error) destroys the socket cleanly
+          // instead of leaving the upgrade half-completed. Without the
+          // try/catch the client sits in "connecting…" until its own
+          // socket timeout fires — potentially minutes.
+          try {
+            if (!req.user) { socket.destroy(); return; }
+            const session = await engine.getSession(gameId);
+            if (!session) { socket.destroy(); return; }
+            const pi = session.playerIndexFor(req.user.id);
+            if (pi < 0) { socket.destroy(); return; }
+            wss.handleUpgrade(req, socket, head, (ws) => {
+              wss.emit('connection', ws, req, session, pi);
+            });
+          } catch (e) {
+            console.error('ws upgrade failed:', e);
+            try { socket.destroy(); } catch (_) {}
+          }
         });
       });
     });
@@ -181,6 +191,14 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
   wss.on('connection', (ws, req, session, playerIndex) => {
     const userId = req.user.id;
     const entry = { ws, userId, playerIndex };
+    // isAlive drives the heartbeat reaper. Each interval tick: any peer
+    // still at isAlive=false (didn't pong since the previous ping) gets
+    // terminated, freeing the room slot. Without this the server treats
+    // half-dead sockets — phones putting the tab to sleep, NAT rebinds,
+    // VPN reconnects — as live peers forever and never broadcasts state
+    // pushes through their dropped TCP connection.
+    entry.isAlive = true;
+    ws.on('pong', () => { entry.isAlive = true; });
     let peers = rooms.get(session.gameId);
     if (!peers) { peers = new Set(); rooms.set(session.gameId, peers); }
     peers.add(entry);
@@ -221,16 +239,36 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     });
   });
 
-  // Heartbeat: drop dead connections every 30s. Capture the handle so the
-  // returned close() can clear it; .unref() is belt-and-braces so a forgotten
-  // close() doesn't keep the process alive on its own.
-  const heartbeat = setInterval(() => {
+  // Heartbeat: actively reap dead connections. Each tick, any peer that
+  // didn't send a pong since the previous ping is terminated (.terminate
+  // skips the close handshake and rips the TCP connection down immediately
+  // so its 'close' handler runs synchronously and the room slot frees).
+  // Surviving peers get a fresh ping and have until next tick to respond.
+  //
+  // Without the isAlive/pong/terminate cycle the previous heartbeat was a
+  // no-op for stability: ws.ping() against a half-closed TCP socket
+  // succeeds at the API level but the bytes never reach the peer, so we'd
+  // happily fan out state pushes into the void and the room would fill
+  // with phantom peers across a long-running game.
+  //
+  // .unref() is belt-and-braces so a forgotten close() doesn't keep the
+  // process alive on its own.
+  const HEARTBEAT_INTERVAL_MS = 30_000;
+  function runHeartbeat() {
     for (const set of rooms.values()) {
       for (const e of set) {
+        if (e.isAlive === false) {
+          try { e.ws.terminate(); } catch (_) {}
+          // 'close' handler removes the entry from the room set; skip to
+          // the next peer so we don't ping an already-terminated socket.
+          continue;
+        }
+        e.isAlive = false;
         try { e.ws.ping(); } catch (_) {}
       }
     }
-  }, 30_000);
+  }
+  const heartbeat = setInterval(runHeartbeat, HEARTBEAT_INTERVAL_MS);
   heartbeat.unref();
 
   function close() {
@@ -239,5 +277,8 @@ export function attachWebSocket(server, { db, sessionParser, passport, engine })
     return new Promise((resolve) => wss.close(() => resolve()));
   }
 
-  return { wss, close };
+  // `rooms` and `runHeartbeat` are exposed for the heartbeat reaper test —
+  // they're not part of the public WS contract and shouldn't be relied on
+  // from production code.
+  return { wss, close, _rooms: rooms, _runHeartbeat: runHeartbeat };
 }

@@ -5,6 +5,16 @@
 // Methods: .send(frame: object), .close(), .reconnect()
 // Property: .open  (bool)
 
+// Pure function so a Node test can pin the backoff curve without spinning
+// up a full WebSocket. Capped attempts at 6 (32s base + up-to-30% jitter)
+// so a long-running disconnect doesn't blow past 30s + change in delay.
+// `rand` is injectable for deterministic tests.
+export function computeBackoffDelay(attempt, rand = Math.random) {
+  const base = Math.min(30000, 1000 * 2 ** Math.min(Math.max(attempt, 1) - 1, 5));
+  const jitter = base * 0.3 * rand();
+  return Math.round(base + jitter);
+}
+
 export class RelayConnection {
   constructor(url) {
     this._url = url;
@@ -45,7 +55,11 @@ export class RelayConnection {
   _scheduleReconnect() {
     if (this._reconnectTimer) return;
     const attempt = ++this._reconnectAttempts;
-    const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt - 1, 5));
+    // Exponential backoff (1s, 2s, 4s, ... 32s) with up-to-30% jitter so a
+    // server restart or fleet blip doesn't trigger a synchronized reconnect
+    // storm from every client at the same wall-clock instants. Cap the base
+    // at 30s so reconnect latency stays acceptable for live games.
+    const delay = computeBackoffDelay(attempt);
     this._emit('reconnecting', { attempt, delayMs: delay });
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;

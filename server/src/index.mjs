@@ -83,7 +83,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
 
   app.use(express.json({ limit: '64kb' }));
 
-  const { sessionParser, passport } = configureAuth(app, {
+  const { sessionParser, passport, sessionStore } = configureAuth(app, {
     db, serverSecret, publicUrl, env: envOverride,
   });
 
@@ -126,6 +126,11 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   async function close() {
     await ws.close();
     engine.close();
+    // connect-pg-simple registers a self-unref'd prune timer; calling close()
+    // clears it eagerly so lifecycle_smoke.mjs sees a clean handle count.
+    // Tolerate sessionStore.close() rejecting if the pool was already ended
+    // out from under it.
+    try { await sessionStore?.close(); } catch (_) {}
     await db.end();
     await new Promise((resolve) => {
       // server.close() errors with "Server is not running" if listen() was
@@ -136,7 +141,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
     });
   }
 
-  return { app, server, db, engine, close };
+  return { app, server, db, engine, ws, close };
 }
 
 const isMain = import.meta.url === `file://${process.argv[1]}`;

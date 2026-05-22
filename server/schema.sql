@@ -170,3 +170,17 @@ ALTER TABLE games ADD COLUMN IF NOT EXISTS clock_state_json TEXT;
 -- stalemate-loss) remain unmarked. Draws are tagged via game_events.payload
 -- .end_reason instead (mutual_agreement | threefold_repetition | no_progress).
 ALTER TABLE elo_history ADD COLUMN IF NOT EXISTS loss_reason TEXT;
+
+-- Persistent session store used by express-session via connect-pg-simple.
+-- Without this, sessions live in MemoryStore and every process restart logs
+-- every user out — the cookie persists but the server-side record is gone, so
+-- passport's deserializeUser sees nothing and the user reverts to anonymous.
+-- Schema mirrors connect-pg-simple's table.sql verbatim so the library can
+-- read and write without `createTableIfMissing`.
+CREATE TABLE IF NOT EXISTS "session" (
+  "sid"    VARCHAR     NOT NULL COLLATE "default",
+  "sess"   JSON        NOT NULL,
+  "expire" TIMESTAMP(6) NOT NULL,
+  CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE
+);
+CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
