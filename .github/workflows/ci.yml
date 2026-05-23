@@ -2,7 +2,15 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+# Same ref (PR or branch) cancels older in-progress runs. Pushes to main
+# don't cancel each other so every merge commit gets verified end-to-end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -18,8 +26,48 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: make test
 
+  # Build WASM once and share with the three jobs below via an artifact.
+  # Previously each of server, wasm-smoke, playwright installed emsdk and ran
+  # `make wasm` independently — ~3× duplicated work per CI run.
+  build-wasm:
+    name: Build WebAssembly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Emscripten
+        uses: actions/cache@v4
+        with:
+          path: emsdk
+          key: emsdk-${{ runner.os }}-latest
+
+      - name: Install Emscripten (emsdk)
+        run: |
+          if [ ! -d emsdk ]; then
+            git clone https://github.com/emscripten-core/emsdk.git
+          fi
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build WebAssembly
+        run: |
+          source emsdk/emsdk_env.sh
+          make wasm
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-build
+          path: |
+            web/banqi.js
+            web/banqi.wasm
+          if-no-files-found: error
+          retention-days: 1
+
   server:
     name: Relay server tests
+    needs: build-wasm
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -42,28 +90,11 @@ jobs:
         with:
           node-version: '20'
 
-      # The server loads the Banqi WASM in-process to validate every intent,
-      # so this job needs the compiled module. Cache emsdk so cold-start cost
-      # is paid once.
-      - name: Cache Emscripten
-        uses: actions/cache@v4
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
         with:
-          path: emsdk
-          key: emsdk-${{ runner.os }}-latest
-
-      - name: Install Emscripten (emsdk)
-        run: |
-          if [ ! -d emsdk ]; then
-            git clone https://github.com/emscripten-core/emsdk.git
-          fi
-          cd emsdk
-          ./emsdk install latest
-          ./emsdk activate latest
-
-      - name: Build WebAssembly
-        run: |
-          source emsdk/emsdk_env.sh
-          make wasm
+          name: wasm-build
+          path: web/
 
       - name: Install relay deps
         working-directory: server
@@ -77,6 +108,7 @@ jobs:
 
   wasm-smoke:
     name: WASM smoke (in-process)
+    needs: build-wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,25 +121,11 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Cache Emscripten
-        uses: actions/cache@v4
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
         with:
-          path: emsdk
-          key: emsdk-${{ runner.os }}-latest
-
-      - name: Install Emscripten (emsdk)
-        run: |
-          if [ ! -d emsdk ]; then
-            git clone https://github.com/emscripten-core/emsdk.git
-          fi
-          cd emsdk
-          ./emsdk install latest
-          ./emsdk activate latest
-
-      - name: Build WebAssembly
-        run: |
-          source emsdk/emsdk_env.sh
-          make wasm
+          name: wasm-build
+          path: web/
 
       - name: Install npm deps
         run: npm install
@@ -138,6 +156,7 @@ jobs:
 
   playwright:
     name: Playwright end-to-end
+    needs: build-wasm
     runs-on: ubuntu-latest
     # Postgres needed by tests that boot the real relay (e.g.
     # online_game_teleport_smoke). The browser-only tests
@@ -163,31 +182,17 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Cache Emscripten
-        uses: actions/cache@v4
-        with:
-          path: emsdk
-          key: emsdk-${{ runner.os }}-latest
-
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package.json') }}
 
-      - name: Install Emscripten (emsdk)
-        run: |
-          if [ ! -d emsdk ]; then
-            git clone https://github.com/emscripten-core/emsdk.git
-          fi
-          cd emsdk
-          ./emsdk install latest
-          ./emsdk activate latest
-
-      - name: Build WebAssembly
-        run: |
-          source emsdk/emsdk_env.sh
-          make wasm
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-build
+          path: web/
 
       - name: Install root deps
         run: npm install --no-audit --no-fund
@@ -227,3 +232,39 @@ jobs:
 
       - name: PWA offline smoke
         run: node tests/pwa_smoke.mjs
+
+  timing:
+    name: Timing summary
+    needs: [test, build-wasm, server, wasm-smoke, playwright]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Per-step durations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --paginate \
+            --jq '
+              .jobs
+              | map(select(.name != "Timing summary"))
+              | .[]
+              | (
+                  "## \(.name) — \(if .started_at and .completed_at
+                    then (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) | floor | tostring) + "s"
+                    else "n/a" end) (\(.conclusion // "running"))"
+                ),
+                "",
+                "| Step | Seconds |",
+                "|------|---------|",
+                (
+                  .steps[]
+                  | "| \(.name) | \(if .started_at and .completed_at
+                      then (((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) | floor | tostring)
+                      else "-" end) |"
+                ),
+                ""
+            ' >> "$GITHUB_STEP_SUMMARY"
