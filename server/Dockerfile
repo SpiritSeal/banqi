@@ -38,6 +38,16 @@ COPY scripts/stamp-sw.mjs /tmp/stamp-sw.mjs
 RUN node /tmp/stamp-sw.mjs --web /web --ai /ai && rm /tmp/stamp-sw.mjs
 ENV NODE_ENV=production
 ENV PORT=8080
+# This image is meant to run behind a TLS-terminating reverse proxy (Cloud
+# Run, nginx, Cloudflare). PUBLIC_URL=https://… puts the session cookie in
+# Secure mode, which makes express-session require req.secure === true; that
+# in turn requires Express to trust the proxy's X-Forwarded-Proto header.
+# Without this default, deploys silently drop the session Set-Cookie on the
+# OAuth callback and every sign-in (GitHub / Google / dev) lands on
+# /?auth=fail with no session. Override with `-e TRUST_PROXY=` if exposing
+# the container directly without a proxy in front (rare; also disables the
+# per-IP guest-session rate limit).
+ENV TRUST_PROXY=1
 EXPOSE 8080
 USER node
 CMD ["node", "src/index.mjs"]
