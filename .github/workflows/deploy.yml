@@ -50,6 +50,18 @@ jobs:
       - name: Stamp service worker with built WASM
         run: node scripts/stamp-sw.mjs
 
+      # Share the compiled WASM with deploy-cloudrun so it doesn't have to
+      # reinstall emsdk and rebuild from source.
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-build
+          path: |
+            web/banqi.js
+            web/banqi.wasm
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v4
 
@@ -91,25 +103,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Emscripten
-        uses: actions/cache@v4
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
         with:
-          path: emsdk
-          key: emsdk-${{ runner.os }}-latest
-
-      - name: Install Emscripten (emsdk)
-        run: |
-          if [ ! -d emsdk ]; then
-            git clone https://github.com/emscripten-core/emsdk.git
-          fi
-          cd emsdk
-          ./emsdk install latest
-          ./emsdk activate latest
-
-      - name: Build WebAssembly (needed for Docker image)
-        run: |
-          source emsdk/emsdk_env.sh
-          make wasm
+          name: wasm-build
+          path: web/
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
