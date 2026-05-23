@@ -153,9 +153,25 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
   async function createGame(gameId, hostUserId, mode = 'standard',
                             firstMoverIndex = null,
                             timeLimitMs = null, incrementMs = 0) {
-    const wasm = mode === 'capture_general'
+    let wasm = mode === 'capture_general'
       ? Module.Game.createWithMode('capture_general')
       : Module.Game.create();
+    // Pin side_to_move_player on the freshly-created WASM Game to match the
+    // directed-challenge first-mover. Module.Game.create() always starts at
+    // seat 0; without this, when the recipient (seat 1) was picked as
+    // first-mover the rules engine rejects their opening flip with "not your
+    // turn" even though every other layer (the games row, the session
+    // firstMoverIndex guard, the client banner) tells them it IS their turn.
+    // The public create() surface has no initial-side parameter, so we route
+    // through fromSnapshot, which exists for snapshot-restore and already
+    // calls set_initial_side internally.
+    if (firstMoverIndex === 1 || firstMoverIndex === 0) {
+      const snap = JSON.parse(wasm.snapshotJson());
+      if (snap.side_to_move_player !== firstMoverIndex) {
+        snap.side_to_move_player = firstMoverIndex;
+        wasm = Module.Game.fromSnapshot(JSON.stringify(snap));
+      }
+    }
     const snapshot = wasm.snapshotJson();
     await saveGameState(db, gameId, snapshot);
     const session = new Session(gameId, hostUserId, null, wasm, [], {

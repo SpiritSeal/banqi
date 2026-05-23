@@ -33,27 +33,32 @@ class FakeGame {
   static fromSnapshot(snapJson) {
     const g = new FakeGame();
     const snap = JSON.parse(snapJson);
-    g.mode            = snap.mode            ?? 'standard';
-    g._firstFlipDone  = snap.firstFlipDone   ?? false;
-    g._sideToMove     = snap.sideToMove      ?? 0;
-    g._gameOver       = snap.gameOver        ?? false;
-    g._winner         = snap.winner          ?? null;
-    g._player0Color   = snap.player0Color    ?? 0;
-    g._player1Color   = snap.player1Color    ?? 0;
-    g._cells          = snap.cells           ?? g._cells;
+    g.mode            = snap.mode               ?? 'standard';
+    g._firstFlipDone  = snap.first_flip_done    ?? false;
+    g._sideToMove     = snap.side_to_move_player ?? 0;
+    g._gameOver       = snap.game_over          ?? false;
+    g._winner         = snap.winner             ?? null;
+    g._player0Color   = snap.player0_color      ?? 0;
+    g._player1Color   = snap.player1_color      ?? 0;
+    g._cells          = snap.cells              ?? g._cells;
     return g;
   }
 
+  // Snapshot field names mirror the real C++ engine (src/game.cpp
+  // snapshot_json). The server-side fix that pins side_to_move_player when a
+  // directed-challenge first-mover was chosen mutates this field by name on
+  // the snapshot JSON, so the fake has to use the same names for tests to
+  // exercise that path.
   snapshotJson() {
     return JSON.stringify({
-      mode:           this.mode,
-      firstFlipDone:  this._firstFlipDone,
-      sideToMove:     this._sideToMove,
-      gameOver:       this._gameOver,
-      winner:         this._winner,
-      player0Color:   this._player0Color,
-      player1Color:   this._player1Color,
-      cells:          this._cells,
+      mode:                this.mode,
+      first_flip_done:     this._firstFlipDone,
+      side_to_move_player: this._sideToMove,
+      game_over:           this._gameOver,
+      winner:              this._winner,
+      player0_color:       this._player0Color,
+      player1_color:       this._player1Color,
+      cells:               this._cells,
     });
   }
 
@@ -80,15 +85,19 @@ class FakeGame {
 
   _legalMovesForViewer(viewerIndex) {
     if (this._gameOver) return [];
+    // Mirror BanqiRules::legal_moves: returns empty unless the viewer IS the
+    // side to move, both pre- and post-first-flip. The previous fake gave
+    // every face-down cell to either side pre-flip, hiding the bug where the
+    // server didn't reflect a directed-challenge first-mover in the WASM's
+    // side_to_move_player.
+    if (viewerIndex !== this._sideToMove) return [];
     if (!this._firstFlipDone) {
-      // Pre-flip: any face-down cell is flippable, for either side.
       const m = [];
       for (let i = 0; i < 32; i++) {
         if (this._cells[i].state === 'facedown') m.push({ from: -1, to: i });
       }
       return m;
     }
-    if (viewerIndex !== this._sideToMove) return [];
     const myColor = viewerIndex === 0 ? this._player0Color : this._player1Color;
     const moves = [];
     for (let i = 0; i < 32; i++) {
@@ -107,6 +116,12 @@ class FakeGame {
 
   applyFlip(pi, cell) {
     if (this._gameOver) throw new Error('game over');
+    // Mirror Game::check_turn in the real engine: side_to_move_player_ is
+    // authoritative for whose flip is legal, including pre-first-flip. The
+    // previous fake silently accepted any side's opening flip, masking the
+    // bug where a directed-challenge seat-1 first-mover saw their flip
+    // rejected because the WASM default initial side is 0.
+    if (pi !== this._sideToMove) throw new Error('not your turn');
     if (!Number.isInteger(cell) || cell < 0 || cell >= 32) throw new Error('bad cell');
     if (this._cells[cell].state !== 'facedown') throw new Error('not facedown');
     // Deterministic reveal: cell index parity → color, fixed type/glyph.

@@ -443,3 +443,60 @@ TEST_CASE("Game: from_snapshot_json accepts legacy snapshots without draw fields
     CHECK(g3.rules().repetition_history().empty());
     CHECK(g3.rules().terminal_reason() == TerminalReason::None);
 }
+
+// Regression: a directed-challenge invite where the recipient (seat 1) was
+// chosen as first-mover was unflippable. Module::Game::create() always
+// initializes side_to_move_player_=0; the server's only public knob for
+// changing that is Game::from_snapshot_json (which internally calls
+// BanqiRules::set_initial_side from the snapshot's "side_to_move_player"
+// field). If a future refactor of the snapshot format silently drops that
+// field — or stops honouring it pre-first-flip — the server-side fix in
+// game_engine.mjs (mutating the snapshot before re-creating the WASM Game)
+// breaks invisibly. Pin the contract here.
+TEST_CASE("Game: from_snapshot_json honours side_to_move_player on a pre-first-flip snapshot") {
+    MockPrng p(123);
+    auto fresh = Game::create(p);
+    REQUIRE(fresh.side_to_move_player() == 0);
+    REQUIRE_FALSE(fresh.rules().first_flip_done());
+
+    // Mutate the snapshot so it claims seat 1 is to move, mirroring exactly
+    // what game_engine.mjs's createGame does for first_mover_index=1.
+    std::string snap = fresh.snapshot_json();
+    auto pos = snap.find("\"side_to_move_player\":0");
+    REQUIRE(pos != std::string::npos);
+    snap.replace(pos, std::string("\"side_to_move_player\":0").size(),
+                 "\"side_to_move_player\":1");
+
+    auto restored = Game::from_snapshot_json(snap);
+    CHECK(restored.side_to_move_player() == 1);
+    CHECK_FALSE(restored.rules().first_flip_done());
+
+    // Seat 0 cannot flip first — it's seat 1's turn.
+    CHECK_THROWS_WITH_AS(restored.apply_flip(0, 0),
+                         "not your turn", std::runtime_error);
+    // Seat 1's first flip is accepted: this is the exact bug that motivated
+    // the test. Before the fix, this throw was firing in production every
+    // time first_mover_pref was 'opponent'.
+    CHECK_NOTHROW(restored.apply_flip(1, 0));
+    CHECK(restored.rules().first_flip_done());
+    // Turn alternated correctly post-flip.
+    CHECK(restored.side_to_move_player() == 0);
+}
+
+// Same regression, post-fix-path: pre-first-flip legal_moves for the wrong
+// side must be empty so the client (which gates clicks on
+// legal_moves_for_me) can't double-rejection-roundtrip. Belt-and-braces with
+// the apply_flip throw above.
+TEST_CASE("Game: pre-first-flip with side_to_move_player=1, only seat 1 has legal moves") {
+    MockPrng p(99);
+    auto fresh = Game::create(p);
+    std::string snap = fresh.snapshot_json();
+    auto pos = snap.find("\"side_to_move_player\":0");
+    REQUIRE(pos != std::string::npos);
+    snap.replace(pos, std::string("\"side_to_move_player\":0").size(),
+                 "\"side_to_move_player\":1");
+    auto g = Game::from_snapshot_json(snap);
+
+    CHECK(g.rules().legal_moves(0).empty());
+    CHECK(g.rules().legal_moves(1).size() == 32);   // every face-down cell
+}
