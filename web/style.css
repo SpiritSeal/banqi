@@ -391,8 +391,6 @@ button:focus-visible, a.primary:focus-visible {
   box-shadow: var(--elev-1);
   transition: transform var(--dur-base) var(--ease-out), border-color var(--dur-fast), box-shadow var(--dur-fast);
   position: relative;
-  /* Don't clip the .card-badge that sits just outside the top edge. The
-     .card-deco is contained inside via its own positioning. */
 }
 .lobby-card:hover {
   border-color: var(--surface-border-strong);
@@ -443,22 +441,6 @@ button:focus-visible, a.primary:focus-visible {
 .lobby-card.primary-card:hover {
   box-shadow: 0 0 0 1px var(--accent-strong), var(--elev-2);
 }
-.lobby-card.primary-card .card-badge {
-  position: absolute;
-  top: -10px;
-  left: 16px;
-  background: var(--accent);
-  color: var(--primary-fg);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  padding: 3px 10px;
-  border-radius: var(--radius-pill);
-  text-transform: uppercase;
-  box-shadow: var(--elev-1);
-}
-.lobby-card:not(.primary-card) .card-badge { display: none; }
-
 .lobby-advanced-settings {
   margin-top: 10px;
   color: var(--muted);
