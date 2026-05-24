@@ -167,7 +167,7 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   //   4. Close the HTTP listener last so in-flight requests can drain.
   async function close() {
     await ws.close();
-    engine.close();
+    await engine.close();
     // connect-pg-simple registers a self-unref'd prune timer; calling close()
     // clears it eagerly so lifecycle_smoke.mjs sees a clean handle count.
     // Tolerate sessionStore.close() rejecting if the pool was already ended
