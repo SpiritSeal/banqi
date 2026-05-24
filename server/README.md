@@ -164,7 +164,7 @@ gcloud run jobs create banqi-ai-calibration --region=YOUR_REGION \
   --image=gcr.io/YOUR_PROJECT/banqi-relay:vapid \
   --command=node --args=scripts/calibrate_ai_elo.mjs \
   --set-secrets=DATABASE_URL=banqi-database-url:latest \
-  --task-timeout=2h \
+  --task-timeout=6h \
   --max-retries=1
 
 # Schedule it daily at 08:00 UTC. Cloud Scheduler authenticates to the
@@ -180,8 +180,14 @@ gcloud scheduler jobs create http banqi-ai-calibration-daily \
 The scheduler service account needs `roles/run.invoker` on the job, and
 the job's runtime service account needs read access to the
 `banqi-database-url` secret. With `--games 5` the job records 75 games
-(15 pairs × 5) per day; expect a wall clock of roughly an hour on a
-1-vCPU Cloud Run Job, dominated by Policy / Master pairings.
+(15 pairs × 5) per day. Expected wall clock on a 1-vCPU Cloud Run Job
+is **3–5 hours**, dominated by the four heavy-vs-heavy pairings (Master,
+Policy) where each game can take 5–10 minutes before terminating or
+hitting the move cap. Hence the 6h `--task-timeout` above. If you want
+faster turnaround, drop in a `policy_match_parallel.mjs`-style worker
+fan-out or run the script with `--max-moves 200` (calibration matches
+between two strong AIs that can't decide in 200 moves rarely change the
+outcome — they just keep drawing).
 
 A note on rating math: calibration games use the same K=40 the live
 `eloDelta` does, so individual days will move AI ratings noticeably.

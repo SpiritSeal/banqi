@@ -131,6 +131,13 @@ async function playGame(Module, diffByPlayer, maxMoves) {
       const st2 = JSON.parse(g.stateJson(-1));
       endReason = st2.terminal_reason || null;
     }
+    // Distinguish a real terminal (which the WASM engine tags) from one we
+    // synthesise by hitting our own --max-moves cap. The last event of a
+    // move-limit run otherwise records end_reason='none', which collides
+    // with mid-game events and makes calibration draws indistinguishable
+    // from real ones in the replay UI.
+    const willHitCap = !isOver && events.length + 1 >= maxMoves;
+    if (willHitCap) endReason = 'move_limit';
 
     events.push({
       seq:          events.length,
@@ -139,7 +146,7 @@ async function playGame(Module, diffByPlayer, maxMoves) {
       action,
       revealed,
       capture,
-      game_over:    isOver,
+      game_over:    isOver || willHitCap,
       winner:       g.winner(),
       end_reason:   endReason,
       draw_offered: false,
@@ -160,7 +167,10 @@ async function playGame(Module, diffByPlayer, maxMoves) {
   return {
     winnerColor,
     winnerPlayerIndex,
-    endReason: finalState.terminal_reason || null,
+    // Prefer the last event's end_reason — that's the value we synthesise
+    // for move-limit games. Falling back to the WASM state's terminal_reason
+    // is only correct when the engine itself ended the game.
+    endReason: events.at(-1)?.end_reason ?? finalState.terminal_reason ?? null,
     events,
     finalSnapshot: g.snapshotJson(),
     moves: events.length,
