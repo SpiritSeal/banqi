@@ -13,6 +13,7 @@ import {
   friendInviteToken, verifyFriendInviteToken, parseCombinedToken,
 } from '../friend_tokens.mjs';
 import { asyncRoute } from '../util.mjs';
+import { sendToUser as sendPushToUser } from '../push.mjs';
 
 // by-token is the only path that mutates friendship via untrusted input
 // (a possibly-attacker-controlled token string), so the hourly budget is the
@@ -65,6 +66,20 @@ export function friendsRouter({ db, serverSecret, publicUrl }) {
         elo:          owner.elo,
       },
     });
+    // Notify the invite-link owner that someone used their link. Only fires
+    // on a brand-new friendship (idempotent re-posts are silent) and skips
+    // guest accounts to mirror the WS turn-notification policy. Fire-and-
+    // forget: a slow push service must not stall the HTTP response.
+    if (friend && friend.__isNew && owner.provider !== 'guest') {
+      const adderName = req.user.display_name || 'Someone';
+      sendPushToUser(db, owner.id, {
+        kind:  'friend',
+        title: 'New friend on Banqi',
+        body:  `${adderName} added you as a friend.`,
+        url:   './#/friends',
+        tag:   `banqi-friend-${req.user.id}`,
+      }).catch((e) => console.warn('push: friend-notify failed:', e.message || e));
+    }
   }));
 
   r.delete('/friends/:userId', requireAuth, friendRemoveLimiter, asyncRoute(async (req, res) => {
