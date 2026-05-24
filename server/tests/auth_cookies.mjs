@@ -98,6 +98,16 @@ describe('post-login ?next= redirect', () => {
     assert.equal(res.headers.get('location'), next);
   });
 
+  it('redirects to a canonical #/games/<id> route after dev sign-in', async () => {
+    const next = '/#/games/123';
+    const res = await fetch(
+      `${baseUrl}/auth/dev?name=Dave&next=${encodeURIComponent(next)}`,
+      { headers: { 'X-Forwarded-Proto': 'https' }, redirect: 'manual' },
+    );
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), next);
+  });
+
   it('rejects an off-origin ?next= and falls back to /', async () => {
     for (const evil of ['//evil.example.com', '/\\\\evil.example.com', 'https://evil.example.com', '']) {
       const res = await fetch(

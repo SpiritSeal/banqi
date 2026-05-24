@@ -9,8 +9,10 @@
 // The WASM module is only used for OTB + AI. Online games never instantiate
 // Module.Game on the client; the server is the only authority.
 //
-// Hash routing: #/ (lobby), #/g/<roomCode> (game), #/otb, #/ai,
+// Hash routing: #/ (lobby), #/games/<id> (game), #/otb, #/ai,
 //               #/dashboard, #/leaderboard, #/history, #/profile/<id>.
+// #/g/<roomCode> is a shareable invite alias that resolves to the canonical
+// #/games/<id> URL via location.replace once we look the code up.
 
 import createBanqiModule from './banqi.js';
 import { RelayConnection } from './relay.js';
@@ -254,15 +256,18 @@ async function refreshSession() {
 async function route() {
   const hash = location.hash || '#/';
   // Tear down any prior view's session resources first. Each view
-  // (`openOnlineGame`, `_startOTBGame`, `_startAIGame`) reassigns the
+  // (`openOnlineGameById`, `_startOTBGame`, `_startAIGame`) reassigns the
   // module-level `active`; without this the previous session's WebSocket
   // or local game state lingers, with handlers that close over `active`
   // and end up mutating the new view's state.
   disposeActive();
   updateNavActive(hash);
   applyNavAuthState();
+  const mid = hash.match(/^#\/games\/(\d+)$/);
+  if (mid) { announce('Game'); return openOnlineGameById(+mid[1]); }
+
   const m = hash.match(/^#\/g\/([0-9A-Za-z]+)$/);
-  if (m) { announce(`Game room ${m[1]}`); return openOnlineGame(m[1].toUpperCase()); }
+  if (m) { announce(`Game room ${m[1]}`); return openOnlineGameByRoom(m[1].toUpperCase()); }
 
   const mp = hash.match(/^#\/profile\/(\d+)$/);
   if (mp) { announce('Profile'); return renderProfile(+mp[1]); }
@@ -288,8 +293,8 @@ window.addEventListener('hashchange', route);
 function updateNavActive(hash) {
   const nav = document.getElementById('app-nav');
   if (!nav) return;
-  // Match by data-route prefix so #/g/CODE highlights nothing (we're inside a
-  // game, not on a top-level nav destination).
+  // Match by data-route prefix so in-game URLs (#/games/<id>, #/g/<code>)
+  // highlight nothing — we're inside a game, not on a top-level destination.
   for (const a of nav.querySelectorAll('a[data-route]')) {
     a.classList.toggle('active', a.dataset.route === hash || (a.dataset.route === '#/' && (hash === '' || hash === '#/' || hash === '#')));
   }
@@ -428,7 +433,7 @@ async function startOnlineGame() {
   });
   if (!res.ok) { toast('Could not create game. Try again.', { kind: 'error' }); return; }
   const g = await res.json();
-  location.hash = `#/g/${g.roomCode}`;
+  location.hash = `#/games/${g.id}`;
 }
 
 // ---- online (server-authoritative) game ----
@@ -445,10 +450,13 @@ function disposeActive() {
   active = null;
 }
 
-async function openOnlineGame(roomCode) {
-  // Belt-and-braces in case openOnlineGame is reached outside the normal
-  // router flow (e.g. the offline-retry button at #game-retry, which
-  // re-invokes openOnlineGame directly without going through route()).
+// Alias resolver for the shareable #/g/<roomCode> URL. Looks the code up,
+// then hands the URL bar to the canonical #/games/<id> route via
+// location.replace (so Back doesn't bounce between alias and canonical).
+// Signed-out callers stop here with the invite sign-in screen, because the
+// by-room lookup is requireAuth-gated — they have to come back through the
+// alias after sign-in.
+async function openOnlineGameByRoom(roomCode) {
   disposeActive();
   showView('game');
   $('game-header').innerHTML = `<div class="muted">Connecting to room <code>${roomCode}</code>…</div>`;
@@ -471,7 +479,7 @@ async function openOnlineGame(roomCode) {
       <div class="err">You're offline. Online play resumes when you reconnect.
       <button id="game-retry" class="link-btn">Retry</button> ·
       <a href="#/">Back to lobby</a></div>`;
-    $('game-retry').onclick = () => openOnlineGame(roomCode);
+    $('game-retry').onclick = () => openOnlineGameByRoom(roomCode);
     return;
   }
 
@@ -481,6 +489,55 @@ async function openOnlineGame(roomCode) {
     if (info.error) throw new Error(info.error);
   } catch (e) {
     $('game-header').innerHTML = `<div class="err">Couldn't find room <code>${roomCode}</code>.</div>`;
+    return;
+  }
+
+  // Hand off to the canonical URL. replace() fires hashchange, which re-enters
+  // route() and lands on openOnlineGameById(info.id).
+  location.replace(`#/games/${info.id}`);
+}
+
+async function openOnlineGameById(id) {
+  // Belt-and-braces in case openOnlineGameById is reached outside the normal
+  // router flow (e.g. the offline-retry button at #game-retry, which
+  // re-invokes us directly without going through route()).
+  disposeActive();
+  showView('game');
+  $('game-header').innerHTML = `<div class="muted">Loading game…</div>`;
+
+  if (!me) {
+    const header = $('game-header');
+    header.innerHTML = `
+      <div class="invite-signin">
+        <h2>You've been invited to a game</h2>
+        <p>Sign in to view this game. We'll bring you right back here.</p>
+        <div id="invite-signin-buttons"></div>
+        <p class="muted small"><a href="#/">← Back to lobby</a></p>
+      </div>`;
+    renderSignInButtons($('invite-signin-buttons'), `#/games/${id}`);
+    return;
+  }
+
+  if (!online) {
+    $('game-header').innerHTML = `
+      <div class="err">You're offline. Online play resumes when you reconnect.
+      <button id="game-retry" class="link-btn">Retry</button> ·
+      <a href="#/">Back to lobby</a></div>`;
+    $('game-retry').onclick = () => openOnlineGameById(id);
+    return;
+  }
+
+  let info;
+  try {
+    const r = await fetch(`/api/games/${id}`);
+    if (r.status === 404) {
+      $('game-header').innerHTML = `<div class="err">Game not found. <a href="#/">Back to lobby</a></div>`;
+      return;
+    }
+    info = await r.json();
+    if (info.error) throw new Error(info.error);
+  } catch (e) {
+    $('game-header').innerHTML = `<div class="err">Couldn't load this game. <a href="#/">Back to lobby</a></div>`;
     return;
   }
 
@@ -606,6 +663,7 @@ function maybeNotifyTurnTransition(wasMyTurnBefore) {
       : active.info?.host_name;
     Notify.onYourTurn({
       opponentName: opp || null,
+      gameId:   active.info?.id || null,
       roomCode: active.info?.room_code || null,
     });
   } else if (!nowMine && wasMyTurnBefore) {
@@ -818,7 +876,7 @@ function refreshGame() {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const g = await res.json();
-        location.hash = `#/g/${g.roomCode}`;
+        location.hash = `#/games/${g.id}`;
       } catch (e) {
         playAnotherBtn.disabled = false;
         toast('Could not start a new AI game.', { kind: 'error' });
@@ -1397,7 +1455,7 @@ async function openAIGame() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const g = await res.json();
-      location.hash = `#/g/${g.roomCode}`;
+      location.hash = `#/games/${g.id}`;
       return;
     } catch (e) {
       toast('Could not start AI game. Falling back to local play.', { kind: 'warn' });
@@ -2083,7 +2141,7 @@ function renderGameCard(g) {
   // delete button beside it as an absolutely-positioned sibling.
   return `
     <div class="${cardClass}" data-game-id="${g.id}" data-room="${escapeHtml(g.room_code)}">
-      <a class="game-card-link" href="#/g/${escapeHtml(g.room_code)}">
+      <a class="game-card-link" href="#/games/${g.id}">
         <div class="${avatarClass}" aria-hidden="true">${avatarChar}</div>
         <div class="gc-main">
           ${dot}<span class="gc-name">vs ${escapeHtml(oppLabel)}</span>
@@ -2517,7 +2575,7 @@ async function renderProfile(userId) {
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const g = await res.json();
-        location.hash = `#/g/${g.roomCode}`;
+        location.hash = `#/games/${g.id}`;
       } catch (e) {
         toast('Could not start AI game.', { kind: 'error' });
       }
@@ -3001,7 +3059,7 @@ async function renderFriends() {
         const res = await fetch(`/api/match-requests/${reqId}/accept`, { method: 'POST' });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) { toast(body.error || 'Could not accept.', { kind: 'error' }); return; }
-        if (body.room_code) { location.hash = `#/g/${body.room_code}`; return; }
+        if (body.game_id) { location.hash = `#/games/${body.game_id}`; return; }
         renderFriends();
       } else if (action === 'decline' && reqId) {
         const res = await fetch(`/api/match-requests/${reqId}/decline`, { method: 'POST' });

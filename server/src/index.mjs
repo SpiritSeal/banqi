@@ -150,8 +150,9 @@ export async function buildApp({ databaseUrl = DATABASE_URL, serverSecret = SERV
   app.use('/api', pushRouter({ db }));
 
   // SPA-style fallback: send index.html for unknown GETs that look like
-  // hash-routed pages, so deep links like /g/ROOMCODE work.
-  app.get(/^\/(g|dashboard|leaderboard|history|profile|friends|add-friend|challenge)\b/, (_req, res) => {
+  // hash-routed pages, so deep links like /games/123 (canonical) and the
+  // /g/ROOMCODE invite alias both serve the SPA shell.
+  app.get(/^\/(g|games|dashboard|leaderboard|history|profile|friends|add-friend|challenge)\b/, (_req, res) => {
     res.sendFile(join(WEB_DIR, 'index.html'));
   });
 

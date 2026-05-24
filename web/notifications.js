@@ -43,10 +43,10 @@ export function saveSettings(patch) {
 
 // Called from the game frame handler when the local player's side_to_move
 // transitions from "not me" → "me". Idempotent — safe to call repeatedly.
-export function onYourTurn({ opponentName, roomCode } = {}) {
+export function onYourTurn({ opponentName, gameId, roomCode } = {}) {
   const settings = getSettings();
   if (settings.sound)         playTurnCue();
-  if (settings.desktopAlerts) maybeShowDesktopAlert(opponentName, roomCode);
+  if (settings.desktopAlerts) maybeShowDesktopAlert(opponentName, gameId, roomCode);
   setTitleAlerted(true);
   bindVisibilityWatch();
 }
@@ -84,23 +84,28 @@ function bindVisibilityWatch() {
   });
 }
 
-function maybeShowDesktopAlert(opponentName, roomCode) {
+function maybeShowDesktopAlert(opponentName, gameId, roomCode) {
   if (!('Notification' in window)) return;
   if (Notification.permission !== 'granted') return;
   // Only nag the user when they're not actively looking at this tab. If the
   // tab is visible they can see the board update on their own.
   if (!document.hidden) return;
+  // Prefer the stable game id for both the collapse tag and the click target.
+  // roomCode is kept as a fallback only because pages opened before this
+  // change shipped may not have an id handy.
+  const dedupeKey = gameId || roomCode;
   try {
     const n = new Notification('Your turn in Banqi', {
       body: opponentName ? `${opponentName} played a move.` : 'Tap to play your move.',
-      tag:  roomCode ? `banqi-turn-${roomCode}` : 'banqi-turn',
+      tag:  dedupeKey ? `banqi-turn-${dedupeKey}` : 'banqi-turn',
       renotify: true,
       icon: './icons/icon-192.png',
       badge: './icons/icon-192.png',
     });
     n.onclick = () => {
       window.focus();
-      if (roomCode) location.hash = `#/g/${roomCode}`;
+      if (gameId)        location.hash = `#/games/${gameId}`;
+      else if (roomCode) location.hash = `#/g/${roomCode}`;
       n.close();
     };
   } catch (_) { /* some browsers throw when called too aggressively — ignore */ }

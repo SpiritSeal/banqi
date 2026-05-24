@@ -107,8 +107,13 @@ self.addEventListener('push', (event) => {
 
   const title = data.title || 'Your turn in Banqi';
   const body  = data.body  || 'Tap to play your move.';
-  const tag   = data.roomCode ? `banqi-turn-${data.roomCode}` : 'banqi-turn';
-  const url   = data.roomCode ? `./#/g/${data.roomCode}` : './';
+  // Prefer the stable game id; the roomCode branch is kept so push payloads
+  // emitted by older server builds (or still queued in delivery) keep working.
+  const dedupeKey = data.gameId || data.roomCode;
+  const tag = dedupeKey ? `banqi-turn-${dedupeKey}` : 'banqi-turn';
+  const url = data.gameId   ? `./#/games/${data.gameId}`
+            : data.roomCode ? `./#/g/${data.roomCode}`
+            : './';
 
   event.waitUntil(self.registration.showNotification(title, {
     body,

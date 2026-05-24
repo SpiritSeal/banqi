@@ -61,7 +61,7 @@ try {
   const aliceMe = await (await context.request.get(`${harness.baseUrl}/api/me`)).json();
   // Two games so the walk can hop between rooms — the canary path for
   // the teleport bug shape. Both are created by Alice; the SPA's
-  // openOnlineGame() handles both cases since she's the host.
+  // openOnlineGameById() handles both cases since she's the host.
   const gA = await (await context.request.post(`${harness.baseUrl}/api/games`, {
     headers: { 'Content-Type': 'application/json', 'Origin': harness.baseUrl },
     data: '{}',
@@ -98,8 +98,8 @@ try {
     '#/history',
     '#/friends',
     `#/profile/${aliceMe.id}`,
-    `#/g/${gA.roomCode}`,
-    `#/g/${gB.roomCode}`,
+    `#/games/${gA.id}`,
+    `#/games/${gB.id}`,
   ];
 
   const rand = mulberry32(SEED);
