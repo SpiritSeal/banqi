@@ -354,9 +354,9 @@ export function renderTranscript(container, replay, opts = {}) {
       <div class="transcript-controls" role="group" aria-label="Replay navigation">
         <button data-jump="first" type="button" aria-label="Go to initial position" ${N === 0 || step === 0 ? 'disabled' : ''} title="Initial position">|◀</button>
         <button data-jump="prev"  type="button" aria-label="Previous move" ${step === 0 ? 'disabled' : ''} title="Previous move">◀</button>
-        <span class="transcript-step" aria-live="polite">${N === 0 ? 'no moves' : (live ? `live (${N}/${N})` : `${step}/${N}`)}</span>
+        <span class="transcript-step${live ? '' : ' is-replaying'}" aria-live="polite">${N === 0 ? 'no moves' : (live ? `live (${N}/${N})` : `${step}/${N}`)}</span>
         <button data-jump="next"  type="button" aria-label="Next move" ${live || N === 0 ? 'disabled' : ''} title="Next move">▶</button>
-        <button data-jump="last"  type="button" aria-label="Latest position (live)" ${live || N === 0 ? 'disabled' : ''} title="Latest / Live">▶|</button>
+        <button data-jump="last"  type="button" class="${live ? '' : 'return-to-live'}" aria-label="Latest position (live)" ${live || N === 0 ? 'disabled' : ''} title="Latest / Live">▶|</button>
         ${exportBtn}
       </div>
     </div>`;
@@ -396,12 +396,8 @@ export function renderTranscript(container, replay, opts = {}) {
     rows = `<div class="transcript-list" role="list" aria-labelledby="transcript-heading">${items}</div>`;
   }
 
-  const banner = live
-    ? ''
-    : `<div class="replay-banner" role="status">Reviewing move ${step} of ${N}.
-         <button class="link-btn" data-jump="last" type="button">Return to live →</button></div>`;
-
-  container.innerHTML = `${banner}${header}${rows}`;
+  container.classList.toggle('is-replaying', !live);
+  container.innerHTML = `${header}${rows}`;
 
   const onJump = opts.onJump || (() => {});
   for (const btn of container.querySelectorAll('[data-jump]')) {

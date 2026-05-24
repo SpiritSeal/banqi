@@ -879,6 +879,7 @@ button.cell:disabled, button.cell[aria-disabled="true"] { cursor: default; }
   border: 1px solid var(--surface-border);
 }
 .game-meta .meta-row-status { font-size: 13px; color: var(--fg); gap: 18px; }
+.game-meta .meta-row-status.is-replaying #game-status-line { color: var(--accent); font-weight: 700; }
 .game-meta .meta-row-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .game-meta .meta-row-rematch {
   padding: 8px 10px;
@@ -1390,6 +1391,13 @@ table a:hover { text-decoration: underline; }
   min-width: 80px;
   text-align: center;
 }
+.transcript-step.is-replaying { color: var(--accent); font-weight: 700; }
+.transcript-controls button.return-to-live {
+  background: var(--accent-soft);
+  border-color: var(--accent-strong);
+  color: var(--accent);
+  font-weight: 700;
+}
 .transcript-list {
   display: flex;
   flex-direction: column;
@@ -1448,26 +1456,6 @@ table a:hover { text-decoration: underline; }
 .transcript-empty {
   padding: 10px;
   font-size: 13px;
-}
-.replay-banner {
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-strong);
-  color: var(--accent);
-  padding: 8px 14px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  margin-bottom: 10px;
-}
-.replay-badge {
-  display: inline-block;
-  background: var(--accent);
-  color: var(--primary-fg);
-  padding: 3px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-weight: 700;
-  margin-bottom: 4px;
-  letter-spacing: 0.04em;
 }
 
 /* ---- opponent-move flash ------------------------------------------ */
