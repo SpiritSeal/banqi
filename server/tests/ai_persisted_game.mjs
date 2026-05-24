@@ -10,7 +10,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildApp } from '../src/index.mjs';
-import { ensureAiUsers, getAiUserByDifficulty } from '../src/db.mjs';
+import { ensureAiUsers, getAiUserByDifficulty, AI_DIFFICULTIES } from '../src/db.mjs';
 import { WebSocket } from 'ws';
 
 const PORT = 19184;
@@ -266,5 +266,41 @@ describe('vs-AI persisted games', () => {
     assert.ok(view.state);
     // Side-to-move should now be 0 again (human's turn after AI replied).
     assert.equal(view.state.side_to_move, 0);
+  });
+});
+
+// Regression guard for the Policy-AI 400 (the lobby exposed `policy` but the
+// server whitelist + AI_USER_SEED didn't). The static half of the invariant
+// (UI / engine → AI_DIFFICULTIES) lives in ai_difficulty_registry.mjs so it
+// can run without Postgres or WASM; here we cover the DB + HTTP half: every
+// whitelisted difficulty must be seeded as a users row and accepted by
+// POST /api/games.
+describe('AI difficulty registry is fully provisioned end-to-end', () => {
+  it('ensureAiUsers seeds a users row for every entry in AI_DIFFICULTIES', async () => {
+    for (const d of AI_DIFFICULTIES) {
+      const u = await getAiUserByDifficulty(db, d);
+      assert.ok(u, `no AI user row was provisioned for difficulty '${d}' — `
+                 + `AI_USER_SEED is probably missing an entry`);
+      assert.equal(u.provider, 'ai');
+      assert.equal(u.provider_id, d);
+      assert.ok(typeof u.elo === 'number' && u.elo > 0,
+                `AI user '${d}' has a non-positive Elo seed (${u.elo})`);
+    }
+  });
+
+  it('POST /api/games accepts opponent=ai:<difficulty> for every entry in AI_DIFFICULTIES', async () => {
+    const alice = await signInDev('AliceAiMatrix');
+    for (const d of AI_DIFFICULTIES) {
+      const res = await authedFetch(alice, '/api/games', {
+        method: 'POST',
+        body: JSON.stringify({ mode: 'standard', opponent: `ai:${d}` }),
+      });
+      assert.equal(res.status, 200, `POST /api/games rejected opponent=ai:${d}`);
+      const created = await res.json();
+      const view = await (await authedFetch(alice, `/api/games/${created.id}`)).json();
+      assert.equal(view.status, 'playing', `game vs ai:${d} did not start in 'playing'`);
+      assert.equal(view.opponent_is_ai, true);
+      assert.equal(view.ai_difficulty, d);
+    }
   });
 });
