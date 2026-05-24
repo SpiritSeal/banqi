@@ -143,7 +143,12 @@ try {
   // above) and run the real renderGameCard path.
   await page.evaluate(() => { location.hash = '#/dashboard'; });
   await page.waitForSelector('#view-dashboard:not(.hidden)', { timeout: 10000 });
-  await page.waitForSelector('[data-game-id="4242"]', { timeout: 10000 });
+  // The "Completed" section is collapsed by default; expand it so the
+  // completed card is actually visible (and clickable). We toggle it via
+  // the production click delegate to also exercise that handler.
+  await page.waitForSelector('[data-action="toggle-completed"]', { timeout: 10000 });
+  await page.click('[data-action="toggle-completed"]');
+  await page.waitForSelector('[data-game-id="4242"]:visible', { timeout: 10000 });
 
   // Completed game has a share button; playing game does not.
   const completedHasShare = await page.locator('[data-game-id="4242"] [data-action="share"]').count();
