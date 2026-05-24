@@ -4,7 +4,7 @@
 // RelayConnection open. Its frame handlers closed over the module-level
 // `active` and corrupted B's UI when A received any event (e.g. an
 // opponent moved). Fix: web/main.js disposeActive() called from route()
-// and openOnlineGame(), plus an identity guard inside the frame handlers.
+// and openOnlineGameById(), plus an identity guard inside the frame handlers.
 //
 // What this test exercises:
 //   1. Boot the real relay (postgres-backed) on a random port.
@@ -144,7 +144,7 @@ try {
     const t = msg.text();
     if (!ignoreError(t)) pageErrors.push(`console: ${t}`);
   });
-  await page.goto(`${harness.baseUrl}/#/g/${gameA.roomCode}`);
+  await page.goto(`${harness.baseUrl}/#/games/${gameA.id}`);
   dbg('page navigated to game A');
   try {
     await waitFor(() => aliceInRoom(harness.ws._rooms, gameA.id, aliceMe.id), 5000,
@@ -159,7 +159,7 @@ try {
   // Navigate to game B (real hashchange, not a fresh page.goto, so the
   // existing JS context — including `active` and its leaked conn — is
   // the one under test).
-  await page.evaluate((hash) => { location.hash = hash; }, `#/g/${gameB.roomCode}`);
+  await page.evaluate((hash) => { location.hash = hash; }, `#/games/${gameB.id}`);
   dbg('navigated to game B');
   await waitFor(() => aliceInRoom(harness.ws._rooms, gameB.id, aliceMe.id), 5000,
                 'Alice WS to game B should register');
@@ -185,7 +185,7 @@ try {
   await page.waitForTimeout(500);
 
   check('Page URL still on game B',
-        page.url().endsWith(`#/g/${gameB.roomCode}`),
+        page.url().endsWith(`#/games/${gameB.id}`),
         `url=${page.url()}`);
 
   check('Alice not in game A room after Bob moves',

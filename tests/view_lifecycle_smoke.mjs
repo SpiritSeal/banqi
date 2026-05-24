@@ -64,7 +64,7 @@ try {
   await signInBrowserAs(context, harness.baseUrl, 'Alice');
 
   // Resolve Alice's id (for the profile route) and create a real game
-  // so the #/g/<roomCode> route has somewhere to land.
+  // so the #/games/<id> route has somewhere to land.
   const aliceMe = await (await context.request.get(`${harness.baseUrl}/api/me`)).json();
   const game = await (await context.request.post(`${harness.baseUrl}/api/games`, {
     headers: { 'Content-Type': 'application/json', 'Origin': harness.baseUrl },
@@ -94,7 +94,7 @@ try {
   const baseline = await snapshotCounts(page);
   console.log('baseline:', JSON.stringify(baseline));
 
-  // Routes to exercise. #/g/<room> is the route the teleport bug lived
+  // Routes to exercise. #/games/<id> is the route the teleport bug lived
   // in — that's the canary. The others give us coverage for future
   // instances of the same class of bug appearing in other views.
   const routes = [
@@ -103,7 +103,7 @@ try {
     '#/history',
     '#/friends',
     `#/profile/${aliceMe.id}`,
-    `#/g/${game.roomCode}`,
+    `#/games/${game.id}`,
   ];
 
   for (const hash of routes) {
