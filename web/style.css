@@ -494,13 +494,15 @@ button:focus-visible, a.primary:focus-visible {
 .me-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 6px 0 14px;
   border-bottom: 1px solid var(--surface-border);
   margin-bottom: 14px;
   gap: 12px;
   flex-wrap: wrap;
 }
+/* First child (user info) consumes available space so trailing buttons
+   (sign-out, install) cluster on the right with `gap` between them. */
+.me-row > :first-child { margin-right: auto; }
 .sign-in {
   padding: 6px 0 14px;
   border-bottom: 1px solid var(--surface-border);
@@ -1905,6 +1907,20 @@ table.crib td.zh.black  { color: #e0e0e0; }
 }
 .offline-banner[hidden] { display: none; }
 body.is-offline #btn-start-online { opacity: 0.55; }
+
+/* ---- PWA: install button (Android Chrome / desktop Chromium) ---- */
+.install-btn {
+  align-self: center;
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--accent);
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+}
+.install-btn:hover:not(:disabled) { background: rgba(255, 180, 58, 0.08); }
+.install-btn:disabled { opacity: 0.55; cursor: progress; }
 
 /* ---- PWA: iOS Add-to-Home hint --------------------------------- */
 .a2h-banner {
