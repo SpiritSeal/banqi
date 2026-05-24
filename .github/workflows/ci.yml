@@ -225,6 +225,9 @@ jobs:
       - name: PWA offline smoke
         run: node tests/pwa_smoke.mjs
 
+      - name: PWA share replay (#16)
+        run: node tests/pwa_share_replay.mjs
+
   timing:
     name: Timing summary
     needs: [test, build-wasm, server, wasm-smoke, playwright]

@@ -1227,6 +1227,40 @@ function flashCopied(label = 'Copied!') {
   setTimeout(() => { btn.textContent = orig; }, 1500);
 }
 
+// Share a link to a completed/in-progress game by its canonical id. On
+// coarse-pointer devices with `navigator.share` we open the native share
+// sheet; everywhere else we copy to clipboard (or fall back to `prompt`)
+// and surface a toast so the user sees that something happened — mirrors
+// the same AbortError + clipboard pattern as copyInviteLink().
+//
+// Returns one of 'shared' | 'copied' | 'aborted' | 'cancelled' | 'fallback'
+// for callers that want to drive UI (label flips, toasts) deterministically.
+async function shareReplayLink(gameId, { title = 'Banqi replay', text } = {}) {
+  if (gameId == null) return 'aborted';
+  const url = `${location.origin}/#/games/${gameId}`;
+  const body = text || 'Have a look at this Banqi game.';
+  const preferShare = typeof navigator.share === 'function'
+    && window.matchMedia?.('(pointer: coarse)').matches;
+  if (preferShare) {
+    try {
+      await navigator.share({ title, text: body, url });
+      return 'shared';
+    } catch (e) {
+      if (e?.name === 'AbortError') return 'cancelled';
+      // Any other failure (NotAllowedError, etc.) falls through to clipboard.
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Replay link copied to clipboard.', { kind: 'success', timeoutMs: 2500 });
+    return 'copied';
+  } catch (_) {
+    // Last resort: synchronous prompt so the URL is at least selectable.
+    prompt('Share this replay link:', url);
+    return 'fallback';
+  }
+}
+
 // ---- OTB (single shared local Game) ----
 async function openOTB() {
   showView('otb');
@@ -1969,6 +2003,15 @@ function mountDashboardShell() {
       await handleDeleteClick(del);
       return;
     }
+    const share = ev.target.closest('[data-action="share"]');
+    if (share) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const card = share.closest('.game-card');
+      const id = card?.dataset.gameId;
+      if (id) await shareReplayLink(id);
+      return;
+    }
     const toggle = ev.target.closest('[data-action="toggle-completed"]');
     if (toggle) {
       ev.preventDefault();
@@ -2138,6 +2181,20 @@ function renderGameCard(g) {
 
   // Wrap card body in an <a> (no nested button — invalid HTML) and sit the
   // delete button beside it as an absolutely-positioned sibling.
+  // Share button is only meaningful for completed federated games — those
+  // are the only rows that resolve to a stable replay link other people can
+  // open. (Waiting / playing rows still surface invite links from inside
+  // the game itself.)
+  const shareBtn = g.status === 'complete'
+    ? `<button class="gc-share" type="button" data-action="share"
+               title="Share replay link"
+               aria-label="Share replay of game vs ${escapeHtml(oppLabel)}">
+         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor">
+           <path d="M18 8a3 3 0 100-6 3 3 0 000 6zm-12 7a3 3 0 100-6 3 3 0 000 6zm12 7a3 3 0 100-6 3 3 0 000 6zM8.6 13.5l6.8 4M15.4 6.5l-6.8 4"
+                 stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+         </svg>
+       </button>`
+    : '';
   return `
     <div class="${cardClass}" data-game-id="${g.id}" data-room="${escapeHtml(g.room_code)}">
       <a class="game-card-link" href="#/games/${g.id}">
@@ -2148,6 +2205,7 @@ function renderGameCard(g) {
         <div class="gc-meta">${meta}</div>
         <div class="gc-badges">${badges.join('')}</div>
       </a>
+      ${shareBtn}
       <button class="gc-delete" type="button" data-action="delete"
               title="Remove from my games"
               aria-label="Remove game vs ${escapeHtml(oppLabel)} from my games">×</button>
@@ -3368,8 +3426,11 @@ function showGameOverModal({ outcome, title, subtitle, actions = [] }) {
     btn.textContent = a.label;
     if (a.primary) btn.className = 'primary';
     else if (a.danger) btn.className = 'btn-danger';
+    // `keepOpen` actions (e.g. "Share replay") want the modal to stay up so
+    // the user can still pick a follow-up action — only close on actions
+    // that intentionally navigate or start a new game.
     btn.addEventListener('click', () => {
-      try { a.onClick?.(); } finally { close(); }
+      try { a.onClick?.(btn); } finally { if (!a.keepOpen) close(); }
     });
     actionsEl.appendChild(btn);
   }
@@ -3466,9 +3527,33 @@ function maybeShowGameOver(view) {
   } else {
     actions.push({ label: 'Lobby', primary: true, onClick: () => { location.hash = '#/'; }});
     actions.push({ label: 'Review moves', onClick: () => {} });
+    // Federated games are the only kind with a server-side replay URL worth
+    // sharing — OTB / AI games have no canonical id and live only in the
+    // current session.
+    const gameId = active?.info?.id;
+    if (gameId != null) {
+      const subjectText = reasonText
+        ? `Check out this Banqi game (${reasonText}).`
+        : 'Check out this Banqi game.';
+      actions.push({
+        label: shareLabelFor(),
+        keepOpen: true,
+        onClick: (btn) => shareReplayLink(gameId, { text: subjectText })
+          .then((result) => { if (result === 'shared') btn.disabled = true; }),
+      });
+    }
   }
 
   showGameOverModal({ outcome, title, subtitle, actions });
+}
+
+// Coarse-pointer (mobile, tablet) devices get the OS share sheet — call
+// the button "Share". Desktop has no share sheet most of the time, so the
+// action is really "copy link"; label it accordingly to set expectations.
+function shareLabelFor() {
+  const canShare = typeof navigator.share === 'function'
+    && window.matchMedia?.('(pointer: coarse)').matches;
+  return canShare ? 'Share replay' : 'Copy replay link';
 }
 
 // ---- contextual tutorial tooltip (first-time players) ----
