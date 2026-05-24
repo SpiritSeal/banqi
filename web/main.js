@@ -739,9 +739,6 @@ function refreshGame() {
                    : connState === 'reconnecting' ? 'Reconnecting…'
                    : connState === 'offline' ? 'Offline'
                    : 'Connecting…';
-  const replayBadge = view.replayViewing
-    ? `<div class="replay-badge">Reviewing move ${active.replay.currentStep()}/${active.replay.totalMoves()}</div>`
-    : '';
   const disconnectBanner = connState !== 'live' && connState !== 'connecting'
     ? `<div class="disconnect-banner" role="alert">
          <span>${connState === 'offline'
@@ -794,7 +791,6 @@ function refreshGame() {
   $('game-header').innerHTML = `
     ${disconnectBanner}
     <div class="meta game-meta">
-      ${replayBadge}
       <div class="meta-row meta-row-top">
         <div class="meta-room">
           <span class="meta-label">Room</span>
@@ -819,7 +815,7 @@ function refreshGame() {
       ${clocksRow}
       ${drawOfferRow}
       ${playAnotherRow}
-      <div class="meta-row meta-row-status">
+      <div class="meta-row meta-row-status${view.replayViewing ? ' is-replaying' : ''}">
         <span><span class="meta-label">Move</span> ${active.replay.totalMoves()}</span>
         <span><span class="meta-label">Status</span> <span id="game-status-line">${statusLabel(liveState, active.info, active.replay)}</span></span>
       </div>
@@ -1121,6 +1117,9 @@ async function claimTimeout(gameId) {
   }
 }
 function statusLabel(state, info, replay) {
+  if (replay && !replay.isLive()) {
+    return `reviewing move ${replay.currentStep()} of ${replay.totalMoves()}`;
+  }
   if (state.game_over) {
     const w = state.winner;
     if (w === 1) return 'winner: Red';
