@@ -27,6 +27,7 @@ import {
 } from './settings.js';
 import { captureCellRect, playEventAnimation, animateCapture } from './animations.js';
 import { bindBoardInput } from './board-input.js';
+import { toast } from './ui/toast.js';
 
 // Initialise settings (applies theme / animation toggles to <body>) before
 // anything paints, so the first render uses the chosen palette.
@@ -3235,29 +3236,6 @@ async function refreshNotificationBadge() {
   };
   tick();
   _notifTimer = setInterval(tick, 60_000);
-}
-
-// ---- toast notifications ----
-let _toastSeq = 0;
-function toast(message, opts = {}) {
-  const stack = document.getElementById('toast-stack');
-  if (!stack) return;
-  const kind = opts.kind || 'info';
-  const id = `toast-${++_toastSeq}`;
-  const div = document.createElement('div');
-  div.className = `toast toast-${kind}`;
-  div.setAttribute('role', kind === 'error' ? 'alert' : 'status');
-  div.id = id;
-  div.innerHTML = `
-    <button class="toast-close" type="button" aria-label="Dismiss">×</button>
-    <span class="toast-msg"></span>`;
-  div.querySelector('.toast-msg').textContent = message;
-  const close = () => { div.remove(); };
-  div.querySelector('.toast-close').addEventListener('click', close);
-  stack.appendChild(div);
-  const timeoutMs = opts.timeoutMs ?? (kind === 'error' ? 8000 : 5000);
-  if (timeoutMs > 0) setTimeout(close, timeoutMs);
-  return close;
 }
 
 // ---- modal dialog ----
