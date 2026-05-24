@@ -82,22 +82,29 @@ for (const tok of ['install', 'activate', 'fetch', 'BUILD_ID', 'skipWaiting']) {
 }
 ok('sw.js declares install/activate/fetch/skipWaiting and a BUILD_ID');
 
-// BUILD_ID must be a 12-char hex hash written by scripts/stamp-sw.mjs. A
-// dev-placeholder ('dev', a date string, etc.) means the stamper wasn't run
-// against the shipped tree and the update banner will never fire.
-const swBuildId = sw.match(/^const BUILD_ID = '([^']+)';$/m)?.[1];
-if (!swBuildId || !/^[0-9a-f]{12}$/.test(swBuildId)) {
-  fail(`sw.js BUILD_ID must be 12 hex chars (got "${swBuildId}") — run \`make stamp-sw\``);
-}
-ok(`sw.js BUILD_ID is 12-hex (${swBuildId})`);
+// BUILD_ID is either:
+//   * the literal placeholder `__BUILD_ID__` (committed, unstamped tree —
+//     dev iteration, fresh clone), or
+//   * a 12-char hex hash written by scripts/stamp-sw.mjs (built tree — CI,
+//     Docker image, deploy artifact).
+// Anything else (a hand-edit, a date string, "dev") means someone broke the
+// invariant and the update banner will misbehave.
+const PLACEHOLDER = '__BUILD_ID__';
+const isValidBuildId = (v) => v === PLACEHOLDER || /^[0-9a-f]{12}$/.test(v);
 
-// The <meta name="build"> tag in index.html must agree with sw.js. Mismatch
-// means someone hand-edited one but not the other — the stamper writes both
-// from the same hash in one pass, so disagreement is always a forgotten run.
+const swBuildId = sw.match(/^const BUILD_ID = '([^']+)';$/m)?.[1];
+if (!swBuildId || !isValidBuildId(swBuildId)) {
+  fail(`sw.js BUILD_ID must be 12 hex chars or "${PLACEHOLDER}" (got "${swBuildId}")`);
+}
+ok(`sw.js BUILD_ID is valid (${swBuildId})`);
+
+// The <meta name="build"> tag in index.html must agree with sw.js. The
+// stamper writes both from the same hash in one pass; the committed source
+// has the same placeholder in both. Disagreement is always a hand-edit.
 const htmlBuildId = html.match(/<meta\s+name=["']build["']\s+content=["']([^"']+)["']/i)?.[1];
 if (!htmlBuildId) fail('index.html: missing <meta name="build" content="…">');
 if (htmlBuildId !== swBuildId) {
-  fail(`BUILD_ID mismatch: sw.js=${swBuildId} index.html=${htmlBuildId} — run \`make stamp-sw\``);
+  fail(`BUILD_ID mismatch: sw.js=${swBuildId} index.html=${htmlBuildId}`);
 }
 ok('index.html <meta name="build"> matches sw.js BUILD_ID');
 

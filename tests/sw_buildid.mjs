@@ -386,33 +386,30 @@ console.log('\n== CLI ==');
 console.log('\n== real web/ ==');
 
 {
-  // The committed tree should always be a freshly stamped state: if a
-  // contributor forgot to re-stamp, --check catches it without mutating
-  // anything. (Skipped if banqi.{js,wasm} aren't built locally — the
-  // CI-stamped BUILD_ID then naturally differs from a wasm-less local one.)
-  let wasmPresent = true;
-  try { await readFile(join(REAL_WEB, 'banqi.wasm')); }
-  catch { wasmPresent = false; }
-  if (!wasmPresent) {
-    console.log('  skip: real-tree --check (banqi.wasm not built locally)');
-  } else {
-    const r = runStamper(REAL_WEB, ['--check']);
-    check('real web/ passes --check after `make wasm`',
-      r.code === 0,
-      `stderr=${r.stderr.trim()}`);
-  }
-
+  // BUILD_ID is treated as a build artifact: the committed source carries
+  // the literal `__BUILD_ID__` placeholder, and CI/Docker/deploy run the
+  // stamper to substitute the real hash. Both states are legitimate; this
+  // section asserts sw.js + index.html agree on whichever state they're in
+  // and that the rest of the structure is intact.
+  const PLACEHOLDER = '__BUILD_ID__';
   const sw = await readFile(join(REAL_WEB, 'sw.js'), 'utf-8');
   const html = await readFile(join(REAL_WEB, 'index.html'), 'utf-8');
   const swId = buildIdFromSw(sw);
   const htmlId = buildIdFromHtml(html);
-  check(`real sw.js BUILD_ID is 12-hex (${swId})`, HEX12.test(swId || ''));
-  check(`real index.html build meta is 12-hex (${htmlId})`, HEX12.test(htmlId || ''));
+  const validId = (v) => v === PLACEHOLDER || HEX12.test(v || '');
+  check(`real sw.js BUILD_ID is placeholder or 12-hex (${swId})`, validId(swId));
+  check(`real index.html build meta is placeholder or 12-hex (${htmlId})`, validId(htmlId));
   checkEq('real sw.js + index.html agree on BUILD_ID', swId, htmlId);
 
   const shell = appShellFromSw(sw);
-  check('real APP_SHELL is non-empty', shell.length > 1);
   check('real APP_SHELL excludes ./sw.js', !shell.includes('./sw.js'));
+  // In the stamped state APP_SHELL is populated; in the placeholder state
+  // it's empty. Either way it must not contain sw.js itself.
+  if (swId !== PLACEHOLDER) {
+    check('stamped APP_SHELL is non-empty', shell.length > 1);
+  } else {
+    console.log('  note: APP_SHELL is empty (committed placeholder tree — run `make stamp-sw` to populate)');
+  }
 }
 
 // ============ summary ============

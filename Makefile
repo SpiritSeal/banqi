@@ -100,35 +100,22 @@ wasm-test: wasm
 	node tests/board_hints_smoke.mjs
 
 # Content-hash the service worker. Must run after `wasm` so banqi.{js,wasm}
-# are present and included in the precache list. Anything in web/ that
-# changes — source, icons, the wasm output — will produce a fresh BUILD_ID
-# and trigger the "Update available" banner on next client load.
+# are present and included in the precache list. Rewrites the `__BUILD_ID__`
+# placeholders in web/sw.js + web/index.html in place and fills in the
+# AUTO-PRECACHE block. CI, the Dockerfile, and the deploy workflow run this
+# automatically; you only need it locally if you want the PWA update banner
+# to fire while testing in a browser.
 .PHONY: stamp-sw
 stamp-sw: wasm
 	node scripts/stamp-sw.mjs
 
-# CI-only: verify the stamper was run before commit (catches a forgotten
-# `make stamp-sw` after a web/ change). Doesn't mutate anything.
-.PHONY: stamp-sw-check
-stamp-sw-check:
-	node scripts/stamp-sw.mjs --check
-
-# CI-only: catch the cross-commit case where someone edits web/ but leaves
-# BUILD_ID alone (defeating the SW update banner). Stricter than
-# stamp-sw-check, which only validates the current tree against itself.
-.PHONY: buildid-check
-buildid-check:
-	node scripts/check-buildid.mjs
-
 # PWA validation. The manifest check is fast and dependency-free; it asserts
-# the BUILD_ID hash format and that sw.js + index.html agree, so it doubles
-# as a stamper sanity check. The buildid + check-buildid tests exercise the
-# stamper and the cross-commit CI guard themselves.
+# the BUILD_ID hash format and that sw.js + index.html agree. The sw_buildid
+# suite exercises the stamper itself end-to-end.
 .PHONY: pwa-test
 pwa-test: stamp-sw
 	node tests/pwa_manifest.mjs
 	node tests/sw_buildid.mjs
-	node tests/check_buildid.mjs
 
 # Real-browser smoke. Needs a stamped SW so the precache list reflects the
 # files actually served (otherwise cache.addAll 404s on banqi.wasm).
@@ -168,9 +155,11 @@ icons:
 
 # Lightweight dev server. Deliberately does NOT depend on stamp-sw / wasm —
 # someone iterating on CSS / HTML shouldn't need an Emscripten toolchain. The
-# committed sw.js is good enough for visual dev; CI and the Dockerfile stamp
-# for real before anything ships. Run `make stamp-sw` manually if you need
-# the SW update banner to fire while testing locally.
+# committed sw.js ships with `__BUILD_ID__` and an empty precache, which is
+# fine for visual dev (no precaching, no update banner). CI and the
+# Dockerfile stamp for real before anything ships. Run `make stamp-sw`
+# manually if you want the SW update banner / precache to behave like prod
+# while testing locally.
 #
 # Limitation: the AI engine now lives at top-level ai/ (see #55) and is
 # imported via `../ai/index.mjs`. python's http.server refuses to serve
