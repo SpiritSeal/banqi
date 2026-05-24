@@ -10,43 +10,25 @@
 //     last-ditch fallback to offline.html.
 //   * Anything else same-origin: stale-while-revalidate.
 //
-// BUILD_ID and APP_SHELL are written by scripts/stamp-sw.mjs on every build
-// (Makefile + Dockerfile). BUILD_ID is the first 12 hex chars of a sha256
-// over every file in web/, so any change to the shipped bundle invalidates
-// the cache atomically (see activate handler) and surfaces the "Update
-// available" banner wired up in main.js.
+// BUILD_ID and APP_SHELL are written by scripts/stamp-sw.mjs at build time
+// (Makefile, Dockerfile, deploy.yml, CI). The committed source carries
+// placeholders — `__BUILD_ID__` and an empty APP_SHELL — that the stamper
+// overwrites. Treating them as build artifacts (not source) avoids the
+// "did you remember to re-stamp before committing" friction; the deploy
+// pipeline owns the real values.
+//
+// BUILD_ID is the first 12 hex chars of a sha256 over every file in web/+ai/,
+// so any change to the shipped bundle invalidates the cache atomically (see
+// activate handler) and surfaces the "Update available" banner wired up in
+// main.js. In an unstamped dev tree the literal "__BUILD_ID__" is harmless —
+// the SW just settles on a stable cache namespace and never fires the banner.
 
-const BUILD_ID = '8371496fe445';
+const BUILD_ID = '__BUILD_ID__';
 const SHELL    = `banqi-shell-${BUILD_ID}`;
 const RUNTIME  = `banqi-runtime-${BUILD_ID}`;
 
 // AUTO-PRECACHE START
-const APP_SHELL = [
-  "./",
-  "../ai/index.mjs",
-  "./animations.js",
-  "./audio.js",
-  "./banqi.js",
-  "./banqi.wasm",
-  "./board-hints.js",
-  "./board-input.js",
-  "./favicon.svg",
-  "./icons/apple-touch-icon-180.png",
-  "./icons/icon-192.png",
-  "./icons/icon-512.png",
-  "./icons/icon-maskable-192.png",
-  "./icons/icon-maskable-512.png",
-  "./index.html",
-  "./main.js",
-  "./manifest.webmanifest",
-  "./notifications.js",
-  "./offline.html",
-  "./relay.js",
-  "./replay.js",
-  "./settings.js",
-  "./sounds/move.mp3",
-  "./style.css",
-];
+const APP_SHELL = [];
 // AUTO-PRECACHE END
 
 self.addEventListener('install', (event) => {

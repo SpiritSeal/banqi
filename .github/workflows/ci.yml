@@ -112,10 +112,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # check-buildid compares HEAD to origin/main, which needs full
-          # history (default is a shallow clone with only HEAD).
-          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -139,6 +135,8 @@ jobs:
       - name: Board hints smoke
         run: node tests/board_hints_smoke.mjs
 
+      # Stamp before the PWA + SW checks so they see real BUILD_ID + APP_SHELL
+      # values instead of the placeholders committed in web/sw.js.
       - name: Stamp service worker
         run: node scripts/stamp-sw.mjs
 
@@ -147,12 +145,6 @@ jobs:
 
       - name: Service-worker BUILD_ID test
         run: node tests/sw_buildid.mjs
-
-      - name: check-buildid test
-        run: node tests/check_buildid.mjs
-
-      - name: Cross-commit BUILD_ID guard
-        run: node scripts/check-buildid.mjs
 
   playwright:
     name: Playwright end-to-end

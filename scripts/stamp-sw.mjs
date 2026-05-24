@@ -1,22 +1,29 @@
 // Content-hash stamper for the service worker.
 //
-// Walks the web/ directory, computes a 12-hex digest from every file except
-// sw.js itself, and writes that digest into two places:
+// Walks the web/ + ai/ directories, computes a 12-hex digest from every file
+// except sw.js itself, and writes that digest into two places:
 //   * web/sw.js — the `BUILD_ID` constant + the auto-generated `APP_SHELL`
 //     precache list (delimited by AUTO-PRECACHE markers).
 //   * web/index.html — `<meta name="build" content="…">`, used by support /
 //     telemetry to identify which build a client is running.
 //
+// BUILD_ID is a build artifact, not source. The committed sw.js + index.html
+// carry literal `__BUILD_ID__` placeholders and an empty AUTO-PRECACHE block;
+// CI, the Dockerfile, and deploy.yml all run this script before shipping, so
+// what reaches a browser always has the real hash. Devs only need to run it
+// locally if they want the PWA update banner to fire during dev.
+//
 // Why content-hash instead of a hand-bumped version:
 //   The PWA update banner only fires when BUILD_ID changes. A deploy that
-//   forgets to bump it ships invisibly. Deriving BUILD_ID from web/ contents
-//   means every meaningful change to the shipped bundle invalidates the SW
-//   cache atomically (see web/sw.js activate handler) and surfaces the
-//   "Update available" banner.
+//   forgets to bump it ships invisibly. Deriving BUILD_ID from web/+ai/
+//   contents means every meaningful change to the shipped bundle invalidates
+//   the SW cache atomically (see web/sw.js activate handler) and surfaces
+//   the "Update available" banner.
 //
 // Determinism: hashing is path+content, files are sorted, and the index.html
-// build-meta value is normalized to a placeholder before hashing so the
-// stamper's own output doesn't perturb its input.
+// build-meta value is normalized to a fixed placeholder before hashing so a
+// previously-stamped tree hashes identically to the placeholder source —
+// re-stamping is a no-op when nothing real has changed.
 //
 // Usage:
 //   node scripts/stamp-sw.mjs [--web <path>] [--ai <path>] [--check]
