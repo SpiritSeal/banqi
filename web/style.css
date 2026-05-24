@@ -150,6 +150,11 @@ body.no-anim button:hover { transform: none !important; }
 * { box-sizing: border-box; }
 
 /* ---- typography + body ---------------------------------------------- */
+html {
+  /* Suppress double-tap-to-zoom and the 300ms tap delay app-wide. Pinch-zoom
+     is already disabled via the viewport meta in index.html. */
+  touch-action: manipulation;
+}
 body {
   margin: 0;
   background: var(--bg);
