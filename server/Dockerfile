@@ -23,6 +23,7 @@ WORKDIR /app
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node server/package.json server/schema.sql ./
 COPY --chown=node:node server/src ./src
+COPY --chown=node:node server/scripts ./scripts
 COPY --chown=node:node web /web
 # The AI engine lives at top-level ai/ so the relay server can import it
 # without dragging the whole web/ tree into its own stability surface. The
