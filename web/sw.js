@@ -95,25 +95,42 @@ self.addEventListener('fetch', (event) => {
 
 // ---- Web Push ----
 // Server pushes a JSON payload of the form
-//   { kind:'turn', title, body, roomCode, gameId }
-// when it's the recipient's turn and they have no open WebSocket. We surface
-// it as a single OS-level notification; the tag collapses repeat pushes for
-// the same game so a slow connection can't stack five "your turn" cards.
+//   { kind, title, body, url?, tag?, roomCode?, gameId? }
+// where `kind` is one of:
+//   'turn'      — recipient's turn in an online game (carries gameId/roomCode)
+//   'challenge' — new pending match request waiting in /#/friends
+//   'friend'    — someone used the recipient's invite link to friend them
+// The server may set `url` (where to navigate on click) and `tag` (dedup key
+// for collapsing repeat pushes) explicitly. For the legacy 'turn' shape we
+// fall back to the gameId/roomCode-derived url+tag so payloads from older
+// builds still queued in delivery keep working.
 
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; }
   catch { data = { title: 'Banqi', body: event.data ? event.data.text() : '' }; }
 
-  const title = data.title || 'Your turn in Banqi';
-  const body  = data.body  || 'Tap to play your move.';
-  // Prefer the stable game id; the roomCode branch is kept so push payloads
-  // emitted by older server builds (or still queued in delivery) keep working.
-  const dedupeKey = data.gameId || data.roomCode;
-  const tag = dedupeKey ? `banqi-turn-${dedupeKey}` : 'banqi-turn';
-  const url = data.gameId   ? `./#/games/${data.gameId}`
-            : data.roomCode ? `./#/g/${data.roomCode}`
-            : './';
+  const title = data.title || 'Banqi';
+  const body  = data.body  || '';
+
+  // Tag — explicit beats the legacy turn-derived fallback. `renotify: true`
+  // below means a same-tag re-push will still surface; the tag just collapses
+  // the *visual* stack so a slow connection can't pile up five cards.
+  let tag = data.tag;
+  if (!tag) {
+    const dedupeKey = data.gameId || data.roomCode;
+    tag = dedupeKey ? `banqi-turn-${dedupeKey}` : 'banqi-turn';
+  }
+
+  // URL — explicit beats the legacy turn-derived fallback. Anchored to the
+  // SPA's hash router so navigation lands inside the existing tab when there
+  // is one (see notificationclick below).
+  let url = data.url;
+  if (!url) {
+    url = data.gameId   ? `./#/games/${data.gameId}`
+        : data.roomCode ? `./#/g/${data.roomCode}`
+        : './';
+  }
 
   event.waitUntil(self.registration.showNotification(title, {
     body,

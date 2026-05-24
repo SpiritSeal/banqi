@@ -83,6 +83,25 @@ if ('serviceWorker' in navigator) {
   }).catch((e) => console.warn('SW registration failed:', e));
 }
 
+// ---- PWA install prompt (Android Chrome / desktop Chromium) ----
+// `beforeinstallprompt` fires once when the browser decides the PWA is
+// installable; we stash the event so the user can trigger the prompt from
+// our own button instead of hunting for the URL-bar / three-dot menu icon.
+// iOS Safari never fires this — the iOS A2H hint banner is the fallback
+// path for that platform and lives in maybeShowAddToHomeHint().
+let _installPromptEvent = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _installPromptEvent = e;
+  // If the user is already on the lobby when the event fires (most common
+  // case), surface the button right away instead of waiting for a re-render.
+  if (!views.lobby?.classList.contains('hidden')) maybeShowInstallButton();
+});
+window.addEventListener('appinstalled', () => {
+  _installPromptEvent = null;
+  document.getElementById('btn-install-pwa')?.remove();
+});
+
 // WASM only powers OTB + AI now, but we kick the load early to keep navigation
 // snappy.
 let Module = null;
@@ -220,6 +239,49 @@ function inStandalone() {
   return window.matchMedia('(display-mode: standalone)').matches
       || window.navigator.standalone === true;
 }
+// Render a small "Install" affordance in the lobby when the browser has
+// surfaced a `beforeinstallprompt` event and the app isn't already installed.
+// No-op on iOS Safari (event never fires there — the bottom A2H banner is
+// the iOS path) and inside an installed standalone window.
+function maybeShowInstallButton() {
+  if (!_installPromptEvent || inStandalone()) return;
+  const meBox = $('lobby-me');
+  if (!meBox || meBox.querySelector('#btn-install-pwa')) return;
+  const btn = document.createElement('button');
+  btn.id = 'btn-install-pwa';
+  btn.type = 'button';
+  btn.className = 'install-btn';
+  btn.textContent = 'Install app';
+  btn.setAttribute('aria-label', 'Install Banqi as an app');
+  btn.title = 'Install Banqi as an app on this device';
+  btn.addEventListener('click', async () => {
+    const ev = _installPromptEvent;
+    if (!ev) { btn.remove(); return; }
+    btn.disabled = true;
+    try {
+      await ev.prompt();
+      const choice = await ev.userChoice;
+      if (choice?.outcome === 'accepted') btn.remove();
+      else btn.disabled = false;
+    } catch (_) {
+      btn.disabled = false;
+    } finally {
+      // Per spec, a captured `beforeinstallprompt` event can only be
+      // prompted once. Drop the reference either way so a re-render
+      // doesn't try to reuse a spent event; the browser will fire a
+      // fresh event later if the app becomes installable again.
+      _installPromptEvent = null;
+    }
+  });
+  // Insert just before the signout button (if present) so it clusters with
+  // the right-hand controls in the me-row instead of falling on its own
+  // line under the user name.
+  const signOut = meBox.querySelector('#btn-signout');
+  const row = signOut?.parentElement || meBox;
+  if (signOut) row.insertBefore(btn, signOut);
+  else row.appendChild(btn);
+}
+
 function maybeShowAddToHomeHint() {
   if (!isIOSSafari() || inStandalone()) return;
   try { if (localStorage.getItem('banqi.a2h-dismissed') === '1') return; } catch (_) {}
@@ -384,6 +446,7 @@ function renderLobby() {
   }
   ensureOfflineBanner();
   maybeShowAddToHomeHint();
+  maybeShowInstallButton();
   $('btn-start-online').disabled = !me || !online;
   $('btn-start-online').title = !online ? "You're offline — connect to start an online game" : '';
   $('btn-start-online').onclick = startOnlineGame;

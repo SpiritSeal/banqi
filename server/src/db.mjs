@@ -485,17 +485,28 @@ export async function headToHead(db, userId) {
 
 // Symmetric add. Returns the friend's user row on success. Rejects self-add
 // and is idempotent on a duplicate (returns the friend either way).
+//
+// Attaches a non-enumerable `__isNew` boolean to the returned user row so
+// callers (currently the friends route, which fires a push on first-time
+// add) can tell a brand-new friendship from a duplicate. Non-enumerable so
+// it doesn't leak into JSON responses.
 export async function addFriend(db, currentUserId, otherUserId) {
   if (currentUserId === otherUserId) return null;
   const now = Date.now();
   const lo = Math.min(currentUserId, otherUserId);
   const hi = Math.max(currentUserId, otherUserId);
-  await db.query(`
+  const { rowCount } = await db.query(`
     INSERT INTO friends (user_lo, user_hi, created_at)
     VALUES ($1, $2, $3)
     ON CONFLICT (user_lo, user_hi) DO NOTHING
   `, [lo, hi, now]);
-  return getUser(db, otherUserId);
+  const friend = await getUser(db, otherUserId);
+  if (friend) {
+    Object.defineProperty(friend, '__isNew', {
+      value: rowCount > 0, enumerable: false, writable: false, configurable: false,
+    });
+  }
+  return friend;
 }
 
 export async function listFriends(db, userId) {
@@ -550,6 +561,11 @@ const MATCH_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // Idempotent create: if a pending non-expired row already exists from→to,
 // returns it instead of inserting a duplicate (regardless of the new rule
 // fields — a sender who wants different rules should cancel and resend).
+//
+// Attaches a non-enumerable `__isNew` boolean to the returned row so callers
+// (the match-requests route, which fires a push on first-time create) can
+// distinguish a brand-new request from a re-post of a still-pending one. The
+// flag is non-enumerable so it doesn't accidentally leak into JSON responses.
 export async function createMatchRequest(db, {
   fromUserId, toUserId,
   mode = 'standard', firstMoverPref = 'random', message = null,
@@ -564,7 +580,12 @@ export async function createMatchRequest(db, {
        AND status = 'pending' AND expires_at > $3
      LIMIT 1
   `, [fromUserId, toUserId, now]);
-  if (existing[0]) return existing[0];
+  if (existing[0]) {
+    Object.defineProperty(existing[0], '__isNew', {
+      value: false, enumerable: false, writable: false, configurable: false,
+    });
+    return existing[0];
+  }
   const { rows } = await db.query(`
     INSERT INTO match_requests
       (from_user_id, to_user_id, status, mode, first_mover_pref, message,
@@ -576,6 +597,9 @@ export async function createMatchRequest(db, {
       normalizeFirstMoverPref(firstMoverPref), message,
       tc.timeLimitMs, tc.incrementMs,
       now, expires]);
+  Object.defineProperty(rows[0], '__isNew', {
+    value: true, enumerable: false, writable: false, configurable: false,
+  });
   return rows[0];
 }
 

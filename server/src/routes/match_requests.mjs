@@ -22,6 +22,7 @@ import { requireAuth } from '../auth.mjs';
 import { rateLimit } from '../rate_limit.mjs';
 import { newRoomCode } from '../rooms.mjs';
 import { asyncRoute } from '../util.mjs';
+import { sendToUser as sendPushToUser } from '../push.mjs';
 
 // Match-request creation triggers a push notification, so the hourly cap is
 // tight. Accept/decline/cancel are cheap state flips on existing rows but
@@ -112,6 +113,21 @@ export function matchRequestsRouter({ db, engine }) {
       timeLimitMs: tc.timeLimitMs, incrementMs: tc.incrementMs,
     });
     res.json(created);
+    // Notify the recipient that a new challenge is waiting. Only fires on a
+    // brand-new request (idempotent re-posts of a still-pending row are
+    // silent — same request, same recipient, same notification slot) and
+    // skips guest accounts to mirror the WS turn-notification policy. Fire-
+    // and-forget so a slow push service doesn't stall the HTTP response.
+    if (created.__isNew && other.provider !== 'guest') {
+      const fromName = req.user.display_name || 'Someone';
+      sendPushToUser(db, toUserId, {
+        kind:  'challenge',
+        title: 'New challenge on Banqi',
+        body:  `${fromName} challenged you to a match.`,
+        url:   './#/friends',
+        tag:   `banqi-challenge-${created.id}`,
+      }).catch((e) => console.warn('push: challenge-notify failed:', e.message || e));
+    }
   }));
 
   r.post('/match-requests/:id/accept', requireAuth, matchRequestActionLimiter, asyncRoute(async (req, res) => {
