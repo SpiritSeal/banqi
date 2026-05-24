@@ -51,7 +51,7 @@ before(async () => {
 });
 
 after(async () => {
-  if (engine) engine.close();
+  if (engine) await engine.close();
   if (db) await db.end();
 });
 

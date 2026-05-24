@@ -111,7 +111,7 @@ describe('engine: per-intent DB writes are atomic (#52)', () => {
     await goodEngine.attachJoin(gameId, bob);
     const snapBefore = await loadGameState(realDb, gameId);
     assert.ok(snapBefore, 'pre-intent snapshot was written');
-    goodEngine.close();
+    await goodEngine.close();
 
     // Now build a second engine wired to the failing-db proxy. Detaching
     // the game forces this engine to rehydrate via the proxy (read path
@@ -142,6 +142,6 @@ describe('engine: per-intent DB writes are atomic (#52)', () => {
     assert.equal(rows[0].n, 0,
                  'no event row should have been committed');
 
-    badEngine.close();
+    await badEngine.close();
   });
 });

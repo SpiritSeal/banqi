@@ -7,7 +7,7 @@
 // Concurrency: each game's apply path is serialized via a per-game mutex so
 // two simultaneous intents from the same player can't race the WASM state.
 
-import { chooseMove } from '../../ai/index.mjs';
+import { createAiPool } from './ai_pool.mjs';
 import {
   findGameById, saveGameState, loadGameState,
   appendGameEvent, listGameEvents, markGameEnded,
@@ -109,8 +109,16 @@ const IDLE_MS = 30 * 60 * 1000;   // 30 minutes
 // fake module exposing the same `Game.create / createWithMode / fromSnapshot`
 // surface (see tests/fixtures/fake_banqi.mjs) to exercise engine logic
 // without a built WASM.
-export async function createGameEngine({ db, banqiModule = null } = {}) {
+//
+// `aiPool` is an object exposing chooseMove(state, playerIndex, difficulty)
+// and close() — by default a worker_threads pool spawned by createAiPool().
+// Tests can inject a synchronous in-process fake to avoid the worker
+// spawn cost when they don't exercise AI moves.
+export async function createGameEngine({ db, banqiModule = null,
+                                          aiPool = null, aiPoolSize = 1 } = {}) {
   const Module = banqiModule || await getDefaultModule();
+  const ownsAiPool = aiPool == null;
+  const ai = aiPool || createAiPool({ workerCount: aiPoolSize });
   const cache = new Map();   // gameId → Session
 
   // Subscribers notified after every successful intent (human OR AI).
@@ -558,27 +566,48 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
   }
 
   async function runAiTurn(session) {
-    const result = await session.run(async () => {
-      // Re-check inside the lock — a human action (resign / accept_draw)
-      // could have changed the state while we were waiting.
-      if (session.wasm.gameOver() || session.drawAccepted) return null;
+    let result = null;
+    try {
+      // Snapshot state OUTSIDE the per-session lock so the search can run on
+      // the worker thread without blocking the human side from resigning or
+      // accepting a draw mid-think. Reading stateJson here is safe because
+      // it's the AI's turn — no other writer can mutate the WASM state
+      // without first acquiring the lock, and JS is single-threaded so the
+      // read itself can't interleave with another callback.
+      if (session.wasm.gameOver() || session.drawAccepted) return;
       const state = JSON.parse(session.wasm.stateJson(session.aiPlayerIndex));
-      if (state.game_over) return null;
-      if (state.side_to_move !== session.aiPlayerIndex) return null;
+      if (state.game_over) return;
+      if (state.side_to_move !== session.aiPlayerIndex) return;
+
       let move;
       try {
-        move = chooseMove(state, session.aiPlayerIndex, session.aiDifficulty);
+        move = await ai.chooseMove(state, session.aiPlayerIndex,
+                                   session.aiDifficulty);
       } catch (e) {
         console.error('chooseMove threw:', e);
-        return null;
+        return;
       }
-      if (!move) return null;
-      const intent = move.from < 0
-        ? { kind: 'flip', cell: move.to }
-        : { kind: 'move', from: move.from, to: move.to };
-      return _applyIntentLocked(session, session.aiPlayerIndex, intent);
-    });
-    session.aiPending = false;
+      if (!move) return;
+
+      result = await session.run(async () => {
+        // Re-check inside the lock — while the worker was thinking, the
+        // human could have resigned or accepted a draw, which would have
+        // landed an event ahead of ours and ended the game. The state read
+        // outside the lock is still fine for move selection (the AI was on
+        // the move, nobody else could legally play); we just have to make
+        // sure we don't apply a stale move onto an already-terminated game.
+        if (session.wasm.gameOver() || session.drawAccepted) return null;
+        const cur = JSON.parse(session.wasm.stateJson(session.aiPlayerIndex));
+        if (cur.game_over) return null;
+        if (cur.side_to_move !== session.aiPlayerIndex) return null;
+        const intent = move.from < 0
+          ? { kind: 'flip', cell: move.to }
+          : { kind: 'move', from: move.from, to: move.to };
+        return _applyIntentLocked(session, session.aiPlayerIndex, intent);
+      });
+    } finally {
+      session.aiPending = false;
+    }
     if (result && result.ok) {
       const isDraw = isDrawEvent(result.event);
       await emitEvent({ gameId: session.gameId, event: result.event, session,
@@ -639,9 +668,13 @@ export async function createGameEngine({ db, banqiModule = null } = {}) {
     cache.delete(gameId);
   }
 
-  function close() {
+  async function close() {
     clearInterval(evictTimer);
     cache.clear();
+    if (ownsAiPool) {
+      try { await ai.close(); }
+      catch (e) { console.error('AI pool close failed:', e); }
+    }
   }
 
   return {
