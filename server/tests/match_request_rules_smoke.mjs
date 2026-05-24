@@ -112,6 +112,62 @@ describe('createMatchRequest persists the new rule fields', () => {
   });
 });
 
+// The push-notification trigger in the match-requests route distinguishes a
+// fresh insert from an idempotent re-post via a non-enumerable `__isNew`
+// flag on the returned row. Same idea applies to addFriend. These tests
+// exercise the flag directly so a refactor that silently drops it (and
+// thereby starts double-notifying on every re-post) fails loudly.
+describe('createMatchRequest exposes __isNew for push triggers', () => {
+  it('first insert is __isNew=true; a re-post of the same pending row is __isNew=false', async () => {
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const first = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+    });
+    assert.equal(first.__isNew, true);
+    const second = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+    });
+    assert.equal(second.id, first.id, 'idempotent re-post returns the same row');
+    assert.equal(second.__isNew, false);
+  });
+
+  it('__isNew is non-enumerable — does not leak into JSON.stringify output', async () => {
+    await db.query(`UPDATE match_requests SET status='cancelled' WHERE status='pending'`);
+    const row = await createMatchRequest(db, {
+      fromUserId: alice, toUserId: bob, mode: 'standard',
+    });
+    assert.equal(row.__isNew, true);
+    const parsed = JSON.parse(JSON.stringify(row));
+    assert.ok(!('__isNew' in parsed), 'internal flag must not be serialized');
+  });
+});
+
+describe('addFriend exposes __isNew for push triggers', () => {
+  it('first add is __isNew=true; a re-add of the existing pair is __isNew=false', async () => {
+    // Fresh pair: create two new users so the pre-existing alice/bob friendship
+    // from the `before` block doesn't confuse the assertion.
+    const c = await upsertOAuthUser(db, {
+      provider: 'dev', providerId: 'cd-carol',
+      displayName: 'Carol', avatarUrl: null,
+    });
+    const d = await upsertOAuthUser(db, {
+      provider: 'dev', providerId: 'cd-dave',
+      displayName: 'Dave', avatarUrl: null,
+    });
+    const first = await addFriend(db, c.id, d.id);
+    assert.equal(first.__isNew, true);
+    const second = await addFriend(db, c.id, d.id);
+    assert.equal(second.__isNew, false);
+  });
+
+  it('__isNew is non-enumerable — does not leak into JSON.stringify output', async () => {
+    const friend = await addFriend(db, alice, bob);  // already friends from `before`
+    assert.equal(friend.__isNew, false);
+    const parsed = JSON.parse(JSON.stringify(friend));
+    assert.ok(!('__isNew' in parsed), 'internal flag must not be serialized');
+  });
+});
+
 describe('normalizeTimeControl', () => {
   it('null timeLimitMs → unlimited (null + 0 increment)', () => {
     assert.deepEqual(normalizeTimeControl({}),                              { timeLimitMs: null, incrementMs: 0 });
