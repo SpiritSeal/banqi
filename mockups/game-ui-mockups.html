@@ -1,0 +1,1496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Banqi — game-page UI mockups (current vs proposed)</title>
+<style>
+  :root {
+    --bg: #0d0d0f;
+    --surface-0: #161618;
+    --surface-1: #1f1f22;
+    --surface-2: #28282c;
+    --surface-3: #34343a;
+    --surface-4: #44444c;
+    --surface-border: #2e2e34;
+    --fg: #e9e9ea;
+    --muted: #9095a0;
+    --accent: #ffb83c;
+    --accent-soft: rgba(255, 184, 60, 0.16);
+    --accent-strong: rgba(255, 184, 60, 0.55);
+    --primary: #f5a623;
+    --primary-fg: #1a1004;
+    --red: #d24343;
+    --red-light: #ef8a8a;
+    --red-soft: rgba(210, 67, 67, 0.16);
+    --black: #1a1a1a;
+    --black-light: #d8d8d8;
+    --board-frame: #2b1810;
+    --board-frame-light: #5d3a1f;
+    --cell: #c79a5c;
+    --face-down: #6b4225;
+    --face-down-light: #8a5a36;
+    --face-down-dark: #4a2a14;
+    --face-up: #ddc59a;
+    --face-up-light: #f4dfb6;
+    --face-up-dark: #b59668;
+    --success-bg: rgba(110, 201, 110, 0.15);
+    --success-fg: #93dc93;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-pill: 999px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: #07070a;
+    color: var(--fg);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .doc {
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 32px 24px 96px;
+  }
+  .doc > header {
+    margin-bottom: 32px;
+  }
+  .doc > header h1 {
+    margin: 0 0 6px;
+    font-size: 22px;
+    letter-spacing: -0.01em;
+  }
+  .doc > header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+    max-width: 720px;
+  }
+  .section {
+    margin-top: 40px;
+  }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--surface-border);
+    padding-bottom: 8px;
+    margin-bottom: 20px;
+  }
+  .section-head h2 {
+    margin: 0;
+    font-size: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  .section-head .subt {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .comparison {
+    display: grid;
+    gap: 28px;
+    align-items: start;
+  }
+  .comparison.portrait { grid-template-columns: 1fr 1fr; }
+  .comparison.landscape { grid-template-columns: 1fr 1fr; }
+  .comparison.desktop { grid-template-columns: 1fr; gap: 36px; }
+  @media (max-width: 1100px) {
+    .comparison.portrait, .comparison.landscape { grid-template-columns: 1fr; }
+  }
+  .col-head {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .col-head .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: var(--radius-pill);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .col-head .badge.current {
+    background: rgba(210, 67, 67, 0.18);
+    color: #ff8a8a;
+    border: 1px solid rgba(210, 67, 67, 0.4);
+  }
+  .col-head .badge.proposed {
+    background: rgba(110, 201, 110, 0.16);
+    color: #95e095;
+    border: 1px solid rgba(110, 201, 110, 0.4);
+  }
+
+  /* ---- iPhone device frame ----------------------------------------- */
+  .iphone {
+    background: #111114;
+    border: 8px solid #1d1d22;
+    border-radius: 44px;
+    box-shadow:
+      0 0 0 1px #2a2a30,
+      0 24px 60px rgba(0, 0, 0, 0.5);
+    position: relative;
+    overflow: hidden;
+  }
+  .iphone.portrait { width: 390px; height: 844px; }
+  .iphone.landscape { width: 844px; height: 390px; }
+  .iphone .notch {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 120px;
+    height: 28px;
+    background: #000;
+    border-radius: 16px;
+    z-index: 100;
+  }
+  .iphone.landscape .notch {
+    top: 50%;
+    left: 8px;
+    transform: translateY(-50%);
+    width: 28px;
+    height: 120px;
+  }
+  .iphone .home-bar {
+    position: absolute;
+    bottom: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 130px;
+    height: 4px;
+    background: #fff;
+    border-radius: 4px;
+    opacity: 0.85;
+    z-index: 100;
+  }
+  .iphone.landscape .home-bar {
+    bottom: 50%;
+    left: auto;
+    right: 6px;
+    transform: translateY(50%);
+    width: 4px;
+    height: 130px;
+  }
+  .screen {
+    width: 100%;
+    height: 100%;
+    background:
+      radial-gradient(ellipse 100% 60% at 50% 0%, rgba(255, 180, 60, 0.04), transparent),
+      linear-gradient(180deg, var(--surface-0) 0%, #0d0d0f 100%);
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---- safari-ish chrome ------------------------------------------- */
+  .safari-bar-top {
+    height: 44px;
+    background: rgba(20, 20, 24, 0.88);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 11px;
+    flex-shrink: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .iphone.landscape .safari-bar-top { height: 28px; }
+  .safari-bar-bot {
+    height: 32px;
+    background: rgba(20, 20, 24, 0.88);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    flex-shrink: 0;
+  }
+  .iphone.landscape .safari-bar-bot { display: none; }
+
+  /* ---- app content area -------------------------------------------- */
+  .app {
+    flex: 1;
+    overflow: auto;
+    position: relative;
+    padding: 12px 14px;
+  }
+  .app.no-scroll { overflow: hidden; }
+  .app.tight { padding: 6px 10px; }
+
+  /* ---- shared elements --------------------------------------------- */
+  .brand {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 2px;
+  }
+  .sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .help-btn {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    border: 1px solid var(--surface-border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .nav {
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+    background: var(--surface-2);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-pill);
+    padding: 4px;
+    margin: 8px 0;
+  }
+  .nav .pill {
+    padding: 5px 10px;
+    border-radius: var(--radius-pill);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .nav .pill.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .meta-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 4px 0;
+    font-size: 11px;
+  }
+  .meta-label {
+    color: var(--muted);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+  }
+  .room-code {
+    background: var(--surface-1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    border: 1px solid var(--surface-border);
+  }
+  .mode-chip {
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    color: var(--muted);
+    border-radius: var(--radius-pill);
+    padding: 1px 8px;
+    font-size: 10px;
+  }
+  .copy-link {
+    color: var(--accent);
+    font-size: 11px;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+  }
+  .conn-state {
+    font-size: 10px;
+    color: var(--success-fg);
+    margin-left: auto;
+  }
+  .conn-state::before {
+    content: "";
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--success-fg);
+    margin-right: 4px;
+    vertical-align: 1px;
+  }
+  .turn-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px 4px 7px;
+    border-radius: var(--radius-pill);
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--accent-strong);
+    background: var(--accent-soft);
+    color: var(--accent);
+    box-shadow: 0 0 0 4px rgba(255, 180, 60, 0.08);
+  }
+  .turn-pill .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .turn-pill.opp {
+    background: var(--surface-1);
+    color: var(--muted);
+    border-color: var(--surface-border);
+    box-shadow: none;
+  }
+  .turn-pill.opp .dot { background: #6ea4ff; }
+
+  .clocks-row {
+    display: flex;
+    gap: 6px;
+    margin: 4px 0;
+  }
+  .clock {
+    flex: 1;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-md);
+    padding: 4px 8px;
+  }
+  .clock .nm { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .clock .tm { font-family: ui-monospace, monospace; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .clock.active { background: var(--surface-2); border-color: var(--surface-border); }
+  .clock.active .tm { color: var(--accent); font-weight: 700; }
+
+  .piece-counts {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 10px;
+    margin: 4px 0;
+  }
+  .pc-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: 4px;
+    flex-wrap: wrap;
+  }
+  .pc-side {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 32px;
+  }
+  .pc-side.red { color: var(--red-light); }
+  .pc-side.red .gl { color: var(--red); font-size: 12px; }
+  .pc-side.black { color: var(--black-light); }
+  .pc-side.black .gl { color: var(--black-light); font-size: 12px; }
+  .pc-chip {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 1px 4px;
+    font-size: 9px;
+  }
+  .pc-row.red .pc-chip { color: #f5a5a5; }
+  .pc-row.black .pc-chip { color: #e6e6e6; }
+
+  .rotate-hint {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px dashed var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 5px 10px;
+    font-size: 10px;
+    text-align: center;
+    margin: 6px 0;
+  }
+  .tip {
+    color: var(--muted);
+    font-size: 10px;
+    margin: 6px 0;
+  }
+
+  /* ---- board ------------------------------------------------------- */
+  .board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    aspect-ratio: 8 / 4;
+    background:
+      linear-gradient(135deg, var(--board-frame-light) 0%, var(--board-frame) 50%, var(--board-frame) 100%);
+    border: 1px solid #1a0c04;
+    border-radius: var(--radius-md);
+    padding: 5px;
+    gap: 3px;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 220, 170, 0.08),
+      inset 0 -1px 6px rgba(0, 0, 0, 0.4),
+      0 4px 10px rgba(0, 0, 0, 0.4);
+    margin: 6px 0;
+    position: relative;
+  }
+  .board.rotated {
+    transform: rotate(90deg);
+    transform-origin: center;
+  }
+  .cell {
+    background: var(--cell);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: "Noto Sans CJK TC", "PingFang TC", system-ui, sans-serif;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 230, 180, 0.08),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+    color: #2a1502;
+    position: relative;
+  }
+  .cell.fd {
+    background:
+      radial-gradient(circle at 32% 28%, var(--face-down-light) 0%, var(--face-down) 50%, var(--face-down-dark) 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 240, 210, 0.12),
+      inset 0 -1px 4px rgba(0, 0, 0, 0.4);
+  }
+  .cell.fu {
+    background:
+      radial-gradient(circle at 32% 26%, var(--face-up-light) 0%, var(--face-up) 55%, var(--face-up-dark) 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.45),
+      inset 0 -2px 4px rgba(140, 90, 30, 0.32);
+  }
+  .cell.red { color: var(--red); }
+  .cell.black { color: var(--black); }
+  .cell.empty {
+    background:
+      radial-gradient(ellipse at 30% 25%, rgba(0, 0, 0, 0.25), transparent 65%),
+      var(--cell);
+    box-shadow:
+      inset 0 0 8px rgba(0, 0, 0, 0.45);
+  }
+  .cell.selected {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.45),
+      0 0 0 3px var(--accent-soft);
+  }
+  .cell.legal-target::after {
+    content: "";
+    position: absolute;
+    width: 26%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(120, 220, 120, 0.95) 0%, rgba(60, 180, 60, 0.85) 70%, transparent 100%);
+    box-shadow: 0 0 6px rgba(120, 220, 120, 0.6);
+  }
+  .cell.last-move {
+    box-shadow:
+      inset 0 0 0 3px var(--accent),
+      0 0 0 2px var(--accent-strong);
+  }
+  .cell .v {
+    position: absolute;
+    bottom: 1px;
+    right: 2px;
+    font-size: 7px;
+    opacity: 0.55;
+    font-weight: 700;
+  }
+  /* Larger cells in the bigger renderings */
+  .iphone.landscape .cell, .desktop-frame .cell { font-size: 22px; }
+  .iphone.landscape .cell .v, .desktop-frame .cell .v { font-size: 9px; }
+  .iphone.portrait .board.rotated .cell { font-size: 26px; }
+  .iphone.portrait .board.rotated .cell .v { font-size: 10px; }
+
+  /* ---- bottom action bar (proposed) -------------------------------- */
+  .bottom-bar {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    background: rgba(28, 28, 34, 0.92);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid var(--surface-border);
+    padding: 8px 14px calc(8px + 4px);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    z-index: 50;
+  }
+  .bottom-bar .b {
+    flex: 1;
+    border-radius: 8px;
+    padding: 8px 10px;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--surface-border);
+    background: var(--surface-3);
+  }
+  .bottom-bar .b.primary {
+    background: var(--primary);
+    color: var(--primary-fg);
+    border-color: var(--primary);
+  }
+  .bottom-bar .b.danger {
+    color: #ff8c8c;
+    border-color: rgba(210, 67, 67, 0.5);
+    background: transparent;
+  }
+  .bottom-bar .b.icon {
+    flex: 0 0 36px;
+    padding: 8px 0;
+  }
+
+  /* ---- top sticky strip (proposed) --------------------------------- */
+  .top-strip {
+    position: sticky;
+    top: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: rgba(28, 28, 34, 0.94);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--surface-border);
+    z-index: 50;
+  }
+  .top-strip .back {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: var(--surface-3);
+    border: 1px solid var(--surface-border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg);
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+  .top-strip .grow { flex: 1; min-width: 0; }
+  .top-strip .you-chip {
+    background: var(--red-soft);
+    color: var(--red-light);
+    border: 1px solid rgba(210, 67, 67, 0.4);
+    padding: 2px 8px;
+    border-radius: var(--radius-pill);
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .top-strip .you-chip.is-black {
+    background: rgba(80, 80, 80, 0.4);
+    color: #ddd;
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+  .top-strip .clk {
+    font-family: ui-monospace, monospace;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    padding: 2px 8px;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: 6px;
+  }
+  .top-strip .clk.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: var(--accent-strong);
+    font-weight: 700;
+  }
+  .top-strip .more {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: var(--surface-3);
+    border: 1px solid var(--surface-border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  /* ---- material tray (proposed) ------------------------------------ */
+  .player-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 4px;
+    font-size: 11px;
+  }
+  .player-strip .avatar {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--surface-3);
+    border: 2px solid var(--surface-border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+  .player-strip .avatar.red { border-color: var(--red); color: var(--red-light); }
+  .player-strip .avatar.black { border-color: #ddd; color: #ddd; }
+  .player-strip .name { font-weight: 600; }
+  .player-strip .tray {
+    flex: 1;
+    display: flex;
+    gap: 2px;
+    flex-wrap: wrap;
+    min-width: 0;
+    opacity: 0.85;
+  }
+  .player-strip .tray .gl {
+    font-family: "Noto Sans CJK TC", "PingFang TC", system-ui, sans-serif;
+    font-size: 13px;
+  }
+  .player-strip .tray .gl.red { color: var(--red); }
+  .player-strip .tray .gl.black { color: #ddd; }
+  .player-strip.is-active {
+    background: var(--accent-soft);
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px var(--accent-strong);
+  }
+  .player-strip .turn-mini {
+    font-size: 10px;
+    color: var(--accent);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* ---- desktop frame ----------------------------------------------- */
+  .desktop-frame {
+    background: #0d0d0f;
+    border: 1px solid var(--surface-border);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  }
+  .desktop-frame .titlebar {
+    height: 28px;
+    background: #1a1a1f;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--surface-border);
+  }
+  .desktop-frame .titlebar .dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+  }
+  .desktop-frame .titlebar .dot.r { background: #ff5f57; }
+  .desktop-frame .titlebar .dot.y { background: #febc2e; }
+  .desktop-frame .titlebar .dot.g { background: #28c840; }
+  .desktop-frame .body {
+    padding: 18px 22px;
+    min-height: 540px;
+  }
+
+  /* ---- annotations ------------------------------------------------- */
+  .annot {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .annot h4 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+  }
+  .annot ul {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--muted);
+  }
+  .annot li { margin-bottom: 3px; }
+  .annot li b { color: var(--fg); font-weight: 600; }
+
+  /* ---- coordinates ------------------------------------------------- */
+  .board-wrap {
+    position: relative;
+  }
+  .board-wrap .files {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 3px;
+    padding: 0 5px;
+    font-size: 8px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 1px;
+  }
+  .board-wrap .files span { font-family: ui-monospace, monospace; }
+  .desktop-frame .board-wrap .files { font-size: 11px; padding: 0 8px; }
+  .iphone.landscape .board-wrap .files { font-size: 9px; }
+
+  /* ---- desktop side panel ----------------------------------------- */
+  .desktop-game-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 16px;
+    align-items: start;
+  }
+  .transcript-panel {
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+  }
+  .transcript-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--surface-border);
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+  }
+  .transcript-head h3 {
+    margin: 0;
+    font-size: 10px;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .transcript-row {
+    display: grid;
+    grid-template-columns: 22px 22px 20px 1fr;
+    gap: 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    padding: 3px 4px;
+    align-items: center;
+  }
+  .transcript-row.current { background: var(--accent-soft); border-radius: 4px; }
+  .t-mover {
+    font-size: 9px;
+    font-weight: 700;
+    text-align: center;
+    border-radius: 4px;
+    padding: 1px 3px;
+  }
+  .t-mover.p1 { background: var(--red-soft); color: var(--red-light); }
+  .t-mover.p2 { background: rgba(80, 80, 80, 0.5); color: #ddd; }
+  .t-piece {
+    font-family: "Noto Sans CJK TC", "PingFang TC", system-ui, sans-serif;
+    color: var(--accent);
+    text-align: center;
+  }
+  .t-num { color: var(--muted); }
+
+  /* ---- key/legend ------------------------------------------------- */
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    margin-top: 16px;
+  }
+  .legend-item {
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+  .legend-item .num {
+    display: inline-block;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--primary-fg);
+    text-align: center;
+    line-height: 18px;
+    font-weight: 700;
+    font-size: 10px;
+    margin-right: 6px;
+  }
+  .pin {
+    position: absolute;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--primary-fg);
+    text-align: center;
+    line-height: 18px;
+    font-weight: 700;
+    font-size: 10px;
+    z-index: 10;
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.4);
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<header>
+  <h1>Banqi game-page UI — current vs proposed mockups</h1>
+  <p>Side-by-side comparisons for iPhone portrait (390×844), iPhone landscape (844×390), and desktop. The "current" renders mirror today's layout (`#view-game` in <code>web/index.html</code>); the "proposed" renders apply the priority fixes from the audit. Numbered pins reference the legend at the bottom of each section.</p>
+</header>
+
+<!-- ============================================================
+     SECTION 1: iPhone Portrait
+     ============================================================ -->
+<section class="section">
+  <div class="section-head">
+    <h2>iPhone portrait (390 × 844)</h2>
+    <span class="subt">The orientation most users start in. Today, chrome consumes ~60% of the screen and the board ends up the smallest element on the page.</span>
+  </div>
+
+  <div class="comparison portrait">
+
+    <!-- CURRENT -->
+    <div>
+      <div class="col-head">
+        <span class="badge current">CURRENT</span>
+        <span>What ships today</span>
+      </div>
+      <div class="iphone portrait">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="safari-bar-top">claude.ai/banqi — banqi.app</div>
+          <div class="app">
+            <!-- Brand header -->
+            <div style="position:relative; padding-bottom: 4px;">
+              <div class="brand">Banqi · 半棋</div>
+              <div class="sub">Chinese Dark Chess · play online or share a screen</div>
+              <button class="help-btn">?</button>
+              <span class="pin" style="top:0; right:38px;">1</span>
+            </div>
+            <!-- Nav wraps onto 2 rows -->
+            <div class="nav" style="position:relative;">
+              <span class="pill active">Play</span>
+              <span class="pill">My games</span>
+              <span class="pill">Friends</span>
+              <span class="pill">Leaderboard</span>
+              <span class="pill">History</span>
+              <span class="pill">📖 Rules</span>
+              <span class="pill">⚙</span>
+              <span class="pin" style="top:-6px; right:-6px;">2</span>
+            </div>
+            <!-- Verbose game header -->
+            <div style="position:relative; background: rgba(40,40,44,0.6); margin: 4px -8px 0; padding: 8px 8px; border-top: 1px solid var(--surface-border); border-bottom: 1px solid var(--surface-border);">
+              <div class="meta-row">
+                <span class="meta-label">Room</span>
+                <span class="room-code">7K3M2</span>
+                <span class="mode-chip">Standard</span>
+                <span class="mode-chip">10+5</span>
+                <span class="copy-link">Copy invite link</span>
+                <span class="conn-state">Online</span>
+              </div>
+              <div class="meta-row">
+                <span class="turn-pill"><span class="dot"></span>Your turn</span>
+                <span class="meta-label">vs</span> <b style="font-size:11px;">Wen</b>
+                <span class="mode-chip" style="background:var(--red-soft); color:var(--red-light); border-color:rgba(210,67,67,0.4);">Red</span>
+                <span style="margin-left:auto; color:#ff8c8c; font-size:10px; border:1px solid rgba(210,67,67,0.5); padding:1px 6px; border-radius:6px;">Resign</span>
+              </div>
+              <div class="clocks-row">
+                <div class="clock active"><div class="nm">You</div><div class="tm">8:42</div></div>
+                <div class="clock"><div class="nm">Wen</div><div class="tm">9:18</div></div>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Move</span> <b style="font-size:11px;">14</b>
+                <span class="meta-label">Status</span> <span style="font-size:11px;">Red to move</span>
+              </div>
+              <div class="piece-counts">
+                <div class="pc-row red">
+                  <span class="pc-side red"><span class="gl">帥</span>Red</span>
+                  <span class="pc-chip">帥 1</span><span class="pc-chip">仕 2</span><span class="pc-chip">相 2</span><span class="pc-chip">俥 1</span><span class="pc-chip">傌 1</span>
+                </div>
+                <div class="pc-row black">
+                  <span class="pc-side black"><span class="gl">將</span>Blk</span>
+                  <span class="pc-chip">將 1</span><span class="pc-chip">士 2</span><span class="pc-chip">象 1</span><span class="pc-chip">車 2</span><span class="pc-chip">馬 2</span>
+                </div>
+              </div>
+              <span class="pin" style="top:6px; left:-6px;">3</span>
+            </div>
+            <div class="rotate-hint">📱 Rotate your device for a bigger board.<span class="pin" style="position:relative; display:inline-block; margin-left:6px; top:auto;">4</span></div>
+
+            <!-- Tiny board -->
+            <div style="position:relative;">
+              <div class="board">
+                <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">帥<span class="v">7</span></div><div class="cell empty"></div>
+                <div class="cell fd">背</div><div class="cell fu black">將<span class="v">7</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                <div class="cell fd">背</div><div class="cell fu red selected">俥<span class="v">4</span></div><div class="cell legal-target empty"></div><div class="cell fd">背</div>
+                <div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black last-move">兵<span class="v">1</span></div>
+                <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">傌<span class="v">3</span></div><div class="cell empty"></div>
+                <div class="cell fd">背</div><div class="cell fu black">象<span class="v">5</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                <div class="cell fd">背</div><div class="cell fu red">炮<span class="v">2</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black">卒<span class="v">1</span></div><div class="cell fd">背</div>
+              </div>
+              <span class="pin" style="top:6px; right:-6px;">5</span>
+            </div>
+
+            <div class="tip">Tip: bookmark this page or save the room link.</div>
+            <!-- Transcript -->
+            <div style="background:var(--surface-1); border:1px solid var(--surface-border); border-radius: 8px; padding: 6px 8px; font-size:10px; margin-top: 6px;">
+              <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--surface-border); padding-bottom:3px; margin-bottom:3px;">
+                <span style="color:var(--accent); font-weight:700; text-transform:uppercase; letter-spacing:0.06em; font-size:9px;">Move list</span>
+                <span style="color:var(--muted);">14 / 14</span>
+              </div>
+              <div style="font-family: ui-monospace, monospace; line-height: 1.6;">
+                <div>12. <span style="color:#ef8a8a;">Red</span> 傌 c2-c3</div>
+                <div>13. <span style="color:#ddd;">Blk</span> 卒 g4 (flip)</div>
+                <div style="background:var(--accent-soft); border-radius:4px; padding: 0 3px;">14. <span style="color:#ef8a8a;">Red</span> 俥 b3 →</div>
+              </div>
+            </div>
+            <div style="display:flex; gap:6px; margin-top:8px; position:relative;">
+              <span style="font-size:10px; padding:4px 8px; background:var(--surface-3); border:1px solid var(--surface-border); border-radius: 6px;">Resign</span>
+              <span style="font-size:10px; padding:4px 8px; background:var(--primary); color:var(--primary-fg); border-radius: 6px; font-weight:600;">Rematch</span>
+              <span style="font-size:10px; padding:4px 8px; color:var(--accent); text-decoration:underline; text-decoration-style:dotted;">Back to lobby</span>
+              <span class="pin" style="top:-8px; right:-6px;">6</span>
+            </div>
+          </div>
+          <div class="safari-bar-bot"></div>
+        </div>
+        <div class="home-bar"></div>
+      </div>
+
+      <div class="annot">
+        <h4>Pain points</h4>
+        <ul>
+          <li><b>1</b> Marketing header eats 60 px mid-game.</li>
+          <li><b>2</b> 7-item nav wraps to two rows of pills.</li>
+          <li><b>3</b> 5-row game header is sticky — the whole block follows the user when they scroll.</li>
+          <li><b>4</b> "Rotate your phone" hint asks the user to compensate for the layout.</li>
+          <li><b>5</b> Board ends up only ~180 px tall on a 844-px-tall device.</li>
+          <li><b>6</b> Resign / Rematch / Back live below the transcript — out of thumb reach.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- PROPOSED -->
+    <div>
+      <div class="col-head">
+        <span class="badge proposed">PROPOSED</span>
+        <span>Rotate-to-fit board + slim chrome</span>
+      </div>
+      <div class="iphone portrait">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="safari-bar-top">banqi.app · room 7K3M2</div>
+          <div class="app no-scroll" style="padding:0; display:flex; flex-direction:column;">
+            <!-- Slim sticky strip with just turn + clocks -->
+            <div class="top-strip">
+              <span class="back">←</span>
+              <span class="you-chip">YOU · RED</span>
+              <span class="clk active">8:42</span>
+              <span class="clk">9:18</span>
+              <span class="more">⋯</span>
+            </div>
+
+            <!-- Opponent material tray -->
+            <div style="padding: 4px 10px;">
+              <div class="player-strip">
+                <div class="avatar black">W</div>
+                <div>
+                  <div class="name">Wen <span style="font-size:10px; color:var(--muted);">· Black</span></div>
+                </div>
+                <div class="tray" style="justify-content:flex-end;">
+                  <span class="gl black">將</span><span class="gl black">士</span><span class="gl black">士</span><span class="gl black">象</span><span class="gl black">車</span><span class="gl black">車</span><span class="gl black">馬</span><span class="gl black">馬</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Big rotated board fills the rest of the viewport -->
+            <div style="flex:1; display:flex; align-items:center; justify-content:center; padding: 0 14px; position:relative;">
+              <div class="board-wrap" style="width: 100%; max-width: 360px;">
+                <div class="board" style="aspect-ratio: 4/8; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(8, 1fr);">
+                  <!-- 4-wide × 8-tall, board is rotated logically so player sees ranks vertically -->
+                  <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div>
+                  <div class="cell fu black">將<span class="v">7</span></div><div class="cell fu red">帥<span class="v">7</span></div><div class="cell empty"></div><div class="cell fd">背</div>
+                  <div class="cell fd">背</div><div class="cell fu red selected" style="font-size:24px;">俥<span class="v">4</span></div><div class="cell legal-target empty"></div><div class="cell fd">背</div>
+                  <div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell fu black last-move">兵<span class="v">1</span></div><div class="cell fd">背</div>
+                  <div class="cell fd">背</div><div class="cell fu red">傌<span class="v">3</span></div><div class="cell fd">背</div><div class="cell empty"></div>
+                  <div class="cell fu black">象<span class="v">5</span></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">炮<span class="v">2</span></div>
+                  <div class="cell fd">背</div><div class="cell fu black">卒<span class="v">1</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                  <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div>
+                </div>
+              </div>
+              <span class="pin" style="top:10px; right:14px;">B</span>
+              <span class="pin" style="top:10px; left:14px;">A</span>
+            </div>
+
+            <!-- Player strip (active) with material tray -->
+            <div style="padding: 4px 10px;">
+              <div class="player-strip is-active">
+                <div class="avatar red">Y</div>
+                <div>
+                  <div class="name">You <span class="turn-mini">· your turn</span></div>
+                </div>
+                <div class="tray" style="justify-content:flex-end;">
+                  <span class="gl red">帥</span><span class="gl red">仕</span><span class="gl red">仕</span><span class="gl red">相</span><span class="gl red">相</span><span class="gl red">俥</span><span class="gl red">傌</span><span class="gl red">炮</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Thumb-reach bottom bar -->
+            <div class="bottom-bar" style="position:relative;">
+              <span class="b icon">↶</span>
+              <span class="b">Offer draw</span>
+              <span class="b danger">Resign</span>
+              <span class="pin" style="top:-10px; right:0;">C</span>
+            </div>
+          </div>
+        </div>
+        <div class="home-bar"></div>
+      </div>
+
+      <div class="annot">
+        <h4>Wins</h4>
+        <ul>
+          <li><b>Slim top strip</b> — one 36 px row with back ←, "You · Red" chip, both clocks (active one highlighted), and an overflow ⋯ for room/copy/conn-state/draw-offer.</li>
+          <li><b>A,B Board fills the screen</b> — board rotated to a 4×8 portrait shape so cells are 2× larger and chess-like; <code>min(100dvh − chrome, 100vw × 2)</code> sizing.</li>
+          <li><b>Per-player material trays</b> on either side of the board double as turn indicator (active player gets the soft accent ring), avatar, name, color cue, and captured pieces — replacing the entire counts block.</li>
+          <li><b>C Thumb-reach action bar</b> anchored with <code>env(safe-area-inset-bottom)</code>: undo (replay step), offer-draw, resign. Rematch/back-to-lobby take over after game ends.</li>
+          <li>Game header collapses to ⋯ menu (room code, invite link, conn state, time control, mode chip, status messages, transcript).</li>
+          <li>Site brand + 7-item nav hidden inside the game view — left arrow handles "back".</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 2: iPhone Landscape
+     ============================================================ -->
+<section class="section">
+  <div class="section-head">
+    <h2>iPhone landscape (844 × 390)</h2>
+    <span class="subt">A 2:1 board in a 2.16:1 device should be the best-case scenario. Today it's the worst-case.</span>
+  </div>
+
+  <div class="comparison landscape">
+
+    <!-- CURRENT landscape -->
+    <div>
+      <div class="col-head">
+        <span class="badge current">CURRENT</span>
+        <span>Side-panel breakpoint is 900 px, so iPhone never hits it</span>
+      </div>
+      <div class="iphone landscape">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="safari-bar-top">banqi.app</div>
+          <div class="app" style="padding: 6px 30px;">
+            <div style="position:relative;">
+              <div class="brand" style="font-size:14px;">Banqi · 半棋</div>
+              <div class="sub" style="font-size:9px;">Chinese Dark Chess · play online or share a screen</div>
+              <span class="pin" style="top:0; right:-4px;">7</span>
+            </div>
+            <div class="nav" style="margin:4px 0; position:relative;">
+              <span class="pill active">Play</span><span class="pill">My games</span><span class="pill">Friends</span><span class="pill">Leaderboard</span><span class="pill">History</span><span class="pill">📖 Rules</span><span class="pill">⚙</span>
+            </div>
+            <div style="background: rgba(40,40,44,0.6); margin: 0 -22px; padding: 4px 22px; border-bottom:1px solid var(--surface-border); position:relative;">
+              <div class="meta-row" style="margin:1px 0;">
+                <span class="meta-label">Room</span><span class="room-code">7K3M2</span>
+                <span class="mode-chip">Standard</span><span class="mode-chip">10+5</span>
+                <span class="copy-link">Copy invite link</span>
+                <span class="turn-pill" style="margin-left:auto;"><span class="dot"></span>Your turn</span>
+                <span class="conn-state" style="margin-left:0;">Online</span>
+              </div>
+              <div class="meta-row" style="margin:1px 0;">
+                <div class="clock active" style="padding:2px 6px;"><div class="nm" style="font-size:8px;">You</div><div class="tm" style="font-size:11px;">8:42</div></div>
+                <div class="clock" style="padding:2px 6px;"><div class="nm" style="font-size:8px;">Wen</div><div class="tm" style="font-size:11px;">9:18</div></div>
+                <span class="meta-label">Move</span> <b style="font-size:10px;">14</b>
+                <span class="meta-label">Status</span> <span style="font-size:10px;">Red to move</span>
+              </div>
+              <span class="pin" style="top:4px; right:30px;">8</span>
+            </div>
+            <div style="position:relative;">
+              <div class="board" style="margin: 4px 0;">
+                <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">帥<span class="v">7</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">將<span class="v">7</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                <div class="cell fd">背</div><div class="cell fu red selected">俥<span class="v">4</span></div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black last-move">兵<span class="v">1</span></div>
+                <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">傌<span class="v">3</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">象<span class="v">5</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                <div class="cell fd">背</div><div class="cell fu red">炮<span class="v">2</span></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black">卒<span class="v">1</span></div><div class="cell fd">背</div>
+              </div>
+              <span class="pin" style="bottom:0; right:-4px;">9</span>
+            </div>
+            <!-- transcript would be below — clipped here -->
+          </div>
+        </div>
+        <div class="home-bar"></div>
+      </div>
+
+      <div class="annot">
+        <h4>Pain points</h4>
+        <ul>
+          <li><b>7</b> Brand strip + nav still consume ~70 px of a 390-px-tall viewport.</li>
+          <li><b>8</b> Sticky verbose header stays pinned in landscape too.</li>
+          <li><b>9</b> Transcript is still below the board (breakpoint is 900 px). The board ends up squeezed into ~200 px of vertical space, smaller in landscape than it should be in portrait.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- PROPOSED landscape -->
+    <div>
+      <div class="col-head">
+        <span class="badge proposed">PROPOSED</span>
+        <span>Drop side-panel breakpoint to 720 px; immersive chrome</span>
+      </div>
+      <div class="iphone landscape">
+        <div class="notch"></div>
+        <div class="screen">
+          <div class="app no-scroll" style="padding:0; display:flex; flex-direction:column;">
+            <!-- Slim top strip -->
+            <div class="top-strip">
+              <span class="back">←</span>
+              <span class="grow" style="display:flex; gap:6px; align-items:center;">
+                <span class="you-chip">YOU · RED</span>
+                <span style="font-size:11px; color:var(--muted);">vs</span>
+                <span class="you-chip is-black">Wen · BLACK</span>
+              </span>
+              <span class="clk active">8:42</span>
+              <span class="clk">9:18</span>
+              <span class="more">⋯</span>
+            </div>
+
+            <!-- Two-column layout: board + transcript -->
+            <div style="flex:1; display:grid; grid-template-columns: 1fr 200px; gap: 10px; padding: 8px 12px; min-height: 0; position:relative;">
+              <!-- Board column -->
+              <div style="display:flex; flex-direction:column; gap: 4px; min-width: 0;">
+                <!-- Black player strip (top) -->
+                <div class="player-strip" style="padding: 2px 4px;">
+                  <div class="avatar black" style="width:22px;height:22px;font-size:10px;">W</div>
+                  <span style="font-size:11px; font-weight:600;">Wen</span>
+                  <span class="tray" style="font-size:11px;">
+                    <span class="gl black">將</span><span class="gl black">士</span><span class="gl black">士</span><span class="gl black">象</span><span class="gl black">車</span><span class="gl black">車</span><span class="gl black">馬</span><span class="gl black">馬</span>
+                  </span>
+                </div>
+                <div class="board-wrap" style="flex:1; display:flex; align-items:center;">
+                  <div class="board" style="margin:0; width:100%;">
+                    <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">帥<span class="v">7</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">將<span class="v">7</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                    <div class="cell fd">背</div><div class="cell fu red selected">俥<span class="v">4</span></div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black last-move">兵<span class="v">1</span></div>
+                    <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">傌<span class="v">3</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">象<span class="v">5</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                    <div class="cell fd">背</div><div class="cell fu red">炮<span class="v">2</span></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black">卒<span class="v">1</span></div><div class="cell fd">背</div>
+                  </div>
+                </div>
+                <!-- Red player strip (bottom, active) -->
+                <div class="player-strip is-active" style="padding: 2px 4px;">
+                  <div class="avatar red" style="width:22px;height:22px;font-size:10px;">Y</div>
+                  <span style="font-size:11px; font-weight:600;">You</span>
+                  <span class="turn-mini">· your turn</span>
+                  <span class="tray" style="font-size:11px; justify-content:flex-end;">
+                    <span class="gl red">帥</span><span class="gl red">仕</span><span class="gl red">仕</span><span class="gl red">相</span><span class="gl red">相</span><span class="gl red">俥</span><span class="gl red">傌</span><span class="gl red">炮</span>
+                  </span>
+                </div>
+              </div>
+
+              <!-- Transcript column -->
+              <div class="transcript-panel" style="height: 100%; display:flex; flex-direction:column; min-height: 0;">
+                <div class="transcript-head">
+                  <h3>Moves</h3>
+                  <span style="font-size:9px; color:var(--muted);">14 / 14</span>
+                </div>
+                <div style="flex:1; overflow:auto; font-size:10px;">
+                  <div class="transcript-row"><span class="t-num">11.</span><span class="t-mover p1">R</span><span class="t-piece">兵</span><span>e4-e3</span></div>
+                  <div class="transcript-row"><span class="t-num">12.</span><span class="t-mover p2">B</span><span class="t-piece">馬</span><span>g2-f4</span></div>
+                  <div class="transcript-row"><span class="t-num">13.</span><span class="t-mover p1">R</span><span class="t-piece">傌</span><span>c2-c3</span></div>
+                  <div class="transcript-row current"><span class="t-num">14.</span><span class="t-mover p2">B</span><span class="t-piece">卒</span><span>flip</span></div>
+                </div>
+                <div style="display:flex; gap:4px; padding-top:6px; border-top:1px solid var(--surface-border); margin-top:6px;">
+                  <span style="flex:1; font-size:9px; text-align:center; padding:4px; background:var(--surface-2); border-radius:4px; color:var(--muted);">⏮</span>
+                  <span style="flex:1; font-size:9px; text-align:center; padding:4px; background:var(--surface-2); border-radius:4px; color:var(--muted);">◀</span>
+                  <span style="flex:1; font-size:9px; text-align:center; padding:4px; background:var(--accent-soft); border-radius:4px; color:var(--accent); font-weight:700;">LIVE</span>
+                  <span style="flex:1; font-size:9px; text-align:center; padding:4px; background:var(--surface-2); border-radius:4px; color:var(--muted);">▶</span>
+                </div>
+              </div>
+
+              <span class="pin" style="top:6px; left:10px;">D</span>
+              <span class="pin" style="bottom:6px; right:6px;">E</span>
+            </div>
+          </div>
+        </div>
+        <div class="home-bar"></div>
+      </div>
+
+      <div class="annot">
+        <h4>Wins</h4>
+        <ul>
+          <li><b>D Side-panel layout at 720 px</b> — iPhone Pro Max landscape (≥844 CSS-px) now gets transcript next to the board instead of below it.</li>
+          <li><b>E Board fills the short axis</b> — once the site header + nav + multi-row meta are gone, the board can size to <code>min(100dvh − 64px, container × 0.5)</code>.</li>
+          <li>Hidden Safari bottom bar — landscape gets the immersive treatment automatically.</li>
+          <li>Both players' material trays act as the turn indicator (no separate "Your turn" pill needed because the active strip glows).</li>
+          <li>Transcript controls (⏮ ◀ LIVE ▶) live below the move list in the side panel — never in the way.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     SECTION 3: Desktop
+     ============================================================ -->
+<section class="section">
+  <div class="section-head">
+    <h2>Desktop (≥ 1280 px)</h2>
+    <span class="subt">A 1040-px page cap leaves the board at ~660 px max on a 1440 display. The board should keep growing.</span>
+  </div>
+
+  <div class="comparison desktop">
+
+    <!-- CURRENT desktop -->
+    <div>
+      <div class="col-head">
+        <span class="badge current">CURRENT</span>
+        <span>1040 px page · board ≈ 660 px wide max</span>
+      </div>
+      <div class="desktop-frame" style="max-width: 1440px; margin: 0 auto;">
+        <div class="titlebar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span style="color:var(--muted); font-size:11px; margin-left:10px;">Banqi · 半棋</span></div>
+        <div class="body" style="background: linear-gradient(180deg, var(--surface-0) 0%, #0d0d0f 100%);">
+          <div style="max-width: 1040px; margin: 0 auto; position:relative;">
+            <div style="position:relative;">
+              <div class="brand" style="font-size:22px;">Banqi · 半棋</div>
+              <div class="sub" style="font-size:13px;">Chinese Dark Chess · play online or share a screen</div>
+              <button class="help-btn" style="top:6px; right:6px; width:30px; height:30px;">?</button>
+            </div>
+            <div class="nav" style="margin: 12px 0;">
+              <span class="pill active" style="font-size:13px; padding:6px 14px;">Play</span>
+              <span class="pill" style="font-size:13px; padding:6px 14px;">My games</span>
+              <span class="pill" style="font-size:13px; padding:6px 14px;">Friends</span>
+              <span class="pill" style="font-size:13px; padding:6px 14px;">Leaderboard</span>
+              <span class="pill" style="font-size:13px; padding:6px 14px;">History</span>
+              <span style="flex:1;"></span>
+              <span class="pill" style="font-size:13px; padding:6px 14px;">📖 Rules</span>
+              <span class="pill" style="font-size:13px; padding:6px 14px;">⚙</span>
+            </div>
+
+            <div style="background:var(--surface-2); border:1px solid var(--surface-border); border-radius: 14px; padding: 16px 20px;">
+              <!-- Verbose game header -->
+              <div class="meta-row" style="font-size:12px;">
+                <span class="meta-label">Room</span><span class="room-code">7K3M2</span>
+                <span class="mode-chip">Standard</span><span class="mode-chip">10+5</span>
+                <span class="copy-link">Copy invite link</span>
+                <span class="conn-state">Online</span>
+              </div>
+              <div class="meta-row" style="font-size:12px;">
+                <span class="turn-pill"><span class="dot"></span>Your turn</span>
+                <span class="meta-label">vs</span> <b>Wen</b>
+                <span class="mode-chip" style="background:var(--red-soft); color:var(--red-light);">Red</span>
+                <label style="font-size:12px; color:var(--muted); display:inline-flex; align-items:center; gap:4px;"><input type="checkbox"> Offer draw</label>
+                <span style="margin-left:auto; color:#ff8c8c; padding:4px 12px; border:1px solid rgba(210,67,67,0.5); border-radius:6px; font-size:12px;">Resign</span>
+              </div>
+              <div class="clocks-row">
+                <div class="clock active"><div class="nm">You</div><div class="tm">8:42</div></div>
+                <div class="clock"><div class="nm">Wen</div><div class="tm">9:18</div></div>
+              </div>
+              <div class="meta-row" style="font-size:12px;">
+                <span class="meta-label">Move</span> <b>14</b>
+                <span class="meta-label">Status</span> Red to move
+              </div>
+
+              <!-- Side panel layout: board + transcript -->
+              <div class="desktop-game-layout" style="margin-top:14px;">
+                <div class="board-wrap">
+                  <div class="board" style="margin:0;">
+                    <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">帥<span class="v">7</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">將<span class="v">7</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                    <div class="cell fd">背</div><div class="cell fu red selected">俥<span class="v">4</span></div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black last-move">兵<span class="v">1</span></div>
+                    <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">傌<span class="v">3</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">象<span class="v">5</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                    <div class="cell fd">背</div><div class="cell fu red">炮<span class="v">2</span></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black">卒<span class="v">1</span></div><div class="cell fd">背</div>
+                  </div>
+                </div>
+                <div class="transcript-panel">
+                  <div class="transcript-head"><h3>Move list</h3><span style="font-size:10px; color:var(--muted);">14 / 14</span></div>
+                  <div style="font-size:11px;">
+                    <div class="transcript-row"><span class="t-num">11.</span><span class="t-mover p1">R</span><span class="t-piece">兵</span><span>e4-e3</span></div>
+                    <div class="transcript-row"><span class="t-num">12.</span><span class="t-mover p2">B</span><span class="t-piece">馬</span><span>g2-f4</span></div>
+                    <div class="transcript-row"><span class="t-num">13.</span><span class="t-mover p1">R</span><span class="t-piece">傌</span><span>c2-c3</span></div>
+                    <div class="transcript-row current"><span class="t-num">14.</span><span class="t-mover p2">B</span><span class="t-piece">卒</span><span>flip</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <span class="pin" style="top:-6px; right:-22px;">10</span>
+            <span class="pin" style="bottom:200px; right:-22px;">11</span>
+          </div>
+          <!-- Visualize unused space at sides -->
+          <div style="position:absolute; top:60px; right:0; bottom:0; width: calc((100% - 1040px) / 2); background: repeating-linear-gradient(45deg, transparent 0, transparent 10px, rgba(210, 67, 67, 0.08) 10px, rgba(210, 67, 67, 0.08) 20px); pointer-events:none;"></div>
+          <div style="position:absolute; top:60px; left:0; bottom:0; width: calc((100% - 1040px) / 2); background: repeating-linear-gradient(45deg, transparent 0, transparent 10px, rgba(210, 67, 67, 0.08) 10px, rgba(210, 67, 67, 0.08) 20px); pointer-events:none;"></div>
+        </div>
+      </div>
+
+      <div class="annot">
+        <h4>Pain points</h4>
+        <ul>
+          <li><b>10</b> Hard 1040-px cap leaves ~400 px of unused screen on each side on a 1440 display (shown shaded red).</li>
+          <li><b>11</b> Board never grows past ~660 px wide / 330 px tall — small for a desktop game.</li>
+          <li>No board coordinate labels (a–h / 1–4) despite move notation using them.</li>
+          <li>Captured-pieces row above board is a wall of identical chips; hard to scan material balance at a glance.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- PROPOSED desktop -->
+    <div>
+      <div class="col-head">
+        <span class="badge proposed">PROPOSED</span>
+        <span>Fluid board · in-game chrome collapses · coordinates · material trays</span>
+      </div>
+      <div class="desktop-frame" style="max-width: 1440px; margin: 0 auto;">
+        <div class="titlebar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span style="color:var(--muted); font-size:11px; margin-left:10px;">Banqi · room 7K3M2 · vs Wen</span></div>
+        <div class="body" style="background: linear-gradient(180deg, var(--surface-0) 0%, #0d0d0f 100%); padding: 14px 22px;">
+          <!-- Slim in-game header -->
+          <div class="top-strip" style="position:static; border-radius: 10px; margin-bottom: 14px;">
+            <span class="back">←</span>
+            <span class="grow" style="display:flex; gap:8px; align-items:center;">
+              <span style="font-weight:700; color:var(--accent);">Banqi · 半棋</span>
+              <span style="color:var(--muted); font-size:12px;">room</span>
+              <span class="room-code">7K3M2</span>
+              <span class="mode-chip">Standard</span>
+              <span class="mode-chip">10+5</span>
+              <span class="copy-link">Copy invite</span>
+            </span>
+            <span class="more" style="width:auto; padding: 4px 10px;">⋯</span>
+          </div>
+
+          <!-- Game layout: board grows, side panels balance -->
+          <div style="display:grid; grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(280px, 360px); gap: 16px; align-items:start;">
+            <!-- LEFT: players + captures column -->
+            <div style="display:flex; flex-direction:column; gap: 10px;">
+              <div class="player-strip" style="padding: 8px 10px; background:var(--surface-2); border-radius: 10px; border: 1px solid var(--surface-border); flex-direction:column; align-items:stretch; gap:8px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <div class="avatar black">W</div>
+                  <div style="flex:1;">
+                    <div style="font-weight:600;">Wen</div>
+                    <div style="font-size:10px; color:var(--muted);">Black · 1542 ELO</div>
+                  </div>
+                  <span class="clk" style="font-size:14px;">9:18</span>
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:3px; padding-top:6px; border-top:1px solid var(--surface-border);">
+                  <span style="font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; width:100%;">Captured</span>
+                  <span class="gl red" style="font-family: 'Noto Sans CJK TC', system-ui, sans-serif; font-size:18px; color:var(--red); opacity:0.7;">兵</span>
+                  <span class="gl red" style="font-family: 'Noto Sans CJK TC', system-ui, sans-serif; font-size:18px; color:var(--red); opacity:0.7;">兵</span>
+                  <span class="gl red" style="font-family: 'Noto Sans CJK TC', system-ui, sans-serif; font-size:18px; color:var(--red); opacity:0.7;">相</span>
+                  <span style="font-size:11px; color:var(--success-fg); margin-left:6px; align-self:center;">+3</span>
+                </div>
+              </div>
+
+              <div class="player-strip is-active" style="padding: 8px 10px; border-radius: 10px; flex-direction:column; align-items:stretch; gap:8px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <div class="avatar red">Y</div>
+                  <div style="flex:1;">
+                    <div style="font-weight:600;">You <span class="turn-mini">· move</span></div>
+                    <div style="font-size:10px; color:var(--muted);">Red · 1601 ELO</div>
+                  </div>
+                  <span class="clk active" style="font-size:14px;">8:42</span>
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:3px; padding-top:6px; border-top:1px solid var(--accent-strong);">
+                  <span style="font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; width:100%;">Captured</span>
+                  <span class="gl black" style="font-family: 'Noto Sans CJK TC', system-ui, sans-serif; font-size:18px; color:#ddd; opacity:0.7;">卒</span>
+                  <span class="gl black" style="font-family: 'Noto Sans CJK TC', system-ui, sans-serif; font-size:18px; color:#ddd; opacity:0.7;">象</span>
+                </div>
+              </div>
+
+              <div style="background:var(--surface-1); border:1px solid var(--surface-border); border-radius: 10px; padding: 8px 12px; font-size:11px; color:var(--muted);">
+                <div style="font-size:9px; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:4px;">Status</div>
+                <div style="color:var(--fg); font-size:13px;">Red to move</div>
+              </div>
+              <span class="pin" style="position:relative; display:inline-block;">12</span>
+            </div>
+
+            <!-- CENTER: board with coordinate labels -->
+            <div style="display:flex; flex-direction:column; align-items:center; min-width:0;">
+              <div class="board-wrap" style="width:100%;">
+                <div class="board" style="margin:0;">
+                  <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">帥<span class="v">7</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">將<span class="v">7</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                  <div class="cell fd">背</div><div class="cell fu red selected">俥<span class="v">4</span></div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black last-move">兵<span class="v">1</span></div>
+                  <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">傌<span class="v">3</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">象<span class="v">5</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                  <div class="cell fd">背</div><div class="cell fu red">炮<span class="v">2</span></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black">卒<span class="v">1</span></div><div class="cell fd">背</div>
+                </div>
+                <div class="files">
+                  <span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span><span>h</span>
+                </div>
+              </div>
+              <div style="margin-top:10px; display:flex; gap: 8px; align-items:center;">
+                <span style="font-size:11px; color:var(--muted);">Move 14</span>
+                <span style="font-size:11px; color:var(--accent);">●</span>
+                <span style="font-size:11px;">Last: <span style="color:var(--accent);">B 卒 g3 (flip)</span></span>
+              </div>
+              <span class="pin" style="position:relative; display:inline-block; margin-top:6px;">13</span>
+            </div>
+
+            <!-- RIGHT: transcript + actions -->
+            <div style="display:flex; flex-direction:column; gap: 10px;">
+              <div class="transcript-panel" style="margin:0;">
+                <div class="transcript-head"><h3>Moves</h3><span style="font-size:10px; color:var(--muted);">14 / 14</span></div>
+                <div style="font-size:11px; max-height: 360px; overflow:auto;">
+                  <div class="transcript-row"><span class="t-num">10.</span><span class="t-mover p2">B</span><span class="t-piece">將</span><span>flip</span></div>
+                  <div class="transcript-row"><span class="t-num">11.</span><span class="t-mover p1">R</span><span class="t-piece">兵</span><span>e4-e3</span></div>
+                  <div class="transcript-row"><span class="t-num">12.</span><span class="t-mover p2">B</span><span class="t-piece">馬</span><span>g2-f4</span></div>
+                  <div class="transcript-row"><span class="t-num">13.</span><span class="t-mover p1">R</span><span class="t-piece">傌</span><span>c2-c3</span></div>
+                  <div class="transcript-row current"><span class="t-num">14.</span><span class="t-mover p2">B</span><span class="t-piece">卒</span><span>g4 flip</span></div>
+                </div>
+                <div style="display:flex; gap:4px; padding-top:6px; border-top:1px solid var(--surface-border); margin-top:6px;">
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--surface-2); border-radius:4px; color:var(--muted);">⏮</span>
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--surface-2); border-radius:4px; color:var(--muted);">◀</span>
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--accent-soft); border-radius:4px; color:var(--accent); font-weight:700;">LIVE</span>
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--surface-2); border-radius:4px; color:var(--muted);">▶</span>
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--surface-2); border-radius:4px; color:var(--muted);">PGN</span>
+                </div>
+              </div>
+              <div style="display:flex; gap: 6px;">
+                <span style="flex:1; font-size:12px; padding:8px 10px; background: var(--surface-3); border:1px solid var(--surface-border); border-radius: 8px; text-align:center;">Offer draw</span>
+                <span style="flex:1; font-size:12px; padding:8px 10px; color:#ff8c8c; border:1px solid rgba(210,67,67,0.5); border-radius: 8px; text-align:center;">Resign</span>
+              </div>
+              <span class="pin" style="position:relative; display:inline-block;">14</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="annot">
+        <h4>Wins</h4>
+        <ul>
+          <li><b>12 Per-player cards</b> — avatar, name, ELO, color, clock, and a real captured-pieces tray (faded glyphs) directly under each player. Active player's card glows. Replaces the entire piece-counts block.</li>
+          <li><b>13 Board grows to fill the middle column</b> — three-column layout sizes board to <code>min(viewport − sidebars, container)</code>, so a 1440-px display gets a ~720–800 px board. Page cap removed for the game view only. File labels (a–h) under the board match transcript notation.</li>
+          <li><b>14 Compact transcript + actions</b> — controls live under the move list with a clear LIVE button and PGN export. Resign sits below the transcript, far from any "click to play" interactions.</li>
+          <li>In-game top strip replaces the marketing header + 7-item nav with a one-row breadcrumb (back ←, room code, mode, copy, ⋯).</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     Notes
+     ============================================================ -->
+<section class="section">
+  <div class="section-head">
+    <h2>Notes on the mockups</h2>
+  </div>
+  <div class="annot">
+    <ul>
+      <li>The portrait "rotate the board, not the user" approach (4×8 grid) is the biggest behavioral change. An alternative is a CSS <code>transform: rotate(90deg)</code> applied only to the board container — that preserves the existing 8×4 grid rendering but reads as portrait. Either works; rotating the grid in CSS layout is cleaner because hit-testing and coordinates stay native.</li>
+      <li>The active-player glow + per-side material tray makes the explicit "Your turn" pill redundant in most states. Keep the pill for accessibility/screen-reader text and an animated affordance the first few moves; consider hiding it after the user has made a move or two.</li>
+      <li>Coordinate labels (a–h under the board, 1–4 along one side) are essential for desktop where notation is visible in the transcript, but they can be optional on mobile to save vertical space.</li>
+      <li>"Immersive landscape" — when entering landscape on iPhone, auto-hide the site header and nav, expand board to fill the viewport short axis. The user's last orientation can be remembered across sessions.</li>
+      <li>The proposed bottom action bar on portrait is the right place for context-sensitive actions: <em>Offer draw / Resign</em> during play, <em>Rematch / Analyze / Back to lobby</em> after game end.</li>
+    </ul>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
