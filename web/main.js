@@ -27,7 +27,7 @@ import { bindBoardInput } from './board-input.js';
 import { toast } from './ui/toast.js';
 import { isTypingTarget, confirmModal } from './ui/modal.js';
 import { showGameOverModal } from './ui/game-over-modal.js';
-import { escapeHtml, initialsFor, GAME_MODES, normMode, modeLabel, AI_DIFFICULTY_LABELS, aiDifficultyLabel } from './util.js';
+import { escapeHtml, initialsFor, normMode, modeLabel, aiDifficultyLabel } from './util.js';
 import { maybeShowInstallButton, maybeShowAddToHomeHint, initInstallPrompt } from './ui/install.js';
 import { showKeyboardHelp } from './ui/keyboard-help.js';
 import { confirmThreefoldIfNeeded } from './ui/threefold-modal.js';
@@ -888,12 +888,6 @@ function wireOnlineRematch() {
       btn.disabled = false;
     }
   };
-}
-
-function turnLabel(state) {
-  if (!state.first_flip_done) return 'waiting for first flip';
-  if (state.game_over) return 'finished';
-  return state.side_to_move === state.my_player_index ? 'your turn' : 'opponent\'s turn';
 }
 
 // HTML for the prominent turn-indicator pill shown in game HUDs.
