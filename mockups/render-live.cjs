@@ -46,7 +46,7 @@ function injectBetaContent(coords) {
     [`${coords}-slim-header`]: `
       <a class="slim-back" href="#/" aria-label="Back to lobby">←</a>
       <div class="slim-mid">
-        <span class="slim-room"><span class="meta-label">Room</span> <code>7K3M2</code></span>
+        <code class="slim-room-code" aria-label="Room 7K3M2">7K3M2</code>
         <span class="mode-chip">Standard</span>
         <span class="mode-chip">10+5</span>
       </div>
@@ -85,9 +85,50 @@ function injectBetaContent(coords) {
         <span class="player-card-clock clock active"><span class="clock-time">8:42</span></span>
       </div>`,
     [`${coords}-bottom-bar`]: `
+      <button class="bb-btn bb-icon" type="button" aria-label="Step back">↶</button>
       <button class="bb-btn" type="button">Offer draw</button>
       <button class="bb-btn bb-danger" type="button">Resign</button>`,
   };
+}
+
+// Populate the transcript panel with a realistic move list so the screenshot
+// shows the lower half of portrait the way production users will see it.
+// In a real game this is rendered by replay.js `renderTranscript`; we
+// hand-roll a representative DOM that uses the production classes.
+function injectFakeTranscript(panelId) {
+  const rows = [
+    [8,  'p2', 'B', '士', 'flip'],
+    [9,  'p1', 'R', '炮', 'b1 flip'],
+    [10, 'p2', 'B', '將', 'flip'],
+    [11, 'p1', 'R', '兵', 'e4–e3'],
+    [12, 'p2', 'B', '馬', 'g2–f4'],
+    [13, 'p1', 'R', '傌', 'c2–c3'],
+    [14, 'p2', 'B', '卒', 'g4 flip', true],
+  ].map(([n, klass, label, glyph, notation, current]) => `
+    <button class="transcript-row${current ? ' current' : ''}" type="button">
+      <span class="t-num">${n}.</span>
+      <span class="t-mover mover-${klass}">${label}</span>
+      <span class="t-piece">${glyph}</span>
+      <span class="t-notation">${notation}</span>
+    </button>`).join('');
+  return `
+    const panel = document.getElementById('${panelId}');
+    if (panel) {
+      panel.innerHTML = \`
+        <div class="transcript-head">
+          <h3>Moves</h3>
+          <div class="transcript-controls">
+            <button type="button">⏮</button>
+            <button type="button">◀</button>
+            <span class="transcript-step">14 / 14</span>
+            <button type="button">▶</button>
+            <button type="button" class="transcript-export">PGN</button>
+          </div>
+        </div>
+        <div class="transcript-list">${rows.replace(/\`/g, '\\\\\`')}</div>
+      \`;
+    }
+  `;
 }
 
 // Also stuff some cells into the board so the board renders something.
@@ -127,7 +168,7 @@ function paintFakeBoard(boardId) {
       const page = await ctx.newPage();
       await page.goto(base + '/web/index.html', { waitUntil: 'networkidle' });
       // Apply layout + view via the actual settings + showView fns.
-      await page.evaluate(({ layout, view, slots, injectBoardCode }) => {
+      await page.evaluate(({ layout, view, slots, injectBoardCode, injectTranscriptCode }) => {
         document.body.dataset.gameLayout = layout;
         document.body.dataset.activeView = view;
         for (const sec of ['view-lobby','view-game','view-otb','view-ai','view-dashboard']) {
@@ -146,11 +187,16 @@ function paintFakeBoard(boardId) {
           // eslint-disable-next-line no-eval
           eval(injectBoardCode);
         }
+        if (injectTranscriptCode) {
+          // eslint-disable-next-line no-eval
+          eval(injectTranscriptCode);
+        }
       }, {
         layout: t.layout,
         view: t.view,
         slots: t.layout === 'beta' && t.view === 'game' ? injectBetaContent('game') : null,
         injectBoardCode: t.injectBoard ? paintFakeBoard(t.injectBoard + '-board') : null,
+        injectTranscriptCode: t.layout === 'beta' && t.view === 'game' ? injectFakeTranscript('game-transcript') : null,
       });
       await page.waitForTimeout(200);
       await page.screenshot({ path: `live-${t.name}.png`, fullPage: false });

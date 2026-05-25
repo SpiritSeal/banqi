@@ -2545,10 +2545,10 @@ body[data-game-layout="beta"] .game-slim-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 6px 10px;
   padding-top: calc(6px + env(safe-area-inset-top));
-  padding-left: max(12px, env(safe-area-inset-left));
-  padding-right: max(12px, env(safe-area-inset-right));
+  padding-left: max(10px, env(safe-area-inset-left));
+  padding-right: max(10px, env(safe-area-inset-right));
   background: rgba(28, 28, 34, 0.92);
   border-bottom: 1px solid var(--surface-border);
   backdrop-filter: blur(10px);
@@ -2579,22 +2579,9 @@ body[data-game-layout="beta"] .slim-mid {
   overflow: hidden;
   flex-wrap: wrap;
 }
-body[data-game-layout="beta"] .slim-room {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--muted);
-}
-body[data-game-layout="beta"] .slim-room .meta-label {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-body[data-game-layout="beta"] .slim-room code {
+body[data-game-layout="beta"] .slim-room-code {
   background: var(--surface-1);
-  padding: 1px 6px;
+  padding: 1px 8px;
   border-radius: 4px;
   font-family: ui-monospace, monospace;
   font-size: 11px;
@@ -2696,7 +2683,7 @@ body[data-game-layout="beta"] .player-card {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  background: var(--surface-1);
+  background: var(--surface-2);
   border: 1px solid var(--surface-border);
   border-radius: 10px;
   font-size: 11px;
@@ -2761,7 +2748,7 @@ body[data-game-layout="beta"] .player-card-move {
   margin-left: 2px;
 }
 body[data-game-layout="beta"] .player-card-sub {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--muted);
 }
 body[data-game-layout="beta"] .player-card-clock {
@@ -2826,9 +2813,9 @@ body[data-game-layout="beta"] .board-stack {
 body[data-game-layout="beta"] .board-coords {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
-  padding: 0 8px;
+  padding: 2px 8px 0;
   text-align: center;
-  font-size: 10px;
+  font-size: 9px;
   color: var(--muted);
   font-family: ui-monospace, monospace;
   letter-spacing: 0.04em;
@@ -2846,23 +2833,46 @@ body[data-game-layout="beta"] .board-coord-file { text-align: center; }
   }
 }
 
-/* Game-layout side panel earlier (was 900 px → now 720 px). Mobile-first
-   default remains single-column. */
+/* Mobile-portrait: the transcript fills the room left below the YOU card so
+   the page reads top-to-bottom with no awkward empty gap. We turn each
+   game view into a column-flex container and let the transcript grow. */
+body[data-game-layout="beta"][data-active-view="game"] #view-game,
+body[data-game-layout="beta"][data-active-view="otb"]  #view-otb,
+body[data-game-layout="beta"][data-active-view="ai"]   #view-ai {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - 8px);
+}
+body[data-game-layout="beta"] .game-layout {
+  flex: 1;
+  min-height: 0;
+}
+body[data-game-layout="beta"] .game-layout > .transcript-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+  margin-top: 8px;
+}
+body[data-game-layout="beta"] .game-layout > .transcript-panel .transcript-list {
+  flex: 1;
+  max-height: none;
+}
+
+/* Game-layout side panel earlier (was 900 px → now 720 px). The board column
+   carries opp + board + coords + you cards; transcript fills the right
+   column. The grid uses align-items:stretch so the transcript matches the
+   board column's height instead of floating at the top. */
 @media (min-width: 720px) {
   body[data-game-layout="beta"] .game-layout {
+    display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
-    align-items: start;
+    align-items: stretch;
+    gap: 12px;
   }
   body[data-game-layout="beta"] .game-layout > .board-stack { margin-top: 0; }
   body[data-game-layout="beta"] .game-layout > .transcript-panel {
     margin-top: 0;
-    max-height: calc(100dvh - 220px);
-    display: flex;
-    flex-direction: column;
-  }
-  body[data-game-layout="beta"] .game-layout > .transcript-panel .transcript-list {
-    max-height: none;
-    flex: 1;
+    max-height: calc(100dvh - 120px);
   }
 }
 
@@ -2902,6 +2912,13 @@ body[data-game-layout="beta"] .bb-btn {
   justify-content: center;
   font-family: inherit;
 }
+body[data-game-layout="beta"] .bb-btn.bb-icon {
+  flex: 0 0 44px;
+  padding: 10px 0;
+  font-size: 18px;
+  color: var(--muted);
+}
+body[data-game-layout="beta"] .bb-btn.bb-icon:hover { color: var(--fg); }
 body[data-game-layout="beta"] .bb-btn:hover { background: var(--surface-4); }
 body[data-game-layout="beta"] .bb-btn:focus-visible {
   outline: none;

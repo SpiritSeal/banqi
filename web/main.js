@@ -933,6 +933,12 @@ function paintBetaLayoutOnline(ctx) {
 function wireBottomBarOnline(rootEl, ctx) {
   if (!rootEl) return;
   const { view } = ctx;
+  const undoBtn = rootEl.querySelector('#bb-undo');
+  if (undoBtn) undoBtn.onclick = () => {
+    if (!active?.replay) return;
+    active.replay.goPrev();
+    refreshGame();
+  };
   const resignBtn = rootEl.querySelector('#bb-resign');
   if (resignBtn) {
     resignBtn.onclick = async () => {
@@ -1533,6 +1539,12 @@ function paintBetaLayoutOTB(ctx) {
 
 function wireBottomBarOTB(rootEl) {
   if (!rootEl) return;
+  const undoBtn = rootEl.querySelector('#bb-undo');
+  if (undoBtn) undoBtn.onclick = () => {
+    if (!active?.replay) return;
+    active.replay.goPrev();
+    refreshOTB();
+  };
   // Reuse the existing classic resign + rematch buttons by delegating to
   // their click handlers — they were just wired in refreshOTB().
   const resignBtn = rootEl.querySelector('#bb-resign');
@@ -1858,6 +1870,12 @@ function paintBetaLayoutAI(ctx) {
 
 function wireBottomBarAI(rootEl) {
   if (!rootEl) return;
+  const undoBtn = rootEl.querySelector('#bb-undo');
+  if (undoBtn) undoBtn.onclick = () => {
+    if (!active?.replay) return;
+    active.replay.goPrev();
+    refreshAI();
+  };
   const resignBtn = rootEl.querySelector('#bb-resign');
   if (resignBtn) resignBtn.onclick = () => { $('ai-resign').click(); };
   const newGameBtn = rootEl.querySelector('#bb-new-game');
@@ -2054,7 +2072,7 @@ function renderSlimGameHeaderHtml(opts) {
   return `
     <a class="slim-back" href="${backHref}" aria-label="Back to lobby"><span aria-hidden="true">←</span></a>
     <div class="slim-mid">
-      ${roomCode ? `<span class="slim-room"><span class="meta-label">Room</span> <code>${escapeHtml(roomCode)}</code></span>` : ''}
+      ${roomCode ? `<code class="slim-room-code" aria-label="Room ${escapeHtml(roomCode)}">${escapeHtml(roomCode)}</code>` : ''}
       ${modeText ? `<span class="mode-chip" aria-label="Win condition: ${escapeHtml(modeText)}">${escapeHtml(modeText)}</span>` : ''}
       ${tcText   ? `<span class="mode-chip" aria-label="Time control: ${escapeHtml(tcText)}">${escapeHtml(tcText)}</span>` : ''}
       ${replayChip}
@@ -2135,6 +2153,11 @@ function renderBottomActionBarHtml(opts) {
       <a class="link-btn" href="#/">Back to lobby</a>
       ${canRematch ? `<button type="button" class="bb-btn bb-primary" id="${rematchId}">${rematchLabel}</button>` : ''}`;
   }
+  // Mirrors the mockup's three-button bar: replay-step-back · offer draw · resign.
+  // The undo icon steps the move list back by one (i.e., enters replay mode);
+  // the transcript controls in the side panel can step further.
+  const undoBtn = `<button type="button" class="bb-btn bb-icon" id="bb-undo"
+                          aria-label="Step back through replay" title="Step back">↶</button>`;
   const drawBtn = canOfferDraw
     ? `<button type="button" class="bb-btn ${offerDrawActive ? 'bb-toggle-on' : ''}" id="bb-offer-draw"
                aria-pressed="${offerDrawActive ? 'true' : 'false'}"
@@ -2143,7 +2166,7 @@ function renderBottomActionBarHtml(opts) {
   const resignBtn = canResign
     ? `<button type="button" class="bb-btn bb-danger" id="bb-resign">Resign</button>`
     : '';
-  return `${drawBtn}${resignBtn}`;
+  return `${undoBtn}${drawBtn}${resignBtn}`;
 }
 
 // File coordinate labels under the board (a–h).
