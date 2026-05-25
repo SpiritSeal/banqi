@@ -985,73 +985,108 @@
     <div>
       <div class="col-head">
         <span class="badge proposed">PROPOSED</span>
-        <span>Rotate-to-fit board + slim chrome</span>
+        <span>Slim chrome · natural 8×4 board · tall transcript</span>
       </div>
       <div class="iphone portrait">
         <div class="notch"></div>
         <div class="screen">
           <div class="safari-bar-top">banqi.app · room 7K3M2</div>
           <div class="app no-scroll" style="padding:0; display:flex; flex-direction:column;">
-            <!-- Slim sticky strip with just turn + clocks -->
+            <!-- Slim sticky strip: back, room/mode, overflow -->
             <div class="top-strip">
               <span class="back">←</span>
-              <span class="you-chip">YOU · RED</span>
-              <span class="clk active">8:42</span>
-              <span class="clk">9:18</span>
+              <span class="grow" style="display:flex; align-items:center; gap:6px; min-width:0;">
+                <span class="room-code" style="font-size:11px;">7K3M2</span>
+                <span class="mode-chip">Standard</span>
+                <span class="mode-chip">10+5</span>
+              </span>
               <span class="more">⋯</span>
+              <span class="pin" style="top:6px; right:34px;">A</span>
             </div>
 
-            <!-- Opponent material tray -->
-            <div style="padding: 4px 10px;">
-              <div class="player-strip">
+            <!-- Opponent card -->
+            <div style="padding: 6px 10px 0;">
+              <div class="player-strip" style="padding: 6px 8px; background:var(--surface-2); border:1px solid var(--surface-border); border-radius: 10px; gap: 8px;">
                 <div class="avatar black">W</div>
-                <div>
-                  <div class="name">Wen <span style="font-size:10px; color:var(--muted);">· Black</span></div>
+                <div style="min-width: 0; flex-shrink: 0;">
+                  <div class="name" style="font-size:12px;">Wen</div>
+                  <div style="font-size:9px; color:var(--muted);">Black · 1542</div>
                 </div>
-                <div class="tray" style="justify-content:flex-end;">
-                  <span class="gl black">將</span><span class="gl black">士</span><span class="gl black">士</span><span class="gl black">象</span><span class="gl black">車</span><span class="gl black">車</span><span class="gl black">馬</span><span class="gl black">馬</span>
+                <div class="tray" style="justify-content:flex-end; flex:1;">
+                  <span class="gl red" style="font-size:13px; opacity: 0.65;">兵</span>
+                  <span class="gl red" style="font-size:13px; opacity: 0.65;">兵</span>
+                  <span class="gl red" style="font-size:13px; opacity: 0.65;">相</span>
+                  <span style="font-size:10px; color:var(--success-fg); margin-left:2px;">+3</span>
                 </div>
+                <span class="clk" style="font-size:13px;">9:18</span>
               </div>
             </div>
 
-            <!-- Big rotated board fills the rest of the viewport -->
-            <div style="flex:1; display:flex; align-items:center; justify-content:center; padding: 0 14px; position:relative;">
-              <div class="board-wrap" style="width: 100%; max-width: 360px;">
-                <div class="board" style="aspect-ratio: 4/8; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(8, 1fr);">
-                  <!-- 4-wide × 8-tall, board is rotated logically so player sees ranks vertically -->
-                  <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div>
-                  <div class="cell fu black">將<span class="v">7</span></div><div class="cell fu red">帥<span class="v">7</span></div><div class="cell empty"></div><div class="cell fd">背</div>
-                  <div class="cell fd">背</div><div class="cell fu red selected" style="font-size:24px;">俥<span class="v">4</span></div><div class="cell legal-target empty"></div><div class="cell fd">背</div>
-                  <div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell fu black last-move">兵<span class="v">1</span></div><div class="cell fd">背</div>
-                  <div class="cell fd">背</div><div class="cell fu red">傌<span class="v">3</span></div><div class="cell fd">背</div><div class="cell empty"></div>
-                  <div class="cell fu black">象<span class="v">5</span></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">炮<span class="v">2</span></div>
-                  <div class="cell fd">背</div><div class="cell fu black">卒<span class="v">1</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
-                  <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div>
+            <!-- Natural 8×4 board with file labels under -->
+            <div style="padding: 8px 10px 0; position:relative;">
+              <div class="board-wrap">
+                <div class="board" style="margin:0;">
+                  <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">帥<span class="v">7</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">將<span class="v">7</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                  <div class="cell fd">背</div><div class="cell fu red selected">俥<span class="v">4</span></div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell legal-target empty"></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black last-move">兵<span class="v">1</span></div>
+                  <div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu red">傌<span class="v">3</span></div><div class="cell empty"></div><div class="cell fd">背</div><div class="cell fu black">象<span class="v">5</span></div><div class="cell fd">背</div><div class="cell fd">背</div>
+                  <div class="cell fd">背</div><div class="cell fu red">炮<span class="v">2</span></div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fd">背</div><div class="cell fu black">卒<span class="v">1</span></div><div class="cell fd">背</div>
+                </div>
+                <div class="files" style="font-size:9px; padding: 0 6px; margin-top: 2px;">
+                  <span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span><span>h</span>
                 </div>
               </div>
-              <span class="pin" style="top:10px; right:14px;">B</span>
-              <span class="pin" style="top:10px; left:14px;">A</span>
+              <span class="pin" style="top:14px; right:-4px;">B</span>
             </div>
 
-            <!-- Player strip (active) with material tray -->
-            <div style="padding: 4px 10px;">
-              <div class="player-strip is-active">
+            <!-- Your card (active) -->
+            <div style="padding: 6px 10px 0;">
+              <div class="player-strip is-active" style="padding: 6px 8px; border-radius: 10px; gap: 8px;">
                 <div class="avatar red">Y</div>
-                <div>
-                  <div class="name">You <span class="turn-mini">· your turn</span></div>
+                <div style="min-width: 0; flex-shrink: 0;">
+                  <div class="name" style="font-size:12px;">You <span class="turn-mini">· move</span></div>
+                  <div style="font-size:9px; color:var(--muted);">Red · 1601</div>
                 </div>
-                <div class="tray" style="justify-content:flex-end;">
-                  <span class="gl red">帥</span><span class="gl red">仕</span><span class="gl red">仕</span><span class="gl red">相</span><span class="gl red">相</span><span class="gl red">俥</span><span class="gl red">傌</span><span class="gl red">炮</span>
+                <div class="tray" style="justify-content:flex-end; flex:1;">
+                  <span class="gl black" style="font-size:13px; opacity: 0.7;">卒</span>
+                  <span class="gl black" style="font-size:13px; opacity: 0.7;">象</span>
+                </div>
+                <span class="clk active" style="font-size:13px;">8:42</span>
+              </div>
+              <span class="pin" style="position:relative; display:inline-block; margin-left:6px; top: -4px;">C</span>
+            </div>
+
+            <!-- Transcript fills the remaining vertical space -->
+            <div style="padding: 6px 10px 60px; flex:1; min-height:0; display:flex; flex-direction:column; position:relative;">
+              <div class="transcript-panel" style="margin:0; flex:1; display:flex; flex-direction:column; min-height:0;">
+                <div class="transcript-head" style="padding-bottom: 4px; margin-bottom: 4px;">
+                  <h3 style="font-size:10px;">Moves</h3>
+                  <span style="font-size:9px; color:var(--muted);">14 / 14</span>
+                </div>
+                <div style="flex:1; overflow:auto; font-size:11px;">
+                  <div class="transcript-row" style="padding: 3px 6px;"><span class="t-num">8.</span><span class="t-mover p2">B</span><span class="t-piece">士</span><span>flip</span></div>
+                  <div class="transcript-row" style="padding: 3px 6px;"><span class="t-num">9.</span><span class="t-mover p1">R</span><span class="t-piece">炮</span><span>b1 (flip)</span></div>
+                  <div class="transcript-row" style="padding: 3px 6px;"><span class="t-num">10.</span><span class="t-mover p2">B</span><span class="t-piece">將</span><span>flip</span></div>
+                  <div class="transcript-row" style="padding: 3px 6px;"><span class="t-num">11.</span><span class="t-mover p1">R</span><span class="t-piece">兵</span><span>e4-e3</span></div>
+                  <div class="transcript-row" style="padding: 3px 6px;"><span class="t-num">12.</span><span class="t-mover p2">B</span><span class="t-piece">馬</span><span>g2-f4</span></div>
+                  <div class="transcript-row" style="padding: 3px 6px;"><span class="t-num">13.</span><span class="t-mover p1">R</span><span class="t-piece">傌</span><span>c2-c3</span></div>
+                  <div class="transcript-row current" style="padding: 3px 6px;"><span class="t-num">14.</span><span class="t-mover p2">B</span><span class="t-piece">卒</span><span>g4 flip</span></div>
+                </div>
+                <div style="display:flex; gap:4px; padding-top:6px; border-top:1px solid var(--surface-border); margin-top:6px;">
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--surface-2); border-radius:4px; color:var(--muted);">⏮</span>
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--surface-2); border-radius:4px; color:var(--muted);">◀</span>
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--accent-soft); border-radius:4px; color:var(--accent); font-weight:700;">LIVE</span>
+                  <span style="flex:1; font-size:10px; text-align:center; padding:5px; background:var(--surface-2); border-radius:4px; color:var(--muted);">▶</span>
                 </div>
               </div>
+              <span class="pin" style="top: 12px; right: -4px;">D</span>
             </div>
 
             <!-- Thumb-reach bottom bar -->
-            <div class="bottom-bar" style="position:relative;">
+            <div class="bottom-bar">
               <span class="b icon">↶</span>
               <span class="b">Offer draw</span>
               <span class="b danger">Resign</span>
-              <span class="pin" style="top:-10px; right:0;">C</span>
+              <span class="pin" style="top:-10px; right:8px;">E</span>
             </div>
           </div>
         </div>
@@ -1061,12 +1096,12 @@
       <div class="annot">
         <h4>Wins</h4>
         <ul>
-          <li><b>Slim top strip</b> — one 36 px row with back ←, "You · Red" chip, both clocks (active one highlighted), and an overflow ⋯ for room/copy/conn-state/draw-offer.</li>
-          <li><b>A,B Board fills the screen</b> — board rotated to a 4×8 portrait shape so cells are 2× larger and chess-like; <code>min(100dvh − chrome, 100vw × 2)</code> sizing.</li>
-          <li><b>Per-player material trays</b> on either side of the board double as turn indicator (active player gets the soft accent ring), avatar, name, color cue, and captured pieces — replacing the entire counts block.</li>
-          <li><b>C Thumb-reach action bar</b> anchored with <code>env(safe-area-inset-bottom)</code>: undo (replay step), offer-draw, resign. Rematch/back-to-lobby take over after game ends.</li>
-          <li>Game header collapses to ⋯ menu (room code, invite link, conn state, time control, mode chip, status messages, transcript).</li>
-          <li>Site brand + 7-item nav hidden inside the game view — left arrow handles "back".</li>
+          <li><b>A Slim top strip</b> — back ←, room code, mode chips, and overflow ⋯ for invite-link / conn-state / draw-offer / settings. Site brand and 7-item nav are hidden inside the game view.</li>
+          <li><b>B Board stays in its natural 8×4 orientation</b> — same aspect ratio as today, but stripping the chrome above lets the board sit ~1/3 down the screen instead of ~1/2. Coordinate labels (a–h) added under the board to match transcript notation.</li>
+          <li><b>C Per-player cards flank the board</b> — opponent above, you below. Each card carries avatar, name, ELO, color cue, clock, and a captured-pieces tray (with a <code>+N</code> material differential). The active player's card glows in accent and shows "· move" — replaces both the turn pill and the entire piece-counts block.</li>
+          <li><b>D Transcript dominates the lower half</b> — what was today a cramped 280 px max-height list below the board (with the bottom action row buried below it) becomes the main vertical content, easily showing 7+ moves at a glance, with playback controls (⏮ ◀ LIVE ▶) docked at the bottom.</li>
+          <li><b>E Thumb-reach action bar</b> pinned with <code>env(safe-area-inset-bottom)</code>: undo (replay step), offer-draw, resign. Rematch / Analyze / Back take over after game end.</li>
+          <li>The freed vertical space (was: 7-row sticky meta header) now belongs to the transcript and player cards — both of which actually help during play.</li>
         </ul>
       </div>
     </div>
