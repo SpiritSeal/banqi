@@ -38,7 +38,7 @@ before(async () => {
     displayName: 'Alice', avatarUrl: null,
   });
   alice = a.id;
-  aiUser = await getAiUserByDifficulty(db, 'easy');
+  aiUser = await getAiUserByDifficulty(db, '1.1');
 });
 
 after(async () => { if (db) await db.end(); });
@@ -58,9 +58,9 @@ describe('ai pool worker thread', () => {
           { from: -1, to: 15 },
         ],
       };
-      const move = await pool.chooseMove(state, 0, 'easy');
+      const move = await pool.chooseMove(state, 0, '1.1');
       assert.ok(move, 'worker returned a move');
-      assert.equal(move.from, -1, 'easy on a fully facedown board returns a flip');
+      assert.equal(move.from, -1, 'random v1 on a fully facedown board returns a flip');
       assert.ok([0, 7, 15].includes(move.to), 'move target is one of the legals');
     } finally {
       await pool.close();
@@ -71,7 +71,7 @@ describe('ai pool worker thread', () => {
     const pool = createAiPool({ workerCount: 1 });
     await pool.close();
     await assert.rejects(
-      pool.chooseMove({ legal_moves_for_me: [] }, 0, 'easy'),
+      pool.chooseMove({ legal_moves_for_me: [] }, 0, '1.1'),
       /AI pool is closed/,
     );
   });

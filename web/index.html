@@ -101,16 +101,16 @@
 
       <div class="lobby-card">
         <h3>Play vs AI</h3>
-        <p class="muted">Challenge a computer opponent. Pick your difficulty — the hardest mode uses full lookahead search.</p>
+        <p class="muted">Challenge a computer opponent. Pick your agent — Minimax v3 and Policy v1 use full iterative-deepening lookahead.</p>
         <div class="row" style="margin-bottom:8px">
-          <label for="lobby-ai-difficulty">Difficulty</label>
+          <label for="lobby-ai-difficulty">Agent</label>
           <select id="lobby-ai-difficulty">
-            <option value="easy">Easy</option>
-            <option value="medium" selected>Medium</option>
-            <option value="hard">Hard</option>
-            <option value="expert">Expert</option>
-            <option value="master">Master</option>
-            <option value="policy">Policy</option>
+            <option value="1.1">Random v1</option>
+            <option value="2.1" selected>Greedy v1</option>
+            <option value="3.1">Minimax v1</option>
+            <option value="3.2">Minimax v2</option>
+            <option value="3.3">Minimax v3</option>
+            <option value="4.1">Policy v1</option>
           </select>
         </div>
         <div class="row" style="margin-bottom:8px">

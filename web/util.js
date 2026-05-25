@@ -24,11 +24,17 @@ export function modeLabel(m) {
   return m === 'capture_general' ? 'Capture the General' : 'Standard';
 }
 
-// AI strengths exposed in the lobby. Keep keys in sync with `Difficulty`
-// in ../ai/index.mjs — these are display labels only.
+// AI agents exposed in the lobby. Keep keys in sync with `Difficulty`
+// in ../ai/index.mjs (family.version) — these are display labels only.
+// The "Banqi AI · " prefix is added by the surrounding UI (badge/chip)
+// so labels here are just the family + version portion.
 export const AI_DIFFICULTY_LABELS = {
-  easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master',
-  policy: 'Policy',
+  '1.1': 'Random v1',
+  '2.1': 'Greedy v1',
+  '3.1': 'Minimax v1',
+  '3.2': 'Minimax v2',
+  '3.3': 'Minimax v3',
+  '4.1': 'Policy v1',
 };
 export function aiDifficultyLabel(d) { return AI_DIFFICULTY_LABELS[d] || (d || ''); }
 

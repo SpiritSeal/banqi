@@ -1,5 +1,5 @@
 // Playtest script for the vs-AI mode.
-// Runs AI-vs-AI games at every difficulty combination, measures move quality
+// Runs AI-vs-AI games at every agent combination, measures move quality
 // and timing, and verifies that no illegal state is ever reached.
 
 import createBanqiModule from '../web/banqi.js';
@@ -37,11 +37,12 @@ function boardsEqual(s1, s2) {
 }
 
 const DIFF_LABEL = {
-  [Difficulty.EASY]: 'Easy',
-  [Difficulty.MEDIUM]: 'Medium',
-  [Difficulty.HARD]: 'Hard',
-  [Difficulty.EXPERT]: 'Expert',
-  [Difficulty.MASTER]: 'Master',
+  [Difficulty.RANDOM_V1]:  'Random v1',
+  [Difficulty.GREEDY_V1]:  'Greedy v1',
+  [Difficulty.MINIMAX_V1]: 'Minimax v1',
+  [Difficulty.MINIMAX_V2]: 'Minimax v2',
+  [Difficulty.MINIMAX_V3]: 'Minimax v3',
+  [Difficulty.POLICY_V1]:  'Policy v1',
 };
 
 // ---- main play function ----
@@ -139,11 +140,12 @@ async function runSuite(label, diff0, diff1, numGames) {
   const draws = numGames - terminated;
   if (draws) console.log(`  (${draws} game(s) reached move limit — drawn/balanced)`);
 
-  // Mirror matches between the strong engines (Hard/Expert/Master) often
-  // reach the move limit — symmetric strength, no forced win. Easy and
-  // Medium games should terminate — allow at most 1 long-game outlier.
+  // Mirror matches between the strong engines (Minimax v1/v2/v3) often
+  // reach the move limit — symmetric strength, no forced win. Random v1
+  // and Greedy v1 games should terminate — allow at most 1 long-game outlier.
   const isStrongMirror = diff0 === diff1
-    && (diff0 === Difficulty.HARD || diff0 === Difficulty.EXPERT || diff0 === Difficulty.MASTER);
+    && (diff0 === Difficulty.MINIMAX_V1 || diff0 === Difficulty.MINIMAX_V2
+        || diff0 === Difficulty.MINIMAX_V3);
   const maxAllowedDraws = isStrongMirror ? numGames : Math.ceil(numGames * 0.25);
   if (draws > maxAllowedDraws) {
     console.error(`  FAIL: ${draws} draw(s) exceeds tolerance of ${maxAllowedDraws}`);
@@ -152,14 +154,15 @@ async function runSuite(label, diff0, diff1, numGames) {
     passed++;
   }
 
-  // When a stronger engine plays Black against Easy (Red), it should win more.
-  const strongerVsEasy = diff0 === Difficulty.EASY
-    && (diff1 === Difficulty.HARD || diff1 === Difficulty.EXPERT || diff1 === Difficulty.MASTER);
-  if (strongerVsEasy && numGames >= 5) {
+  // When a stronger engine plays Black against Random v1 (Red), it should win more.
+  const strongerVsRandom = diff0 === Difficulty.RANDOM_V1
+    && (diff1 === Difficulty.MINIMAX_V1 || diff1 === Difficulty.MINIMAX_V2
+        || diff1 === Difficulty.MINIMAX_V3);
+  if (strongerVsRandom && numGames >= 5) {
     if (blackWins <= redWins) {
-      console.warn(`  WARN: ${DIFF_LABEL[diff1]} (Black) did not outperform Easy (Red): ${blackWins} vs ${redWins}`);
+      console.warn(`  WARN: ${DIFF_LABEL[diff1]} (Black) did not outperform Random v1 (Red): ${blackWins} vs ${redWins}`);
     } else {
-      console.log(`  ${DIFF_LABEL[diff1]} outperforms Easy ✓`);
+      console.log(`  ${DIFF_LABEL[diff1]} outperforms Random v1 ✓`);
     }
   }
 
@@ -183,7 +186,7 @@ function checkMoveQuality() {
   // The turn has now advanced to player-1 (join). Use the join game's state
   // so legal_moves_for_me is non-empty, then check each difficulty.
   let ok = true;
-  for (const diff of [Difficulty.EASY, Difficulty.MEDIUM, Difficulty.HARD, Difficulty.EXPERT, Difficulty.MASTER]) {
+  for (const diff of [Difficulty.RANDOM_V1, Difficulty.GREEDY_V1, Difficulty.MINIMAX_V1, Difficulty.MINIMAX_V2, Difficulty.MINIMAX_V3]) {
     // Get state from whichever game is to-move
     const stHost = JSON.parse(host.stateJson());
     const stJoin = JSON.parse(join.stateJson());
@@ -207,25 +210,25 @@ console.log('=================');
 
 checkMoveQuality();
 
-// Fast correctness checks — many games, cheaper difficulties
-await runSuite('Easy vs Easy',   Difficulty.EASY,   Difficulty.EASY,   10);
-await runSuite('Medium vs Easy', Difficulty.MEDIUM, Difficulty.EASY,   5);
-await runSuite('Hard vs Easy',   Difficulty.EASY,   Difficulty.HARD,   5);
+// Fast correctness checks — many games, cheaper agents
+await runSuite('Random v1 vs Random v1',  Difficulty.RANDOM_V1,  Difficulty.RANDOM_V1,  10);
+await runSuite('Greedy v1 vs Random v1',  Difficulty.GREEDY_V1,  Difficulty.RANDOM_V1,  5);
+await runSuite('Minimax v1 vs Random v1', Difficulty.RANDOM_V1,  Difficulty.MINIMAX_V1, 5);
 
 // Timing checks — fewer games since the lookahead engines are slower
-await runSuite('Medium vs Medium', Difficulty.MEDIUM, Difficulty.MEDIUM, 3);
-await runSuite('Hard vs Hard',     Difficulty.HARD,   Difficulty.HARD,   2);
-await runSuite('Hard vs Medium',   Difficulty.HARD,   Difficulty.MEDIUM, 3);
+await runSuite('Greedy v1 vs Greedy v1',   Difficulty.GREEDY_V1,  Difficulty.GREEDY_V1,  3);
+await runSuite('Minimax v1 vs Minimax v1', Difficulty.MINIMAX_V1, Difficulty.MINIMAX_V1, 2);
+await runSuite('Minimax v1 vs Greedy v1',  Difficulty.MINIMAX_V1, Difficulty.GREEDY_V1,  3);
 
-// Expert checks — slowest engine, so keep the game counts low
-await runSuite('Expert vs Easy',   Difficulty.EASY,   Difficulty.EXPERT, 5);
-await runSuite('Expert vs Expert', Difficulty.EXPERT, Difficulty.EXPERT, 1);
+// Minimax v2 checks — keep the game counts low
+await runSuite('Minimax v2 vs Random v1',  Difficulty.RANDOM_V1,  Difficulty.MINIMAX_V2, 5);
+await runSuite('Minimax v2 vs Minimax v2', Difficulty.MINIMAX_V2, Difficulty.MINIMAX_V2, 1);
 
-// Master checks — slowest of all, smallest counts. The single Master
-// vs Easy game is a sanity check; the mirror confirms the engine doesn't
-// crash or run away in a deep symmetric position.
-await runSuite('Master vs Easy',   Difficulty.EASY,   Difficulty.MASTER, 3);
-await runSuite('Master vs Master', Difficulty.MASTER, Difficulty.MASTER, 1);
+// Minimax v3 checks — slowest of all, smallest counts. The single
+// Minimax v3 vs Random v1 game is a sanity check; the mirror confirms
+// the engine doesn't crash or run away in a deep symmetric position.
+await runSuite('Minimax v3 vs Random v1',  Difficulty.RANDOM_V1,  Difficulty.MINIMAX_V3, 3);
+await runSuite('Minimax v3 vs Minimax v3', Difficulty.MINIMAX_V3, Difficulty.MINIMAX_V3, 1);
 
 // Summary
 console.log(`\n=================`);

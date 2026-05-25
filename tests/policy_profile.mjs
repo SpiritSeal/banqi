@@ -1,5 +1,5 @@
 // Quick timing/throughput probe for chooseMove on a fixed early-game state.
-// Used to compare difficulties under matching positions.
+// Used to compare agents under matching positions.
 
 import createBanqiModule from '../web/banqi.js';
 import { chooseMove, Difficulty } from '../ai/index.mjs';
@@ -16,7 +16,7 @@ g.applyFlip(1, 22);
 g.applyFlip(0, 17);
 g.applyFlip(1, 4);
 
-for (const diff of [Difficulty.MASTER, Difficulty.POLICY]) {
+for (const diff of [Difficulty.MINIMAX_V3, Difficulty.POLICY_V1]) {
   const stm = g.sideToMovePlayer();
   const st = JSON.parse(g.stateJson(stm));
   const t0 = performance.now();

@@ -1,6 +1,6 @@
 // Worker-thread runner for AI move search.
 //
-// The AI's iterative-deepening search at MASTER/POLICY difficulty can spend
+// The AI's iterative-deepening search at Minimax v3 / Policy v1 can spend
 // multiple seconds of wall time per move. Running that on the main event
 // loop freezes WebSocket reads, heartbeats, and every other game's intent
 // processing until it returns. This worker offloads chooseMove() to a
