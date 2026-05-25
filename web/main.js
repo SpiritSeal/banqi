@@ -34,6 +34,7 @@ import { confirmThreefoldIfNeeded } from './ui/threefold-modal.js';
 import { attachBoardKeyNav } from './ui/board-keynav.js';
 import { initServiceWorker } from './sw-init.js';
 import { pickChallengeMode } from './ui/challenge-mode-modal.js';
+import { refreshNotificationBadge, clearNotifPolling } from './ui/notification-badge.js';
 
 // Initialise settings (applies theme / animation toggles to <body>) before
 // anything paints, so the first render uses the chosen palette.
@@ -311,7 +312,7 @@ function renderLobby() {
         <button id="btn-signout" class="link-btn">Sign out</button>
       </div>`;
     $('btn-signout').onclick = signOut;
-    if (!me.is_guest) refreshNotificationBadge();
+    if (!me.is_guest) refreshNotificationBadge(true);
   } else {
     renderSignInButtons(meBox, null);
   }
@@ -1824,7 +1825,7 @@ const dashState = {
 
 async function renderDashboard() {
   showView('dashboard');
-  refreshNotificationBadge();
+  refreshNotificationBadge(!!me);
   ensureNotifySettingsPanel();
   const sections = $('dashboard-sections');
   const controls = $('dash-controls');
@@ -2867,7 +2868,7 @@ async function renderFriends() {
     $('friends-list').innerHTML = '';
     return;
   }
-  refreshNotificationBadge();
+  refreshNotificationBadge(!!me);
   // Optimistic placeholders, then populate in parallel.
   $('friends-invite-box').innerHTML = `<div class="muted">Loading…</div>`;
   $('friends-incoming-requests').innerHTML = '';
@@ -2992,34 +2993,6 @@ async function renderFriends() {
       btn.disabled = false;
     }
   };
-}
-
-// Polls /api/notifications. Updates #nav-notif-badge if present.
-let _notifTimer = null;
-function clearNotifPolling() {
-  if (_notifTimer) { clearInterval(_notifTimer); _notifTimer = null; }
-}
-async function refreshNotificationBadge() {
-  clearNotifPolling();
-  if (!me) return;
-  const tick = async () => {
-    try {
-      const r = await fetch('/api/notifications');
-      if (!r.ok) return;
-      const { incoming_match_requests = 0 } = await r.json();
-      const badge = document.getElementById('nav-notif-badge');
-      if (!badge) return;
-      if (incoming_match_requests > 0) {
-        badge.textContent = ` ${incoming_match_requests}`;
-        badge.classList.remove('hidden');
-      } else {
-        badge.textContent = '';
-        badge.classList.add('hidden');
-      }
-    } catch (_) { /* offline-ish; try again next tick */ }
-  };
-  tick();
-  _notifTimer = setInterval(tick, 60_000);
 }
 
 // Why this local (OTB / AI) game ended, as a short human-readable phrase
