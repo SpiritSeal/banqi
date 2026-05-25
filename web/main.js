@@ -38,6 +38,17 @@ import { initServiceWorker } from './sw-init.js';
 // anything paints, so the first render uses the chosen palette.
 initSettings();
 
+// React to live setting changes that affect the active game view (currently
+// just `gameLayout`). Re-runs the right refresh fn so the layout swaps
+// without a page reload.
+window.addEventListener('banqi:settings-change', (e) => {
+  if (e?.detail?.key !== 'gameLayout') return;
+  if (!active) return;
+  if (active.isOnline) refreshGame();
+  else if (active.isOTB) refreshOTB();
+  else if (active.isAI)  refreshAI();
+});
+
 // Service-worker registration + update-banner wiring lives in
 // ./sw-init.js. initServiceWorker is a no-op on browsers without SW.
 initServiceWorker();
@@ -70,6 +81,7 @@ const views = {
 function showView(name) {
   for (const v of Object.values(views)) v?.classList.add('hidden');
   views[name]?.classList.remove('hidden');
+  document.body.dataset.activeView = name;
   queueMicrotask(() => {
     const view = views[name];
     if (!view) return;
@@ -812,8 +824,141 @@ function refreshGame() {
       downloadPgn(pgn, `banqi-${active.info.room_code || 'online'}.pgn`);
     },
   });
+
+  // ---- Beta game layout: slim header, player cards, coord strip, bottom bar.
+  // Always paints (even when off) so toggling clears stale state.
+  paintBetaLayoutOnline({
+    liveState, view, counts, opp, myPlayerIdx,
+    isAiGame, aiDifficulty, canOfferDraw,
+  });
+
   maybeShowTutorialTip($('game-board'));
   maybeShowGameOver(view);
+}
+
+// Paint the beta-layout slots for the online view. No-op (clears slots) when
+// the beta flag is off, so switching back to Classic mid-game leaves no
+// stale DOM behind. All click handlers route to the same intent code paths
+// as the classic in-header buttons.
+function paintBetaLayoutOnline(ctx) {
+  const slimSlot   = $('game-slim-header');
+  const oppSlot    = $('game-opp-card');
+  const youSlot    = $('game-you-card');
+  const coordsSlot = $('game-board-coords');
+  const bbSlot     = $('game-bottom-bar');
+  if (!slimSlot || !oppSlot || !youSlot || !coordsSlot || !bbSlot) return;
+  if (!betaLayoutOn()) {
+    slimSlot.innerHTML = '';
+    oppSlot.innerHTML = '';
+    youSlot.innerHTML = '';
+    coordsSlot.innerHTML = '';
+    bbSlot.innerHTML = '';
+    return;
+  }
+  const { liveState, view, counts, opp, myPlayerIdx, isAiGame, aiDifficulty, canOfferDraw } = ctx;
+  const myColor  = liveState.my_color;                 // 1=red, 2=black, 0=unflipped
+  const oppColor = myColor === 1 ? 2 : myColor === 2 ? 1 : 0;
+  const myTurn   = !liveState.game_over && !view.replayViewing
+                   && liveState.side_to_move === myPlayerIdx;
+  const oppTurn  = !liveState.game_over && !view.replayViewing
+                   && liveState.side_to_move !== myPlayerIdx;
+  const myName   = me?.display_name || 'You';
+  const oppName  = opp || (isAiGame ? `AI (${aiDifficultyLabel(aiDifficulty) || aiDifficulty})` : 'Opponent');
+  // Captured-pieces data: my captures = opponent's color pieces; etc.
+  // counts is `{ red: {byType, ...}, black: {byType, ...} }`.
+  const myCaptured  = myColor === 1 ? counts.black.byType : myColor === 2 ? counts.red.byType : null;
+  const oppCaptured = myColor === 1 ? counts.red.byType   : myColor === 2 ? counts.black.byType : null;
+  // Clock data.
+  const hasClocks = liveState.time_limit_ms != null && liveState.clocks;
+  const myMs   = hasClocks ? (liveState.clocks?.[myPlayerIdx] ?? 0) : null;
+  const oppMs  = hasClocks ? (liveState.clocks?.[1 - myPlayerIdx] ?? 0) : null;
+  const myClockActive  = hasClocks && liveState.clock_active_index === myPlayerIdx;
+  const oppClockActive = hasClocks && liveState.clock_active_index === (1 - myPlayerIdx);
+
+  // Slim header.
+  slimSlot.innerHTML = renderSlimGameHeaderHtml({
+    roomCode: active.info.room_code,
+    modeText: modeLabel(active.info.mode || liveState.mode),
+    tcText:   active.info.time_limit_ms != null
+      ? timeControlLabel(active.info.time_limit_ms, active.info.increment_ms || 0)
+      : null,
+    connState: active.connState,
+    isOnline:  true,
+    isReplay:  view.replayViewing,
+  });
+  wireSlimHeader(slimSlot);
+
+  // Opponent + your card.
+  oppSlot.innerHTML = renderPlayerCardHtml({
+    side: 'opp', name: oppName,
+    subtitle: oppColor === 1 ? 'Red' : oppColor === 2 ? 'Black' : 'Unflipped',
+    color: oppColor,
+    isActive: oppTurn,
+    clockMs: oppMs, isClockActive: oppClockActive, isClockLow: oppClockActive && oppMs != null && oppMs < 30_000,
+    capturedByType: oppCaptured, capturedColor: myColor,
+  });
+  youSlot.innerHTML = renderPlayerCardHtml({
+    side: 'you', name: myName,
+    subtitle: myColor === 1 ? 'Red' : myColor === 2 ? 'Black' : 'Unflipped — flip a face-down piece',
+    color: myColor,
+    isActive: myTurn,
+    clockMs: myMs, isClockActive: myClockActive, isClockLow: myClockActive && myMs != null && myMs < 30_000,
+    capturedByType: myCaptured, capturedColor: oppColor,
+  });
+
+  // Board coords (a–h).
+  coordsSlot.innerHTML = FILE_COORDS_HTML;
+
+  // Bottom action bar.
+  const isFinished = !!liveState.game_over;
+  const canRematch = isFinished && !view.replayViewing;
+  bbSlot.innerHTML = renderBottomActionBarHtml({
+    viewKind: isAiGame ? 'ai' : 'online',
+    isFinished,
+    isReplay: view.replayViewing,
+    canResign: liveState.first_flip_done && !liveState.game_over && !view.replayViewing,
+    canOfferDraw,
+    canRematch,
+    offerDrawActive: !!active.offerDraw,
+  });
+  wireBottomBarOnline(bbSlot, { view, isAiGame });
+}
+
+function wireBottomBarOnline(rootEl, ctx) {
+  if (!rootEl) return;
+  const { view } = ctx;
+  const resignBtn = rootEl.querySelector('#bb-resign');
+  if (resignBtn) {
+    resignBtn.onclick = async () => {
+      if (!active?.replay?.isLive?.()) return;
+      const ok = await confirmModal({
+        title: 'Resign this game?',
+        body: "Your opponent will win. This can't be undone.",
+        confirmLabel: 'Resign',
+        cancelLabel: 'Keep playing',
+        danger: true,
+      });
+      if (!ok) return;
+      sendIntent({ kind: 'resign' });
+    };
+  }
+  const offerBtn = rootEl.querySelector('#bb-offer-draw');
+  if (offerBtn) {
+    offerBtn.onclick = () => {
+      if (!active) return;
+      active.offerDraw = !active.offerDraw;
+      // Re-render the bar so the toggle state updates immediately.
+      refreshGame();
+    };
+  }
+  const returnLiveBtn = rootEl.querySelector('#bb-return-live');
+  if (returnLiveBtn) {
+    returnLiveBtn.onclick = () => {
+      if (!active?.replay) return;
+      active.replay.goLive();
+      refreshGame();
+    };
+  }
 }
 
 function downloadPgn(text, filename) {
@@ -1296,8 +1441,102 @@ function refreshOTB() {
       downloadPgn(pgn, `banqi-otb-${pgnFileStamp()}.pgn`);
     },
   });
+  paintBetaLayoutOTB({ liveState, view });
   maybeShowTutorialTip($('otb-board'));
   maybeShowGameOver(view);
+}
+
+function paintBetaLayoutOTB(ctx) {
+  const slimSlot   = $('otb-slim-header');
+  const oppSlot    = $('otb-opp-card');
+  const youSlot    = $('otb-you-card');
+  const coordsSlot = $('otb-board-coords');
+  const bbSlot     = $('otb-bottom-bar');
+  if (!slimSlot || !oppSlot || !youSlot || !coordsSlot || !bbSlot) return;
+  if (!betaLayoutOn()) {
+    slimSlot.innerHTML = '';
+    oppSlot.innerHTML = '';
+    youSlot.innerHTML = '';
+    coordsSlot.innerHTML = '';
+    bbSlot.innerHTML = '';
+    return;
+  }
+  const { liveState, view } = ctx;
+  // In hot-seat OTB, "you" = side to move; "opp" = other side. Both are local
+  // players, so we label them by player index (P1 / P2) + their committed color.
+  const sideToMove = liveState.side_to_move;       // 0 or 1
+  const p0Color = liveState.player0_color || 0;
+  const p1Color = liveState.player1_color || 0;
+  const youColor = sideToMove === 0 ? p0Color : p1Color;
+  const oppColor = sideToMove === 0 ? p1Color : p0Color;
+  const counts = pieceCounts(view.cells, active.replay);
+  const youCaptured = youColor === 1 ? counts.black.byType
+                    : youColor === 2 ? counts.red.byType : null;
+  const oppCaptured = oppColor === 1 ? counts.black.byType
+                    : oppColor === 2 ? counts.red.byType : null;
+
+  slimSlot.innerHTML = renderSlimGameHeaderHtml({
+    roomCode: null,
+    modeText: modeLabel(active.mode || liveState.mode),
+    tcText:   null,
+    connState: null,
+    isOnline: false,
+    isReplay: view.replayViewing,
+  });
+  wireSlimHeader(slimSlot);
+
+  const isFinished = !!liveState.game_over;
+  const youTurn = !isFinished && !view.replayViewing;     // it's literally their turn
+  // Opponent card = the other player, shown above the board.
+  oppSlot.innerHTML = renderPlayerCardHtml({
+    side: 'opp',
+    name: sideToMove === 0 ? 'Player 2' : 'Player 1',
+    subtitle: oppColor === 1 ? 'Red' : oppColor === 2 ? 'Black' : 'Unflipped',
+    color: oppColor,
+    isActive: false,
+    clockMs: null,
+    capturedByType: oppCaptured, capturedColor: youColor,
+  });
+  youSlot.innerHTML = renderPlayerCardHtml({
+    side: 'you',
+    name: sideToMove === 0 ? 'Player 1' : 'Player 2',
+    subtitle: youColor === 1 ? 'Red' : youColor === 2 ? 'Black' : 'Unflipped — flip a face-down piece',
+    color: youColor,
+    isActive: youTurn,
+    clockMs: null,
+    capturedByType: youCaptured, capturedColor: oppColor,
+  });
+
+  coordsSlot.innerHTML = FILE_COORDS_HTML;
+
+  bbSlot.innerHTML = renderBottomActionBarHtml({
+    viewKind: 'otb',
+    isFinished,
+    isReplay: view.replayViewing,
+    canResign: liveState.first_flip_done && !isFinished && !view.replayViewing,
+    canOfferDraw: false,    // OTB has no formal draw-offer flow (both players right there)
+    canRematch: isFinished && !view.replayViewing,
+    offerDrawActive: false,
+  });
+  wireBottomBarOTB(bbSlot);
+}
+
+function wireBottomBarOTB(rootEl) {
+  if (!rootEl) return;
+  // Reuse the existing classic resign + rematch buttons by delegating to
+  // their click handlers — they were just wired in refreshOTB().
+  const resignBtn = rootEl.querySelector('#bb-resign');
+  if (resignBtn) resignBtn.onclick = () => { $('otb-resign').click(); };
+  const rematchBtn = rootEl.querySelector('#bb-rematch');
+  if (rematchBtn) rematchBtn.onclick = () => { $('otb-rematch').click(); };
+  const returnLiveBtn = rootEl.querySelector('#bb-return-live');
+  if (returnLiveBtn) {
+    returnLiveBtn.onclick = () => {
+      if (!active?.replay) return;
+      active.replay.goLive();
+      refreshOTB();
+    };
+  }
 }
 function colorWord(c) { return c === 1 ? 'Red' : c === 2 ? 'Black' : ''; }
 
@@ -1528,8 +1767,95 @@ function refreshAI() {
       downloadPgn(pgn, `banqi-ai-${pgnFileStamp()}.pgn`);
     },
   });
+  paintBetaLayoutAI({ liveState, view });
   maybeShowTutorialTip($('ai-board'));
   maybeShowGameOver(view);
+}
+
+function paintBetaLayoutAI(ctx) {
+  const slimSlot   = $('ai-slim-header');
+  const oppSlot    = $('ai-opp-card');
+  const youSlot    = $('ai-you-card');
+  const coordsSlot = $('ai-board-coords');
+  const bbSlot     = $('ai-bottom-bar');
+  if (!slimSlot || !oppSlot || !youSlot || !coordsSlot || !bbSlot) return;
+  if (!betaLayoutOn()) {
+    slimSlot.innerHTML = '';
+    oppSlot.innerHTML = '';
+    youSlot.innerHTML = '';
+    coordsSlot.innerHTML = '';
+    bbSlot.innerHTML = '';
+    return;
+  }
+  const { liveState, view } = ctx;
+  // Human is player 0 by convention (see refreshAI: stateJson(0)).
+  const myColor = view.my_color || 0;
+  const oppColor = myColor === 1 ? 2 : myColor === 2 ? 1 : 0;
+  const counts = pieceCounts(view.cells, active.replay);
+  const myCaptured  = myColor === 1 ? counts.black.byType : myColor === 2 ? counts.red.byType : null;
+  const oppCaptured = myColor === 1 ? counts.red.byType   : myColor === 2 ? counts.black.byType : null;
+
+  const isFinished = !!view.game_over;
+  const myTurn  = !isFinished && !view.replayViewing && view.side_to_move === 0;
+  const oppTurn = !isFinished && !view.replayViewing && view.side_to_move !== 0;
+
+  slimSlot.innerHTML = renderSlimGameHeaderHtml({
+    roomCode: null,
+    modeText: modeLabel(active.mode || view.mode),
+    tcText:   null,
+    connState: null,
+    isOnline: false,
+    isReplay: view.replayViewing,
+  });
+  wireSlimHeader(slimSlot);
+
+  oppSlot.innerHTML = renderPlayerCardHtml({
+    side: 'opp',
+    name: `AI (${aiDifficultyLabel(active.difficulty) || active.difficulty})`,
+    subtitle: oppColor === 1 ? 'Red' : oppColor === 2 ? 'Black' : (active.aiThinking ? 'Thinking…' : 'Unflipped'),
+    color: oppColor,
+    isActive: oppTurn,
+    clockMs: null,
+    capturedByType: oppCaptured, capturedColor: myColor,
+  });
+  youSlot.innerHTML = renderPlayerCardHtml({
+    side: 'you',
+    name: me?.display_name || 'You',
+    subtitle: myColor === 1 ? 'Red' : myColor === 2 ? 'Black' : 'Unflipped — flip a face-down piece',
+    color: myColor,
+    isActive: myTurn,
+    clockMs: null,
+    capturedByType: myCaptured, capturedColor: oppColor,
+  });
+
+  coordsSlot.innerHTML = FILE_COORDS_HTML;
+
+  bbSlot.innerHTML = renderBottomActionBarHtml({
+    viewKind: 'ai',
+    isFinished,
+    isReplay: view.replayViewing,
+    canResign: view.first_flip_done && !isFinished && view.side_to_move === 0 && !view.replayViewing,
+    canOfferDraw: false,
+    canRematch: isFinished && !view.replayViewing,
+    offerDrawActive: false,
+  });
+  wireBottomBarAI(bbSlot);
+}
+
+function wireBottomBarAI(rootEl) {
+  if (!rootEl) return;
+  const resignBtn = rootEl.querySelector('#bb-resign');
+  if (resignBtn) resignBtn.onclick = () => { $('ai-resign').click(); };
+  const newGameBtn = rootEl.querySelector('#bb-new-game');
+  if (newGameBtn) newGameBtn.onclick = () => { $('ai-new-game').click(); };
+  const returnLiveBtn = rootEl.querySelector('#bb-return-live');
+  if (returnLiveBtn) {
+    returnLiveBtn.onclick = () => {
+      if (!active?.replay) return;
+      active.replay.goLive();
+      refreshAI();
+    };
+  }
 }
 
 function pgnFileStamp() {
@@ -1593,6 +1919,216 @@ const PIECE_GLYPHS = {
 };
 // Display order: General → Soldier (rank high to low).
 const PIECE_TYPE_DISPLAY_ORDER = [7, 6, 5, 4, 3, 2, 1];
+
+// ----- beta game layout: shared rendering helpers -----
+// Read once per refresh; cheap, but stays out of hot click paths.
+function betaLayoutOn() { return document.body.dataset.gameLayout === 'beta'; }
+
+// Material value table for a Banqi-style "+N" differential. We use rank as a
+// rough proxy (General=7 down to Soldier=1) — same intuition the player has.
+const PIECE_VALUES = [0, 1, 2, 3, 4, 5, 6, 7];
+
+function materialDiff(myCaptured, oppCaptured) {
+  // myCaptured / oppCaptured: byType array {1..7} → {captured: n, ...}.
+  let mine = 0, theirs = 0;
+  for (let t = 1; t <= 7; t++) {
+    mine   += (myCaptured?.[t]?.captured  || 0) * PIECE_VALUES[t];
+    theirs += (oppCaptured?.[t]?.captured || 0) * PIECE_VALUES[t];
+  }
+  return mine - theirs;
+}
+
+// Render the captured-pieces tray as faded glyphs, one per captured unit,
+// in rank order. Returns an HTML string. `capturedColor` is the *color of
+// the pieces being shown* (i.e., what the player captured = opponent's color).
+function renderCapturedTrayHtml(byType, capturedColor) {
+  const glyphs = PIECE_GLYPHS[capturedColor];
+  if (!glyphs) return '';
+  const parts = [];
+  for (const t of PIECE_TYPE_DISPLAY_ORDER) {
+    const n = byType?.[t]?.captured || 0;
+    for (let i = 0; i < n; i++) {
+      parts.push(`<span class="pc-tray-piece pc-tray-${capturedColor === 1 ? 'red' : 'black'}" aria-hidden="true">${glyphs[t]}</span>`);
+    }
+  }
+  return parts.length
+    ? `<span class="pc-tray" aria-label="${parts.length} piece${parts.length === 1 ? '' : 's'} captured">${parts.join('')}</span>`
+    : '<span class="pc-tray pc-tray-empty" aria-hidden="true"></span>';
+}
+
+// Player card: avatar + name + subtitle + clock + captured tray.
+// opts:
+//   side: 'opp' | 'you'
+//   name: display name
+//   subtitle: "Black · 1542 ELO" or "Red · medium AI" etc.
+//   color: 1 (red) | 2 (black) | 0 (unassigned)
+//   isActive: boolean — glow + "· move" badge
+//   clockMs: number | null — null hides the clock
+//   isClockActive: boolean — highlight the clock pill
+//   isClockLow: boolean — turn red under 30 s
+//   capturedByType: per-type byType data for pieces *this player has captured*
+//   capturedColor: 1 | 2 — color of the captured pieces (opposite of this player's color)
+function renderPlayerCardHtml(opts) {
+  const {
+    side, name, subtitle = '', color = 0,
+    isActive = false, clockMs = null, isClockActive = false, isClockLow = false,
+    capturedByType = null, capturedColor = 0,
+  } = opts;
+  const initials = initialsFor(name || (side === 'opp' ? '?' : 'You'));
+  const colorCls = color === 1 ? 'red' : color === 2 ? 'black' : 'unk';
+  const moveBadge = isActive ? `<span class="player-card-move">· your move</span>` : '';
+  const clockHtml = (clockMs != null)
+    ? `<span class="player-card-clock clock ${isClockActive ? 'active' : ''} ${isClockLow ? 'low' : ''}">
+         <span class="clock-time">${formatClockMs(clockMs)}</span>
+       </span>`
+    : '';
+  const trayHtml = (capturedByType && capturedColor)
+    ? renderCapturedTrayHtml(capturedByType, capturedColor)
+    : '';
+  return `
+    <div class="player-card player-card-${side} player-card-color-${colorCls} ${isActive ? 'is-active' : ''}"
+         data-side="${side}">
+      <div class="player-card-id">
+        <span class="player-card-avatar avatar-${colorCls}" aria-hidden="true">${escapeHtml(initials)}</span>
+        <div class="player-card-name-block">
+          <div class="player-card-name">${escapeHtml(name || (side === 'opp' ? 'Opponent' : 'You'))} ${moveBadge}</div>
+          <div class="player-card-sub">${escapeHtml(subtitle)}</div>
+        </div>
+      </div>
+      ${trayHtml}
+      ${clockHtml}
+    </div>`;
+}
+
+// Slim in-game header: back arrow + room code + mode chip(s) + connection
+// indicator + overflow menu. The overflow opens a small popover with the
+// game info read-out + (online only) a Copy invite link button.
+//
+// opts:
+//   roomCode: string | null
+//   modeText: string | null     (e.g., "Standard", "Capture General")
+//   tcText:   string | null     (e.g., "10+5")
+//   connState: 'live' | 'connecting' | 'reconnecting' | 'offline' | null
+//   isOnline: boolean
+//   isReplay: boolean
+//   backHref: string            (default '#/')
+function renderSlimGameHeaderHtml(opts) {
+  const {
+    roomCode = null, modeText = null, tcText = null,
+    connState = null, isOnline = false, isReplay = false, backHref = '#/',
+  } = opts;
+  // Connection dot — only shown when in a non-OK state, to stay out of the way.
+  let connDot = '';
+  if (isOnline && connState && connState !== 'live') {
+    const cls = connState === 'reconnecting' ? 'conn-reconnecting'
+              : connState === 'offline'      ? 'conn-offline'
+              : 'conn-connecting';
+    const label = connState === 'reconnecting' ? 'Reconnecting…'
+                : connState === 'offline'      ? 'Offline'
+                : 'Connecting…';
+    connDot = `<span class="slim-conn ${cls}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"></span>`;
+  }
+  const replayChip = isReplay
+    ? `<span class="slim-replay-chip" aria-label="Replay view">Replay</span>`
+    : '';
+  return `
+    <a class="slim-back" href="${backHref}" aria-label="Back to lobby"><span aria-hidden="true">←</span></a>
+    <div class="slim-mid">
+      ${roomCode ? `<span class="slim-room"><span class="meta-label">Room</span> <code>${escapeHtml(roomCode)}</code></span>` : ''}
+      ${modeText ? `<span class="mode-chip" aria-label="Win condition: ${escapeHtml(modeText)}">${escapeHtml(modeText)}</span>` : ''}
+      ${tcText   ? `<span class="mode-chip" aria-label="Time control: ${escapeHtml(tcText)}">${escapeHtml(tcText)}</span>` : ''}
+      ${replayChip}
+    </div>
+    ${connDot}
+    <button class="slim-more" id="slim-more-btn" type="button" aria-label="More game options" aria-haspopup="true" aria-expanded="false">⋯</button>
+    <div class="slim-popover hidden" id="slim-more-popover" role="menu" aria-label="Game options">
+      <div class="slim-popover-section">
+        <div class="slim-popover-label">Game info</div>
+        ${roomCode ? `<div class="slim-popover-row"><span class="meta-label">Room</span> <code>${escapeHtml(roomCode)}</code></div>` : ''}
+        ${modeText ? `<div class="slim-popover-row"><span class="meta-label">Mode</span> ${escapeHtml(modeText)}</div>` : ''}
+        ${tcText   ? `<div class="slim-popover-row"><span class="meta-label">Time</span> ${escapeHtml(tcText)}</div>` : ''}
+      </div>
+      ${isOnline ? `
+        <div class="slim-popover-section">
+          <button type="button" class="link-btn" id="slim-copy-invite">Copy invite link</button>
+        </div>` : ''}
+    </div>`;
+}
+
+// Wire the slim header's overflow popover. Called by each refresh fn after
+// it injects the slim header HTML. Idempotent — re-wires every refresh.
+function wireSlimHeader(rootEl) {
+  if (!rootEl) return;
+  const btn = rootEl.querySelector('#slim-more-btn');
+  const pop = rootEl.querySelector('#slim-more-popover');
+  if (!btn || !pop) return;
+  const copyBtn = pop.querySelector('#slim-copy-invite');
+  if (copyBtn) copyBtn.onclick = () => { copyInviteLink(); closePopover(); };
+  const closePopover = () => {
+    pop.classList.add('hidden');
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', onDocClick, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const openPopover = () => {
+    pop.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    setTimeout(() => {
+      document.addEventListener('click', onDocClick, true);
+      document.addEventListener('keydown', onKey, true);
+    }, 0);
+  };
+  const onDocClick = (e) => {
+    if (pop.contains(e.target) || btn.contains(e.target)) return;
+    closePopover();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') closePopover(); };
+  btn.onclick = () => {
+    if (pop.classList.contains('hidden')) openPopover();
+    else closePopover();
+  };
+}
+
+// Thumb-reach bottom action bar.
+// opts:
+//   viewKind: 'online' | 'otb' | 'ai'
+//   isFinished: boolean
+//   isReplay: boolean
+//   canResign: boolean
+//   canOfferDraw: boolean
+//   canRematch: boolean
+//   offerDrawActive: boolean   — whether "offer draw on next move" is currently toggled
+function renderBottomActionBarHtml(opts) {
+  const {
+    viewKind, isFinished, isReplay,
+    canResign, canOfferDraw, canRematch, offerDrawActive,
+  } = opts;
+  if (isReplay) {
+    return `
+      <a class="link-btn" href="#/">Back to lobby</a>
+      <button type="button" class="bb-btn bb-return-live" id="bb-return-live">Return to live</button>`;
+  }
+  if (isFinished) {
+    const rematchLabel = viewKind === 'ai' ? 'New game' : 'Rematch';
+    const rematchId = viewKind === 'ai' ? 'bb-new-game' : 'bb-rematch';
+    return `
+      <a class="link-btn" href="#/">Back to lobby</a>
+      ${canRematch ? `<button type="button" class="bb-btn bb-primary" id="${rematchId}">${rematchLabel}</button>` : ''}`;
+  }
+  const drawBtn = canOfferDraw
+    ? `<button type="button" class="bb-btn ${offerDrawActive ? 'bb-toggle-on' : ''}" id="bb-offer-draw"
+               aria-pressed="${offerDrawActive ? 'true' : 'false'}"
+               title="Attach a draw offer to your next move">${offerDrawActive ? '✓ Drawing offer queued' : 'Offer draw'}</button>`
+    : '';
+  const resignBtn = canResign
+    ? `<button type="button" class="bb-btn bb-danger" id="bb-resign">Resign</button>`
+    : '';
+  return `${drawBtn}${resignBtn}`;
+}
+
+// File coordinate labels under the board (a–h).
+const FILE_COORDS_HTML = ['a','b','c','d','e','f','g','h']
+  .map((c) => `<span class="board-coord-file">${c}</span>`).join('');
 
 function pieceCounts(cells, replay) {
   const shown = { 1: [0, 0, 0, 0, 0, 0, 0, 0], 2: [0, 0, 0, 0, 0, 0, 0, 0] };

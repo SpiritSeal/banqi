@@ -6,6 +6,7 @@
 const KEY = 'banqi.settings.v1';
 
 const DEFAULTS = Object.freeze({
+  gameLayout: 'classic',         // classic | beta — opt-in revamped game page (slim header, player cards, larger transcript)
   theme: 'dark',                 // dark | sepia
   boardStyle: 'classic',         // classic | wood | minimal  (reserved; default for now)
   pieceStyle: 'glyph',           // glyph | minimal | large
@@ -16,6 +17,7 @@ const DEFAULTS = Object.freeze({
 });
 
 const VALID = {
+  gameLayout:          ['classic', 'beta'],
   theme:               ['dark', 'sepia'],
   boardStyle:          ['classic', 'wood', 'minimal'],
   pieceStyle:          ['glyph', 'minimal', 'large'],
@@ -71,6 +73,7 @@ export function areAnimationsEnabled() {
 export function warnBeforeThreefold() { return load().warnBeforeThreefold === 'on'; }
 
 function apply(s) {
+  document.body.dataset.gameLayout = s.gameLayout;
   document.body.dataset.theme = s.theme;
   document.body.dataset.boardStyle = s.boardStyle;
   document.body.dataset.pieceStyle = s.pieceStyle;
@@ -110,6 +113,16 @@ export function openSettingsDrawer() {
     <div class="crib-drawer-head">
       <h2 id="settings-title">Settings</h2>
       <button type="button" class="crib-drawer-close" aria-label="Close settings">×</button>
+    </div>
+    <div class="setting-row">
+      <label for="setting-game-layout">
+        <span class="setting-label">Game layout <span class="beta-badge">Beta</span></span>
+        <span class="setting-hint">Try the new game page: slim header, per-player cards, larger transcript. Classic stays exactly as today.</span>
+      </label>
+      <select id="setting-game-layout">
+        <option value="classic">Classic</option>
+        <option value="beta">Beta</option>
+      </select>
     </div>
     <div class="setting-row">
       <label for="setting-theme">
@@ -178,6 +191,7 @@ export function openSettingsDrawer() {
   overlay.appendChild(drawer);
   root.appendChild(overlay);
 
+  drawer.querySelector('#setting-game-layout').value = s.gameLayout;
   drawer.querySelector('#setting-theme').value = s.theme;
   drawer.querySelector('#setting-piece').value = s.pieceStyle;
   drawer.querySelector('#setting-pnums').value = s.pieceNumbers;
@@ -200,6 +214,7 @@ export function openSettingsDrawer() {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   document.addEventListener('keydown', onKey, true);
 
+  drawer.querySelector('#setting-game-layout').addEventListener('change', (e) => setSetting('gameLayout', e.target.value));
   drawer.querySelector('#setting-theme').addEventListener('change', (e) => setSetting('theme', e.target.value));
   drawer.querySelector('#setting-piece').addEventListener('change', (e) => setSetting('pieceStyle', e.target.value));
   drawer.querySelector('#setting-pnums').addEventListener('change', (e) => setSetting('pieceNumbers', e.target.value));
