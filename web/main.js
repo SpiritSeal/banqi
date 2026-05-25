@@ -30,7 +30,7 @@ import { bindBoardInput } from './board-input.js';
 import { toast } from './ui/toast.js';
 import { isTypingTarget, infoModal, confirmModal } from './ui/modal.js';
 import { showGameOverModal } from './ui/game-over-modal.js';
-import { escapeHtml } from './util.js';
+import { escapeHtml, initialsFor, GAME_MODES, normMode, modeLabel, AI_DIFFICULTY_LABELS, aiDifficultyLabel } from './util.js';
 
 // Initialise settings (applies theme / animation toggles to <body>) before
 // anything paints, so the first render uses the chosen palette.
@@ -478,18 +478,6 @@ async function signOut() {
 
 // Whitelist of game-mode strings. Matches server-side normalizeMode so the
 // client can't be tricked into displaying something the server won't honour.
-const GAME_MODES = ['standard', 'capture_general'];
-function normMode(m) { return GAME_MODES.includes(m) ? m : 'standard'; }
-function modeLabel(m) {
-  return m === 'capture_general' ? 'Capture the General' : 'Standard';
-}
-
-const AI_DIFFICULTY_LABELS = {
-  easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master',
-  policy: 'Policy',
-};
-function aiDifficultyLabel(d) { return AI_DIFFICULTY_LABELS[d] || (d || ''); }
-
 async function startOnlineGame() {
   if (!me) return;
   const mode = normMode($('lobby-online-mode')?.value);
@@ -3482,11 +3470,6 @@ function maybeShowTutorialTip(boardEl) {
 // ---- utils ----
 // First letter of a display name, uppercased, for avatar initials. Strips
 // emoji/punctuation so we land on a letter when one is available.
-function initialsFor(name) {
-  const ch = String(name || '').replace(/[^\p{L}\p{N}]+/gu, '').charAt(0);
-  return ch ? ch.toUpperCase() : '?';
-}
-
 // ---- boot ----
 document.addEventListener('keydown', (e) => {
   if (e.key !== '?') return;
