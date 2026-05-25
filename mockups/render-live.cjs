@@ -64,6 +64,7 @@ function injectBetaContent(coords) {
           <span class="pc-tray-piece pc-tray-red">兵</span>
           <span class="pc-tray-piece pc-tray-red">兵</span>
           <span class="pc-tray-piece pc-tray-red">相</span>
+          <span class="pc-tray-diff">+3</span>
         </span>
         <span class="player-card-clock clock"><span class="clock-time">9:18</span></span>
       </div>`,
@@ -73,7 +74,7 @@ function injectBetaContent(coords) {
         <div class="player-card-id">
           <span class="player-card-avatar avatar-red">Y</span>
           <div class="player-card-name-block">
-            <div class="player-card-name">You <span class="player-card-move">· your move</span></div>
+            <div class="player-card-name">You <span class="player-card-move">· move</span></div>
             <div class="player-card-sub">Red</div>
           </div>
         </div>

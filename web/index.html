@@ -133,16 +133,16 @@
     <h2 id="game-heading" class="sr-only" tabindex="-1">Online game</h2>
     <div id="game-slim-header" class="game-slim-header" data-slot="slim-header"></div>
     <div id="game-header"></div>
-    <div id="game-opp-card" class="player-card-slot" data-slot="opp-card"></div>
     <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
     <div class="game-layout">
       <div class="board-stack">
+        <div id="game-opp-card" class="player-card-slot" data-slot="opp-card"></div>
         <div id="game-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
         <div id="game-board-coords" class="board-coords" data-slot="board-coords" aria-hidden="true"></div>
+        <div id="game-you-card" class="player-card-slot" data-slot="you-card"></div>
       </div>
       <div id="game-transcript" class="transcript-panel"></div>
     </div>
-    <div id="game-you-card" class="player-card-slot" data-slot="you-card"></div>
     <p class="muted small">Tip: bookmark this page or save the room link. Coming back continues the game where you left off.</p>
     <div id="game-bottom-bar" class="game-bottom-bar" data-slot="bottom-bar"></div>
   </section>
@@ -153,16 +153,16 @@
     <div id="otb-slim-header" class="game-slim-header" data-slot="slim-header"></div>
     <div id="otb-banner" class="otb-banner" role="status" aria-live="polite">setting up…</div>
     <div id="otb-counts" class="piece-counts-bar"></div>
-    <div id="otb-opp-card" class="player-card-slot" data-slot="opp-card"></div>
     <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
     <div class="game-layout">
       <div class="board-stack">
+        <div id="otb-opp-card" class="player-card-slot" data-slot="opp-card"></div>
         <div id="otb-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
         <div id="otb-board-coords" class="board-coords" data-slot="board-coords" aria-hidden="true"></div>
+        <div id="otb-you-card" class="player-card-slot" data-slot="you-card"></div>
       </div>
       <div id="otb-transcript" class="transcript-panel"></div>
     </div>
-    <div id="otb-you-card" class="player-card-slot" data-slot="you-card"></div>
     <div class="row" style="margin-top:12px">
       <button id="otb-resign">Resign</button>
       <button id="otb-rematch" class="primary hidden">Rematch</button>
@@ -180,16 +180,16 @@
       <div id="ai-meta" class="ai-meta"></div>
     </div>
     <div id="ai-counts" class="piece-counts-bar"></div>
-    <div id="ai-opp-card" class="player-card-slot" data-slot="opp-card"></div>
     <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
     <div class="game-layout">
       <div class="board-stack">
+        <div id="ai-opp-card" class="player-card-slot" data-slot="opp-card"></div>
         <div id="ai-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
         <div id="ai-board-coords" class="board-coords" data-slot="board-coords" aria-hidden="true"></div>
+        <div id="ai-you-card" class="player-card-slot" data-slot="you-card"></div>
       </div>
       <div id="ai-transcript" class="transcript-panel"></div>
     </div>
-    <div id="ai-you-card" class="player-card-slot" data-slot="you-card"></div>
     <div class="row" style="margin-top:12px">
       <button id="ai-resign">Resign</button>
       <button id="ai-new-game" class="primary">New game</button>

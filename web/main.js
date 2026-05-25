@@ -868,6 +868,10 @@ function paintBetaLayoutOnline(ctx) {
   // counts is `{ red: {byType, ...}, black: {byType, ...} }`.
   const myCaptured  = myColor === 1 ? counts.black.byType : myColor === 2 ? counts.red.byType : null;
   const oppCaptured = myColor === 1 ? counts.red.byType   : myColor === 2 ? counts.black.byType : null;
+  // Material differential (this player's captures - opp's captures, in rank
+  // points). Shown as "+N" on whichever card is ahead.
+  const myDiff  = materialDiff(myCaptured,  oppCaptured);
+  const oppDiff = -myDiff;
   // Clock data.
   const hasClocks = liveState.time_limit_ms != null && liveState.clocks;
   const myMs   = hasClocks ? (liveState.clocks?.[myPlayerIdx] ?? 0) : null;
@@ -896,6 +900,7 @@ function paintBetaLayoutOnline(ctx) {
     isActive: oppTurn,
     clockMs: oppMs, isClockActive: oppClockActive, isClockLow: oppClockActive && oppMs != null && oppMs < 30_000,
     capturedByType: oppCaptured, capturedColor: myColor,
+    materialAdvantage: oppDiff,
   });
   youSlot.innerHTML = renderPlayerCardHtml({
     side: 'you', name: myName,
@@ -904,6 +909,7 @@ function paintBetaLayoutOnline(ctx) {
     isActive: myTurn,
     clockMs: myMs, isClockActive: myClockActive, isClockLow: myClockActive && myMs != null && myMs < 30_000,
     capturedByType: myCaptured, capturedColor: oppColor,
+    materialAdvantage: myDiff,
   });
 
   // Board coords (a–h).
@@ -1474,6 +1480,8 @@ function paintBetaLayoutOTB(ctx) {
                     : youColor === 2 ? counts.red.byType : null;
   const oppCaptured = oppColor === 1 ? counts.black.byType
                     : oppColor === 2 ? counts.red.byType : null;
+  const youDiff = materialDiff(youCaptured, oppCaptured);
+  const oppDiff = -youDiff;
 
   slimSlot.innerHTML = renderSlimGameHeaderHtml({
     roomCode: null,
@@ -1496,6 +1504,7 @@ function paintBetaLayoutOTB(ctx) {
     isActive: false,
     clockMs: null,
     capturedByType: oppCaptured, capturedColor: youColor,
+    materialAdvantage: oppDiff,
   });
   youSlot.innerHTML = renderPlayerCardHtml({
     side: 'you',
@@ -1505,6 +1514,7 @@ function paintBetaLayoutOTB(ctx) {
     isActive: youTurn,
     clockMs: null,
     capturedByType: youCaptured, capturedColor: oppColor,
+    materialAdvantage: youDiff,
   });
 
   coordsSlot.innerHTML = FILE_COORDS_HTML;
@@ -1794,6 +1804,8 @@ function paintBetaLayoutAI(ctx) {
   const counts = pieceCounts(view.cells, active.replay);
   const myCaptured  = myColor === 1 ? counts.black.byType : myColor === 2 ? counts.red.byType : null;
   const oppCaptured = myColor === 1 ? counts.red.byType   : myColor === 2 ? counts.black.byType : null;
+  const myDiff  = materialDiff(myCaptured, oppCaptured);
+  const oppDiff = -myDiff;
 
   const isFinished = !!view.game_over;
   const myTurn  = !isFinished && !view.replayViewing && view.side_to_move === 0;
@@ -1817,6 +1829,7 @@ function paintBetaLayoutAI(ctx) {
     isActive: oppTurn,
     clockMs: null,
     capturedByType: oppCaptured, capturedColor: myColor,
+    materialAdvantage: oppDiff,
   });
   youSlot.innerHTML = renderPlayerCardHtml({
     side: 'you',
@@ -1826,6 +1839,7 @@ function paintBetaLayoutAI(ctx) {
     isActive: myTurn,
     clockMs: null,
     capturedByType: myCaptured, capturedColor: oppColor,
+    materialAdvantage: myDiff,
   });
 
   coordsSlot.innerHTML = FILE_COORDS_HTML;
@@ -1941,7 +1955,9 @@ function materialDiff(myCaptured, oppCaptured) {
 // Render the captured-pieces tray as faded glyphs, one per captured unit,
 // in rank order. Returns an HTML string. `capturedColor` is the *color of
 // the pieces being shown* (i.e., what the player captured = opponent's color).
-function renderCapturedTrayHtml(byType, capturedColor) {
+// `diff` is the material differential (this player's value - opponent's value);
+// shown as "+N" when positive, hidden otherwise.
+function renderCapturedTrayHtml(byType, capturedColor, diff = 0) {
   const glyphs = PIECE_GLYPHS[capturedColor];
   if (!glyphs) return '';
   const parts = [];
@@ -1951,8 +1967,11 @@ function renderCapturedTrayHtml(byType, capturedColor) {
       parts.push(`<span class="pc-tray-piece pc-tray-${capturedColor === 1 ? 'red' : 'black'}" aria-hidden="true">${glyphs[t]}</span>`);
     }
   }
+  const diffHtml = diff > 0
+    ? `<span class="pc-tray-diff" aria-label="material advantage +${diff}">+${diff}</span>`
+    : '';
   return parts.length
-    ? `<span class="pc-tray" aria-label="${parts.length} piece${parts.length === 1 ? '' : 's'} captured">${parts.join('')}</span>`
+    ? `<span class="pc-tray" aria-label="${parts.length} piece${parts.length === 1 ? '' : 's'} captured">${parts.join('')}${diffHtml}</span>`
     : '<span class="pc-tray pc-tray-empty" aria-hidden="true"></span>';
 }
 
@@ -1968,22 +1987,23 @@ function renderCapturedTrayHtml(byType, capturedColor) {
 //   isClockLow: boolean — turn red under 30 s
 //   capturedByType: per-type byType data for pieces *this player has captured*
 //   capturedColor: 1 | 2 — color of the captured pieces (opposite of this player's color)
+//   materialAdvantage: number — shown as "+N" in the tray when positive
 function renderPlayerCardHtml(opts) {
   const {
     side, name, subtitle = '', color = 0,
     isActive = false, clockMs = null, isClockActive = false, isClockLow = false,
-    capturedByType = null, capturedColor = 0,
+    capturedByType = null, capturedColor = 0, materialAdvantage = 0,
   } = opts;
   const initials = initialsFor(name || (side === 'opp' ? '?' : 'You'));
   const colorCls = color === 1 ? 'red' : color === 2 ? 'black' : 'unk';
-  const moveBadge = isActive ? `<span class="player-card-move">· your move</span>` : '';
+  const moveBadge = isActive ? `<span class="player-card-move">· move</span>` : '';
   const clockHtml = (clockMs != null)
     ? `<span class="player-card-clock clock ${isClockActive ? 'active' : ''} ${isClockLow ? 'low' : ''}">
          <span class="clock-time">${formatClockMs(clockMs)}</span>
        </span>`
     : '';
   const trayHtml = (capturedByType && capturedColor)
-    ? renderCapturedTrayHtml(capturedByType, capturedColor)
+    ? renderCapturedTrayHtml(capturedByType, capturedColor, materialAdvantage)
     : '';
   return `
     <div class="player-card player-card-${side} player-card-color-${colorCls} ${isActive ? 'is-active' : ''}"
