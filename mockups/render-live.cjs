@@ -35,13 +35,13 @@ function startServer() {
 // Sample beta-mode HTML injected into the static slot divs so the
 // screenshots show what the layout looks like with content. Mirrors what
 // the live render fns would produce mid-game.
-function injectBetaContent(coords) {
+function injectBetaContent(coords, focusOn = false) {
   // coords: 'game' | 'otb' | 'ai'
-  const inject = (id, html) => {
-    const el = document.getElementById(id);
-    if (el) el.innerHTML = html;
-  };
-  // We're in the page context here (page.evaluate).
+  // focusOn: when true, the slim header's focus button shows its "on"
+  //          treatment (accent background + contract-arrow icon).
+  const expandIcon = `<svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`;
+  const contractIcon = `<svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`;
+  const focusBtn = `<button class="slim-focus ${focusOn ? 'is-on' : ''}" aria-pressed="${focusOn}" aria-label="${focusOn ? 'Exit focus mode' : 'Enter focus mode'}" title="${focusOn ? 'Exit focus mode' : 'Focus mode'}">${focusOn ? contractIcon : expandIcon}</button>`;
   return {
     [`${coords}-slim-header`]: `
       <a class="slim-back" href="#/" aria-label="Back to lobby">←</a>
@@ -50,6 +50,7 @@ function injectBetaContent(coords) {
         <span class="mode-chip">Standard</span>
         <span class="mode-chip">10+5</span>
       </div>
+      ${focusBtn}
       <button class="slim-more" aria-label="More">⋯</button>`,
     [`${coords}-opp-card`]: `
       <div class="player-card player-card-opp player-card-color-black">
@@ -161,6 +162,11 @@ function paintFakeBoard(boardId) {
       { name: 'beta-game-landscape',viewport:{ width: 896, height: 414 }, view: 'game',  layout: 'beta', injectBoard: 'game' },
       { name: 'beta-game-desktop', viewport: { width: 1440, height: 900 }, view: 'game', layout: 'beta', injectBoard: 'game' },
       { name: 'classic-game-portrait', viewport:{ width: 414, height: 896 }, view: 'game', layout: 'classic', injectBoard: 'game' },
+      // Focus mode: same three game-view sizes, with transcript hidden and
+      // the slim-header focus button in its "on" treatment.
+      { name: 'beta-focus-portrait',  viewport: { width: 414, height: 896 }, view: 'game', layout: 'beta', injectBoard: 'game', focus: true },
+      { name: 'beta-focus-landscape', viewport: { width: 896, height: 414 }, view: 'game', layout: 'beta', injectBoard: 'game', focus: true },
+      { name: 'beta-focus-desktop',   viewport: { width: 1440, height: 900 }, view: 'game', layout: 'beta', injectBoard: 'game', focus: true },
     ];
 
     for (const t of targets) {
@@ -168,8 +174,9 @@ function paintFakeBoard(boardId) {
       const page = await ctx.newPage();
       await page.goto(base + '/web/index.html', { waitUntil: 'networkidle' });
       // Apply layout + view via the actual settings + showView fns.
-      await page.evaluate(({ layout, view, slots, injectBoardCode, injectTranscriptCode }) => {
+      await page.evaluate(({ layout, view, slots, injectBoardCode, injectTranscriptCode, focus }) => {
         document.body.dataset.gameLayout = layout;
+        document.body.dataset.focusMode = focus ? 'on' : 'off';
         document.body.dataset.activeView = view;
         for (const sec of ['view-lobby','view-game','view-otb','view-ai','view-dashboard']) {
           const el = document.getElementById(sec);
@@ -194,7 +201,8 @@ function paintFakeBoard(boardId) {
       }, {
         layout: t.layout,
         view: t.view,
-        slots: t.layout === 'beta' && t.view === 'game' ? injectBetaContent('game') : null,
+        focus: !!t.focus,
+        slots: t.layout === 'beta' && t.view === 'game' ? injectBetaContent('game', !!t.focus) : null,
         injectBoardCode: t.injectBoard ? paintFakeBoard(t.injectBoard + '-board') : null,
         injectTranscriptCode: t.layout === 'beta' && t.view === 'game' ? injectFakeTranscript('game-transcript') : null,
       });

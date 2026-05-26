@@ -2619,7 +2619,8 @@ body[data-game-layout="beta"] .slim-conn {
 body[data-game-layout="beta"] .slim-conn.conn-reconnecting { background: var(--accent); animation: dot-pulse 1.4s ease-in-out infinite; }
 body[data-game-layout="beta"] .slim-conn.conn-offline      { background: var(--err-fg); }
 body[data-game-layout="beta"] .slim-conn.conn-connecting   { background: var(--muted); }
-body[data-game-layout="beta"] .slim-more {
+body[data-game-layout="beta"] .slim-more,
+body[data-game-layout="beta"] .slim-focus {
   width: 28px; height: 28px;
   border-radius: 8px;
   background: var(--surface-3);
@@ -2631,8 +2632,20 @@ body[data-game-layout="beta"] .slim-more {
   line-height: 1;
   flex-shrink: 0;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-body[data-game-layout="beta"] .slim-more:hover { background: var(--surface-4); color: var(--fg); }
+body[data-game-layout="beta"] .slim-more:hover,
+body[data-game-layout="beta"] .slim-focus:hover { background: var(--surface-4); color: var(--fg); }
+/* When focus mode is on the toggle uses an accent treatment so it's obvious
+   the page is in an alternate state (and that tapping again will exit). */
+body[data-game-layout="beta"] .slim-focus.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent-strong);
+  color: var(--accent);
+}
+body[data-game-layout="beta"] .slim-focus svg { display: block; }
 body[data-game-layout="beta"] .slim-popover {
   position: absolute;
   top: calc(100% + 4px);
@@ -2959,4 +2972,47 @@ body[data-game-layout="beta"] .game-bottom-bar .link-btn {
 /* Larger / more readable cell glyph on desktop now that the board can grow. */
 @media (min-width: 720px) {
   body[data-game-layout="beta"] .cell { font-size: 44px; }
+}
+
+/* ============================================================
+   Focus mode — hides the move list so the board uses the full
+   row at every breakpoint. Toggled from the slim-header button;
+   persisted as body[data-focus-mode="on"]. Beta-only.
+   ============================================================ */
+
+/* Hide the move list entirely. The classic `.transcript-panel` carries
+   its own collapsing rule on :empty but the beta render fills it, so we
+   need an explicit display:none here. */
+body[data-game-layout="beta"][data-focus-mode="on"] .transcript-panel {
+  display: none;
+}
+
+/* At >=720 px the game layout uses a 2-column grid; collapse to single
+   column so the board column eats the full width. */
+@media (min-width: 720px) {
+  body[data-game-layout="beta"][data-focus-mode="on"] .game-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Tighten the page padding so the board can go almost edge-to-edge.
+   Safe-area handling is preserved — we min() against the inset so notches
+   in landscape still keep content out from under hardware curvature. */
+body[data-game-layout="beta"][data-focus-mode="on"][data-active-view="game"] #view-game,
+body[data-game-layout="beta"][data-focus-mode="on"][data-active-view="otb"]  #view-otb,
+body[data-game-layout="beta"][data-focus-mode="on"][data-active-view="ai"]   #view-ai {
+  padding-left: max(4px, env(safe-area-inset-left));
+  padding-right: max(4px, env(safe-area-inset-right));
+}
+/* Pull the slim header's negative-margin in to match the new padding so
+   its blur strip still spans corner to corner. */
+body[data-game-layout="beta"][data-focus-mode="on"] .game-slim-header {
+  margin-left: -4px;
+  margin-right: -4px;
+}
+
+/* Hide the "Tip: bookmark this page…" footer in focus mode so the
+   board can claim the vertical space too. */
+body[data-game-layout="beta"][data-focus-mode="on"] #view-game > p.muted.small {
+  display: none;
 }

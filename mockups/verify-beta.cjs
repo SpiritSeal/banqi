@@ -188,6 +188,55 @@ function fail(msg) { console.error('FAIL:', msg); process.exitCode = 1; }
     if (slimVisible === 'none') { fail('populated slim header should be visible'); ok = false; }
     else pass(`populated slim header shows (display=${slimVisible})`);
 
+    // 11. Focus mode: default off, body[data-focus-mode="off"], localStorage stores it.
+    const focusDefault = await page.evaluate(() => document.body.dataset.focusMode);
+    if (focusDefault !== 'off') { fail(`expected data-focus-mode=off by default, got ${focusDefault}`); ok = false; }
+    else pass(`body[data-focus-mode] = off by default`);
+
+    // Switch gameLayout back to beta (step 7 reverted it; the focus-mode CSS
+    // rules are gated on gameLayout=beta, so the body needs both attributes
+    // set via the real apply() path).
+    await page.evaluate(async () => {
+      const s = await import('/web/settings.js');
+      s.setSetting('gameLayout', 'beta');
+    });
+
+    // 12. Switch focusMode to "on" via setSetting and verify body attribute updates.
+    await page.evaluate(async () => {
+      const s = await import('/web/settings.js');
+      s.setSetting('focusMode', 'on');
+    });
+    const focusOn = await page.evaluate(() => document.body.dataset.focusMode);
+    if (focusOn !== 'on') { fail(`expected data-focus-mode=on after toggle, got ${focusOn}`); ok = false; }
+    else pass(`body[data-focus-mode] = on after toggle`);
+
+    // 13. Populate a transcript and verify focus mode hides it. We re-set the
+    //     active view here because the apply() path doesn't change it (and
+    //     the earlier `document.body.dataset.activeView = 'game'` may have
+    //     been overwritten if the router ran in the meantime).
+    await page.evaluate(() => {
+      document.body.dataset.activeView = 'game';
+      const t = document.getElementById('game-transcript');
+      if (t) t.innerHTML = '<div class="transcript-head"><h3>Moves</h3></div><div class="transcript-list">x</div>';
+    });
+    const transcriptDisplay = await page.locator('#game-transcript').evaluate((el) => getComputedStyle(el).display);
+    if (transcriptDisplay !== 'none') { fail(`expected transcript hidden under focusMode=on, got display=${transcriptDisplay}`); ok = false; }
+    else pass(`focus mode hides the transcript (display=none)`);
+
+    // 14. Turn focus off and verify transcript reappears.
+    await page.evaluate(async () => {
+      const s = await import('/web/settings.js');
+      s.setSetting('focusMode', 'off');
+    });
+    const transcriptDisplay2 = await page.locator('#game-transcript').evaluate((el) => getComputedStyle(el).display);
+    if (transcriptDisplay2 === 'none') { fail(`expected transcript visible after focusMode=off, still display=none`); ok = false; }
+    else pass(`transcript visible again after focusMode=off (display=${transcriptDisplay2})`);
+
+    // 15. Persistence: focusMode is written to localStorage.
+    const storedAfter = await page.evaluate(() => localStorage.getItem('banqi.settings.v1'));
+    if (!/"focusMode":"off"/.test(storedAfter)) { fail(`expected focusMode persisted to localStorage, got ${storedAfter}`); ok = false; }
+    else pass(`focusMode persisted to localStorage`);
+
   } finally {
     await browser.close();
     server.close();

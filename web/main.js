@@ -21,7 +21,7 @@ import { Replay, renderTranscript, exportPgn, endReasonLabel } from './replay.js
 import * as Notify from './notifications.js';
 import { playMoveSound } from './audio.js';
 import { computeMoveHints, cellHintKind } from './board-hints.js';
-import { initSettings, openSettingsDrawer, openRulesDrawer } from './settings.js';
+import { initSettings, openSettingsDrawer, openRulesDrawer, setSetting } from './settings.js';
 import { captureCellRect, playEventAnimation, animateCapture } from './animations.js';
 import { bindBoardInput } from './board-input.js';
 import { toast } from './ui/toast.js';
@@ -42,7 +42,8 @@ initSettings();
 // just `gameLayout`). Re-runs the right refresh fn so the layout swaps
 // without a page reload.
 window.addEventListener('banqi:settings-change', (e) => {
-  if (e?.detail?.key !== 'gameLayout') return;
+  const key = e?.detail?.key;
+  if (key !== 'gameLayout' && key !== 'focusMode') return;
   if (!active) return;
   if (active.isOnline) refreshGame();
   else if (active.isOTB) refreshOTB();
@@ -2069,6 +2070,16 @@ function renderSlimGameHeaderHtml(opts) {
   const replayChip = isReplay
     ? `<span class="slim-replay-chip" aria-label="Replay view">Replay</span>`
     : '';
+  // Focus-mode toggle. Reads + writes via `setSetting` (settings.js wires the
+  // body[data-focus-mode] attribute and dispatches banqi:settings-change).
+  const focusOn = document.body.dataset.focusMode === 'on';
+  const focusIcon = focusOn
+    ? `<svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`
+    : `<svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`;
+  const focusBtn = `<button class="slim-focus ${focusOn ? 'is-on' : ''}" id="slim-focus-btn" type="button"
+                             aria-label="${focusOn ? 'Exit focus mode' : 'Enter focus mode'}"
+                             aria-pressed="${focusOn ? 'true' : 'false'}"
+                             title="${focusOn ? 'Exit focus mode' : 'Focus mode — hide the move list'}">${focusIcon}</button>`;
   return `
     <a class="slim-back" href="${backHref}" aria-label="Back to lobby"><span aria-hidden="true">←</span></a>
     <div class="slim-mid">
@@ -2078,6 +2089,7 @@ function renderSlimGameHeaderHtml(opts) {
       ${replayChip}
     </div>
     ${connDot}
+    ${focusBtn}
     <button class="slim-more" id="slim-more-btn" type="button" aria-label="More game options" aria-haspopup="true" aria-expanded="false">⋯</button>
     <div class="slim-popover hidden" id="slim-more-popover" role="menu" aria-label="Game options">
       <div class="slim-popover-section">
@@ -2097,6 +2109,16 @@ function renderSlimGameHeaderHtml(opts) {
 // it injects the slim header HTML. Idempotent — re-wires every refresh.
 function wireSlimHeader(rootEl) {
   if (!rootEl) return;
+  // Focus-mode toggle. `setSetting` fires `banqi:settings-change`, which the
+  // global listener catches and re-runs the active refresh fn so the slim
+  // header re-renders with the updated aria-pressed / icon.
+  const focusBtn = rootEl.querySelector('#slim-focus-btn');
+  if (focusBtn) {
+    focusBtn.onclick = () => {
+      const next = document.body.dataset.focusMode === 'on' ? 'off' : 'on';
+      setSetting('focusMode', next);
+    };
+  }
   const btn = rootEl.querySelector('#slim-more-btn');
   const pop = rootEl.querySelector('#slim-more-popover');
   if (!btn || !pop) return;

@@ -7,6 +7,7 @@ const KEY = 'banqi.settings.v1';
 
 const DEFAULTS = Object.freeze({
   gameLayout: 'classic',         // classic | beta — opt-in revamped game page (slim header, player cards, larger transcript)
+  focusMode: 'off',              // on | off — hide the move list so the board fills the row. Only takes effect under gameLayout=beta.
   theme: 'dark',                 // dark | sepia
   boardStyle: 'classic',         // classic | wood | minimal  (reserved; default for now)
   pieceStyle: 'glyph',           // glyph | minimal | large
@@ -18,6 +19,7 @@ const DEFAULTS = Object.freeze({
 
 const VALID = {
   gameLayout:          ['classic', 'beta'],
+  focusMode:           ['on', 'off'],
   theme:               ['dark', 'sepia'],
   boardStyle:          ['classic', 'wood', 'minimal'],
   pieceStyle:          ['glyph', 'minimal', 'large'],
@@ -74,6 +76,7 @@ export function warnBeforeThreefold() { return load().warnBeforeThreefold === 'o
 
 function apply(s) {
   document.body.dataset.gameLayout = s.gameLayout;
+  document.body.dataset.focusMode = s.focusMode;
   document.body.dataset.theme = s.theme;
   document.body.dataset.boardStyle = s.boardStyle;
   document.body.dataset.pieceStyle = s.pieceStyle;
