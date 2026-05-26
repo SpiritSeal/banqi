@@ -131,23 +131,36 @@
   <!-- GAME -->
   <section id="view-game" class="panel hidden" aria-labelledby="game-heading">
     <h2 id="game-heading" class="sr-only" tabindex="-1">Online game</h2>
+    <div id="game-slim-header" class="game-slim-header" data-slot="slim-header"></div>
     <div id="game-header"></div>
     <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
     <div class="game-layout">
-      <div id="game-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+      <div class="board-stack">
+        <div id="game-opp-card" class="player-card-slot" data-slot="opp-card"></div>
+        <div id="game-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+        <div id="game-board-coords" class="board-coords" data-slot="board-coords" aria-hidden="true"></div>
+        <div id="game-you-card" class="player-card-slot" data-slot="you-card"></div>
+      </div>
       <div id="game-transcript" class="transcript-panel"></div>
     </div>
     <p class="muted small">Tip: bookmark this page or save the room link. Coming back continues the game where you left off.</p>
+    <div id="game-bottom-bar" class="game-bottom-bar" data-slot="bottom-bar"></div>
   </section>
 
   <!-- OTB -->
   <section id="view-otb" class="panel hidden" aria-labelledby="otb-heading">
     <h2 id="otb-heading" class="sr-only" tabindex="-1">Hot-seat (over the board)</h2>
+    <div id="otb-slim-header" class="game-slim-header" data-slot="slim-header"></div>
     <div id="otb-banner" class="otb-banner" role="status" aria-live="polite">setting up…</div>
     <div id="otb-counts" class="piece-counts-bar"></div>
     <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
     <div class="game-layout">
-      <div id="otb-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+      <div class="board-stack">
+        <div id="otb-opp-card" class="player-card-slot" data-slot="opp-card"></div>
+        <div id="otb-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+        <div id="otb-board-coords" class="board-coords" data-slot="board-coords" aria-hidden="true"></div>
+        <div id="otb-you-card" class="player-card-slot" data-slot="you-card"></div>
+      </div>
       <div id="otb-transcript" class="transcript-panel"></div>
     </div>
     <div class="row" style="margin-top:12px">
@@ -155,11 +168,13 @@
       <button id="otb-rematch" class="primary hidden">Rematch</button>
       <a class="link-btn" href="#/">Back to lobby</a>
     </div>
+    <div id="otb-bottom-bar" class="game-bottom-bar" data-slot="bottom-bar"></div>
   </section>
 
   <!-- VS AI -->
   <section id="view-ai" class="panel hidden" aria-labelledby="ai-heading">
     <h2 id="ai-heading" class="sr-only" tabindex="-1">Vs AI</h2>
+    <div id="ai-slim-header" class="game-slim-header" data-slot="slim-header"></div>
     <div id="ai-header" class="ai-header">
       <div id="ai-banner" class="otb-banner" role="status" aria-live="polite">setting up…</div>
       <div id="ai-meta" class="ai-meta"></div>
@@ -167,7 +182,12 @@
     <div id="ai-counts" class="piece-counts-bar"></div>
     <div class="rotate-hint" aria-hidden="true">📱 Rotate your device for a bigger board.</div>
     <div class="game-layout">
-      <div id="ai-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+      <div class="board-stack">
+        <div id="ai-opp-card" class="player-card-slot" data-slot="opp-card"></div>
+        <div id="ai-board" class="board" role="grid" aria-label="Banqi board, 4 rows by 8 columns"></div>
+        <div id="ai-board-coords" class="board-coords" data-slot="board-coords" aria-hidden="true"></div>
+        <div id="ai-you-card" class="player-card-slot" data-slot="you-card"></div>
+      </div>
       <div id="ai-transcript" class="transcript-panel"></div>
     </div>
     <div class="row" style="margin-top:12px">
@@ -176,6 +196,7 @@
       <a class="link-btn" href="#/">Back to lobby</a>
     </div>
     <div id="ai-thinking" class="ai-thinking hidden" role="status" aria-live="polite">AI is thinking…</div>
+    <div id="ai-bottom-bar" class="game-bottom-bar" data-slot="bottom-bar"></div>
   </section>
 
   <!-- DASHBOARD -->

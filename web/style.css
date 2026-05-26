@@ -171,6 +171,7 @@ body {
     radial-gradient(ellipse 100% 60% at 50% 0%, rgba(255, 180, 60, 0.04), transparent),
     linear-gradient(180deg, var(--surface-0) 0%, #0d0d0f 100%);
   min-height: 100vh;
+  min-height: 100dvh;
 }
 .page { max-width: 1040px; margin: 24px auto; padding: 0 16px; }
 a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted transparent; transition: border-color var(--dur-fast); }
@@ -2444,4 +2445,574 @@ body[data-piece-numbers="full"] .piece-counts .pc-chip-n::before {
 .transcript-list::-webkit-scrollbar-thumb {
   background: var(--surface-4);
   border-radius: var(--radius-pill);
+}
+
+/* ============================================================
+   Beta game layout (opt-in via Settings → Game layout · Beta)
+   ============================================================ */
+
+/* "Beta" badge inside the settings drawer. */
+.beta-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-strong);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+/* When the beta slots are empty (classic mode), they collapse completely.
+   These rules run unconditionally so classic users see zero visual change.
+   Specificity is 0,2,0 — sufficient against unscoped rules. Scoped beta
+   variants (specificity 0,3,0) are declared further down to defeat the
+   structural rules that set display:flex on the populated cards. */
+.game-slim-header:empty,
+.player-card-slot:empty,
+.board-coords:empty,
+.game-bottom-bar:empty { display: none; }
+body[data-game-layout="beta"] .game-slim-header:empty,
+body[data-game-layout="beta"] .player-card-slot:empty,
+body[data-game-layout="beta"] .board-coords:empty,
+body[data-game-layout="beta"] .game-bottom-bar:empty { display: none; }
+
+/* Hide today's site header + persistent app nav inside the three game
+   views when beta is on. Classic users (data-game-layout="classic") and
+   non-game views keep them as-is. */
+body[data-game-layout="beta"][data-active-view="game"] > .page > header,
+body[data-game-layout="beta"][data-active-view="game"] > .page > nav.app-nav,
+body[data-game-layout="beta"][data-active-view="otb"]  > .page > header,
+body[data-game-layout="beta"][data-active-view="otb"]  > .page > nav.app-nav,
+body[data-game-layout="beta"][data-active-view="ai"]   > .page > header,
+body[data-game-layout="beta"][data-active-view="ai"]   > .page > nav.app-nav { display: none; }
+
+/* Drop the 1040 px page cap inside game views — board can grow on desktop. */
+body[data-game-layout="beta"][data-active-view="game"] > .page,
+body[data-game-layout="beta"][data-active-view="otb"]  > .page,
+body[data-game-layout="beta"][data-active-view="ai"]   > .page {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The game panels themselves: tighten chrome, drop the rounded surface
+   look (a full-bleed game feels more app-like on phones). */
+body[data-game-layout="beta"][data-active-view="game"] #view-game,
+body[data-game-layout="beta"][data-active-view="otb"]  #view-otb,
+body[data-game-layout="beta"][data-active-view="ai"]   #view-ai {
+  margin-top: 0;
+  padding: 0 12px calc(12px + var(--beta-bottom-bar-h, 64px));
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Hide the now-redundant classic chrome: the verbose multi-row meta block,
+   the OTB/AI top banner, the piece-counts bar, the rotate hint, the
+   inline action rows (we render our own bottom bar). */
+body[data-game-layout="beta"] #game-header,
+body[data-game-layout="beta"] #ai-header,
+body[data-game-layout="beta"] #otb-banner,
+body[data-game-layout="beta"] .piece-counts-bar,
+body[data-game-layout="beta"] .rotate-hint {
+  display: none !important;
+}
+/* The inline action row beneath the board in OTB / AI views — find them
+   by their unique buttons so we don't hide anything else. */
+body[data-game-layout="beta"] #view-otb > .row:has(#otb-resign),
+body[data-game-layout="beta"] #view-ai  > .row:has(#ai-resign) { display: none; }
+/* OTB/AI: hide the "Tip: bookmark this page" footer line in beta to keep
+   the bottom of the view clean. */
+body[data-game-layout="beta"] #view-game > p.muted.small { display: none; }
+/* AI thinking indicator collapses into the opponent player card's subtitle;
+   suppress the stand-alone pill so it doesn't double up. */
+body[data-game-layout="beta"] #ai-thinking { display: none; }
+
+/* Slim sticky header. Matches the muted, low-chrome vibe of the mockups —
+   natural height, restrained colours, subtle chips rather than the bright
+   blue production .mode-chip. */
+:root { --beta-bottom-bar-h: 64px; }
+body[data-game-layout="beta"] .game-slim-header {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  padding-top: calc(6px + env(safe-area-inset-top));
+  padding-left: max(10px, env(safe-area-inset-left));
+  padding-right: max(10px, env(safe-area-inset-right));
+  background: rgba(28, 28, 34, 0.92);
+  border-bottom: 1px solid var(--surface-border);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  margin: 0 -12px 8px;
+}
+body[data-game-layout="beta"] .slim-back {
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  border: 1px solid var(--surface-border);
+  color: var(--fg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  text-decoration: none;
+  flex-shrink: 0;
+  line-height: 1;
+}
+body[data-game-layout="beta"] .slim-back:hover { background: var(--surface-4); }
+body[data-game-layout="beta"] .slim-mid {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  flex-wrap: wrap;
+}
+body[data-game-layout="beta"] .slim-room-code {
+  background: var(--surface-1);
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  border: 1px solid var(--surface-border);
+  color: var(--fg);
+  letter-spacing: 0.04em;
+}
+/* Subtle chip used inside the slim header. Overrides the bright-blue
+   production `.mode-chip` only when the chip sits inside `.slim-mid`. */
+body[data-game-layout="beta"] .slim-mid .mode-chip {
+  background: var(--surface-1);
+  border: 1px solid var(--surface-border);
+  color: var(--muted);
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+body[data-game-layout="beta"] .slim-replay-chip {
+  background: rgba(120, 180, 255, 0.16);
+  color: #9ec0ff;
+  border: 1px solid rgba(120, 180, 255, 0.32);
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+body[data-game-layout="beta"] .slim-conn {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+body[data-game-layout="beta"] .slim-conn.conn-reconnecting { background: var(--accent); animation: dot-pulse 1.4s ease-in-out infinite; }
+body[data-game-layout="beta"] .slim-conn.conn-offline      { background: var(--err-fg); }
+body[data-game-layout="beta"] .slim-conn.conn-connecting   { background: var(--muted); }
+body[data-game-layout="beta"] .slim-more,
+body[data-game-layout="beta"] .slim-focus {
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  border: 1px solid var(--surface-border);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+body[data-game-layout="beta"] .slim-more:hover,
+body[data-game-layout="beta"] .slim-focus:hover { background: var(--surface-4); color: var(--fg); }
+/* When focus mode is on the toggle uses an accent treatment so it's obvious
+   the page is in an alternate state (and that tapping again will exit). */
+body[data-game-layout="beta"] .slim-focus.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent-strong);
+  color: var(--accent);
+}
+body[data-game-layout="beta"] .slim-focus svg { display: block; }
+body[data-game-layout="beta"] .slim-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 8px;
+  min-width: 240px;
+  max-width: 320px;
+  background: var(--surface-2);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elev-3);
+  padding: 10px 12px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+body[data-game-layout="beta"] .slim-popover-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+body[data-game-layout="beta"] .slim-popover-section + .slim-popover-section {
+  border-top: 1px solid var(--surface-border);
+  padding-top: 8px;
+}
+body[data-game-layout="beta"] .slim-popover-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  font-weight: 700;
+}
+body[data-game-layout="beta"] .slim-popover-row {
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Player cards. Compact row: avatar · name/sub · captured tray · clock.
+   Restrained surface-1 background, soft inset glow when the player is
+   to move — matches the mockup, doesn't overpower the board. */
+body[data-game-layout="beta"] .player-card-slot {
+  margin: 4px 0;
+}
+body[data-game-layout="beta"] .player-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  font-size: 11px;
+}
+body[data-game-layout="beta"] .player-card.is-active {
+  background: var(--accent-soft);
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--accent-strong);
+}
+body[data-game-layout="beta"] .player-card-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+body[data-game-layout="beta"] .player-card-avatar {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  border: 2px solid var(--surface-border);
+  color: var(--fg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+body[data-game-layout="beta"] .player-card-avatar.avatar-red {
+  border-color: var(--red);
+  color: var(--red-light);
+  background: var(--red-soft);
+}
+body[data-game-layout="beta"] .player-card-avatar.avatar-black {
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #ddd;
+  background: rgba(80, 80, 80, 0.3);
+}
+body[data-game-layout="beta"] .player-card-name-block {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+body[data-game-layout="beta"] .player-card-name {
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+body[data-game-layout="beta"] .player-card-move {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-left: 2px;
+}
+body[data-game-layout="beta"] .player-card-sub {
+  font-size: 9px;
+  color: var(--muted);
+}
+body[data-game-layout="beta"] .player-card-clock {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--surface-border);
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+body[data-game-layout="beta"] .player-card-clock.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-strong);
+  color: var(--accent);
+  font-weight: 700;
+}
+body[data-game-layout="beta"] .player-card-clock.low.active {
+  color: var(--err-fg);
+  border-color: var(--err-fg);
+}
+body[data-game-layout="beta"] .pc-tray {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  align-items: center;
+  flex: 1;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0.85;
+}
+body[data-game-layout="beta"] .pc-tray-empty { min-height: 1px; flex: 1; }
+body[data-game-layout="beta"] .pc-tray-piece {
+  font-family: "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", "Heiti TC", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.7;
+}
+body[data-game-layout="beta"] .pc-tray-red   { color: #f5a5a5; }
+body[data-game-layout="beta"] .pc-tray-black { color: #e6e6e6; }
+body[data-game-layout="beta"] .pc-tray-diff {
+  font-size: 10px;
+  color: var(--success-fg);
+  font-weight: 700;
+  margin-left: 3px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* Board stack: board + coord strip immediately below it. */
+body[data-game-layout="beta"] .board-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+body[data-game-layout="beta"] .board-coords {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  padding: 2px 8px 0;
+  text-align: center;
+  font-size: 9px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.04em;
+}
+body[data-game-layout="beta"] .board-coord-file { text-align: center; }
+
+/* Drop the classic sticky-header rule under beta (the strip lives elsewhere). */
+@media (max-width: 700px) {
+  body[data-game-layout="beta"] #game-header,
+  body[data-game-layout="beta"] #ai-header {
+    position: static;
+    margin: 0;
+    padding: 0;
+    border-bottom: 0;
+  }
+}
+
+/* Mobile-portrait: the transcript fills the room left below the YOU card so
+   the page reads top-to-bottom with no awkward empty gap. We turn each
+   game view into a column-flex container and let the transcript grow. */
+body[data-game-layout="beta"][data-active-view="game"] #view-game,
+body[data-game-layout="beta"][data-active-view="otb"]  #view-otb,
+body[data-game-layout="beta"][data-active-view="ai"]   #view-ai {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - 8px);
+}
+body[data-game-layout="beta"] .game-layout {
+  flex: 1;
+  min-height: 0;
+}
+body[data-game-layout="beta"] .game-layout > .transcript-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+  margin-top: 8px;
+}
+body[data-game-layout="beta"] .game-layout > .transcript-panel .transcript-list {
+  flex: 1;
+  max-height: none;
+}
+
+/* Game-layout side panel earlier (was 900 px → now 720 px). The board column
+   carries opp + board + coords + you cards; transcript fills the right
+   column. The grid uses align-items:stretch so the transcript matches the
+   board column's height instead of floating at the top. */
+@media (min-width: 720px) {
+  body[data-game-layout="beta"] .game-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+    align-items: stretch;
+    gap: 12px;
+  }
+  body[data-game-layout="beta"] .game-layout > .board-stack { margin-top: 0; }
+  body[data-game-layout="beta"] .game-layout > .transcript-panel {
+    margin-top: 0;
+    max-height: calc(100dvh - 120px);
+  }
+}
+
+/* Thumb-reach bottom action bar — anchored, safe-area-aware. */
+body[data-game-layout="beta"] .game-bottom-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  background: rgba(28, 28, 34, 0.94);
+  border-top: 1px solid var(--surface-border);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+body[data-game-layout="beta"] .bb-btn {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--surface-border-strong);
+  background: var(--surface-3);
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  min-height: 44px;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+}
+body[data-game-layout="beta"] .bb-btn.bb-icon {
+  flex: 0 0 44px;
+  padding: 10px 0;
+  font-size: 18px;
+  color: var(--muted);
+}
+body[data-game-layout="beta"] .bb-btn.bb-icon:hover { color: var(--fg); }
+body[data-game-layout="beta"] .bb-btn:hover { background: var(--surface-4); }
+body[data-game-layout="beta"] .bb-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+body[data-game-layout="beta"] .bb-btn.bb-primary {
+  background: var(--primary);
+  color: var(--primary-fg);
+  border-color: var(--primary);
+}
+body[data-game-layout="beta"] .bb-btn.bb-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+body[data-game-layout="beta"] .bb-btn.bb-danger {
+  color: #ff8c8c;
+  border-color: rgba(210, 67, 67, 0.5);
+  background: transparent;
+}
+body[data-game-layout="beta"] .bb-btn.bb-danger:hover {
+  background: rgba(210, 67, 67, 0.15);
+  border-color: rgba(210, 67, 67, 0.8);
+}
+body[data-game-layout="beta"] .bb-btn.bb-toggle-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-strong);
+}
+body[data-game-layout="beta"] .bb-btn.bb-return-live {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent-strong);
+}
+body[data-game-layout="beta"] .game-bottom-bar .link-btn {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  min-height: 44px;
+}
+
+/* Larger / more readable cell glyph on desktop now that the board can grow. */
+@media (min-width: 720px) {
+  body[data-game-layout="beta"] .cell { font-size: 44px; }
+}
+
+/* ============================================================
+   Focus mode — hides the move list so the board uses the full
+   row at every breakpoint. Toggled from the slim-header button;
+   persisted as body[data-focus-mode="on"]. Beta-only.
+   ============================================================ */
+
+/* Hide the move list entirely. The classic `.transcript-panel` carries
+   its own collapsing rule on :empty but the beta render fills it, so we
+   need an explicit display:none here. */
+body[data-game-layout="beta"][data-focus-mode="on"] .transcript-panel {
+  display: none;
+}
+
+/* At >=720 px the game layout uses a 2-column grid; collapse to single
+   column so the board column eats the full width. */
+@media (min-width: 720px) {
+  body[data-game-layout="beta"][data-focus-mode="on"] .game-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Tighten the page padding so the board can go almost edge-to-edge.
+   Safe-area handling is preserved — we min() against the inset so notches
+   in landscape still keep content out from under hardware curvature. */
+body[data-game-layout="beta"][data-focus-mode="on"][data-active-view="game"] #view-game,
+body[data-game-layout="beta"][data-focus-mode="on"][data-active-view="otb"]  #view-otb,
+body[data-game-layout="beta"][data-focus-mode="on"][data-active-view="ai"]   #view-ai {
+  padding-left: max(4px, env(safe-area-inset-left));
+  padding-right: max(4px, env(safe-area-inset-right));
+}
+/* Pull the slim header's negative-margin in to match the new padding so
+   its blur strip still spans corner to corner. */
+body[data-game-layout="beta"][data-focus-mode="on"] .game-slim-header {
+  margin-left: -4px;
+  margin-right: -4px;
+}
+
+/* Hide the "Tip: bookmark this page…" footer in focus mode so the
+   board can claim the vertical space too. */
+body[data-game-layout="beta"][data-focus-mode="on"] #view-game > p.muted.small {
+  display: none;
 }
