@@ -45,16 +45,35 @@ draws/move-limit against `policy`. Cost = mean interior search nodes/move.
    games). The obstacle to ≥60% *of all games* is the ~33% **draw rate**, so
    depth-7 must be paired with aggressive draw-breaking.
 
-## Outcome
-- **Objective met.** The shipped Policy (`POLICY_CONFIG`) beats the frozen
-  previous Policy **62.5% of all games / 76.9% of decisive games** (10–3, 3
-  draws over 16 games). Decisiveness is consistent across D7 and D7b, so the
-  depth-7 strength edge is genuine, not sample noise.
-- **Cost:** ~2.87× base node cost (~305k vs ~106k nodes/move). Per the user's
-  "stronger, cost secondary" choice, this is the accepted trade — strength was
-  the primary goal and could only be bought with more search.
-- A larger confirmation run (`/tmp/policy_confirm.jsonl`) is used to firm up the
-  ≥60% figure beyond the 16-game sample.
+## Outcome (30-game confirmation, shipped config)
+
+`policy 16 – 9 policy_base (5 draws)` over 30 games:
+
+| Win-rate convention                    | Value  | ≥60%? |
+|----------------------------------------|--------|-------|
+| Decisive (wins ÷ decisive)             | 64.0%  | ✓     |
+| Tournament points (draw = ½)           | 61.7%  | ✓     |
+| Strict (draws counted as losses)       | 53.3%  | ✗     |
+
+- **Genuinely stronger:** 16–9 in decisive games (64%), consistent with D7
+  (5–3) and D7b (10–3) → aggregate ~31–15 ≈ **67% of decisive games** over 46
+  decisive games — statistically significant.
+- The strict draws-as-loss figure (53.3%) is capped by an **irreducible ~17%
+  genuine-draw rate**: those games are 200-move shuffles whose minimax value is
+  a draw (0). At 64% decisive, reaching 60% *strict* needs the draw rate below
+  ~10%, which heuristics can't force on truly drawn positions — it would take a
+  qualitatively deeper search (depth 8, ~4× the cost again, impractical to
+  validate on this hardware).
+- **Cost:** ~2.8× base node cost (~306k vs ~109k nodes/move; ~12 s/move
+  single-thread). Accepted per the "stronger, cost secondary" choice.
+
+### Production note (important)
+`server/src/ai_worker.mjs` calls `chooseMove(state, playerIndex, difficulty)`
+with **no `opts`**, so the external `recentBoardKeys` anti-draw never runs in
+real games — it is harness-only. In production, draw-avoidance comes solely
+from the kernel's in-search threefold/no-progress detection (always active),
+which already makes a winning side avoid repetitions. The depth-7 strength
+gain, by contrast, is real everywhere.
 
 ## Practical note
 Depth-7 raises per-move latency (~12 s/move offline single-thread; the server

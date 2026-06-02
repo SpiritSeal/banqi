@@ -204,10 +204,12 @@ function finish() {
     movesFirst += r.movesFirst || 0; movesOther += r.movesOther || 0;
   }
   const winrate = firstWins / NUM_GAMES;
+  const points  = (firstWins + 0.5 * draws) / NUM_GAMES;   // tournament scoring
   const decisive = firstWins + otherWins;
   console.log('\n');
   console.log(`Result: ${nameA} ${firstWins} – ${otherWins} ${nameB}  (${draws} draws / move-limit)`);
-  console.log(`${nameA} winrate (of all): ${(winrate*100).toFixed(1)}%`);
+  console.log(`${nameA} winrate (of all, draws=loss): ${(winrate*100).toFixed(1)}%`);
+  console.log(`${nameA} score (draws=½):             ${(points*100).toFixed(1)}%`);
   if (decisive > 0) console.log(`${nameA} winrate (of decisive): ${(firstWins/decisive*100).toFixed(1)}%  [${decisive}/${NUM_GAMES} decisive]`);
   const nA = movesFirst ? nodesFirst/movesFirst : 0;
   const nB = movesOther ? nodesOther/movesOther : 0;

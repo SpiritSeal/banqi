@@ -498,7 +498,14 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
 
     let score;
     if (drewRep) {
-      score = 0; // draw
+      // Draw. With a contempt factor the side running the search values a draw
+      // as slightly negative (from `forColor`'s perspective), so a stronger
+      // engine avoids drawish repetition/no-progress lines and plays on for the
+      // win instead of acquiescing to a move-limit draw. Unlike the harness-only
+      // recentBoardKeys penalty, this lives in the kernel and so is active in
+      // real games. ctx.contempt defaults to 0 (exact draw) for every other
+      // engine and for policy_base.
+      score = -(ctx.contempt || 0); // draw (0 unless contempt set)
     } else if (S.useLMR && depth >= 3 && idx >= 4 && !cap && !flip &&
                !(ttMove && S.sameMove(m, ttMove))) {
       // LMR: reduce search depth on late quiet non-capture, non-flip moves.
@@ -1720,6 +1727,7 @@ function chooseMovePolicy(state, legal, playerIndex, opts, cfg = POLICY_CONFIG) 
       budget: cfg.nodeBudget,
       tt: makeBoundedTT(),
       qdepth: cfg.quiesceDepth,
+      contempt: cfg.contempt ?? 0,
       mobilityWeight: cfg.mobilityWeight,
       materialPremium: cfg.materialPremium,
       emptyWeight: cfg.emptyWeight,
