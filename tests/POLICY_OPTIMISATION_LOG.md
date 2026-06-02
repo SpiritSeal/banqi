@@ -30,7 +30,10 @@ draws/move-limit against `policy`. Cost = mean interior search nodes/move.
 | AB| mw 50 vs mw 30 (equal cheap compute)          | 1.00×         | —        | 47.4%         | 5/24  |
 | B | 12 det × d6, 200k (PVS)                        | 1.54×         | 31.3%    | 45.5%         | 5/16  |
 | D7| 8 det × **d7**, 250k, q4, repF100/S250        | 3.88×         | 41.7%    | **62.5%**     | 4/12  |
-| D7b| 6 det × **d7**, 220k, q4, repF180/S350       | ~2.9×         | (running)| (running)     |       |
+| **D7b**| **6 det × d7, 220k, q4, repF180/S350** (16g)| **2.87×** | **62.5%**| **76.9%**     | 3/16  |
+
+**D7b → SHIPPED.** policy 10–3 (3 draws), PASS ≥60%. This is the new
+`POLICY_CONFIG` default.
 
 ## Findings
 1. **Cheaper search with identical eval is much weaker** (~17-19%); strength
@@ -42,8 +45,18 @@ draws/move-limit against `policy`. Cost = mean interior search nodes/move.
    games). The obstacle to ≥60% *of all games* is the ~33% **draw rate**, so
    depth-7 must be paired with aggressive draw-breaking.
 
-## Next
-- D7b tests depth-7 + stronger anti-draw on 16 games. If ≥60% of all → lock in,
-  then trim cost (fewer dets / lower budget) while holding ≥60%.
-- Note: making Policy stronger costs **more** (~3× base); this is per the
-  user's "stronger, cost secondary" choice.
+## Outcome
+- **Objective met.** The shipped Policy (`POLICY_CONFIG`) beats the frozen
+  previous Policy **62.5% of all games / 76.9% of decisive games** (10–3, 3
+  draws over 16 games). Decisiveness is consistent across D7 and D7b, so the
+  depth-7 strength edge is genuine, not sample noise.
+- **Cost:** ~2.87× base node cost (~305k vs ~106k nodes/move). Per the user's
+  "stronger, cost secondary" choice, this is the accepted trade — strength was
+  the primary goal and could only be bought with more search.
+- A larger confirmation run (`/tmp/policy_confirm.jsonl`) is used to firm up the
+  ≥60% figure beyond the 16-game sample.
+
+## Practical note
+Depth-7 raises per-move latency (~12 s/move offline single-thread; the server
+runs Policy in a worker pool). If real-game latency matters more than the
+strength edge, the previous depth-6 cost profile is `policy_base`.

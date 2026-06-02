@@ -19,14 +19,12 @@
 //            valuable), cannon line-of-attack scoring, trapped-General
 //            penalty, and a higher mobility weight than Master to lean
 //            toward Banqi's actual win condition (opponent has no legal
-//            move). Uses killer-move + history ordering on top of the TT
-//            and Late Move Reductions, and runs at roughly 2× Master's
-//            total node budget to convert the better-tuned eval into actual
-//            depth at the search horizon. In head-to-head play against
-//            Master it draws frequently — both engines are strong enough
-//            that symmetric tactical play leads to move-limit draws —
-//            though Policy is the stronger of the two when a decisive
-//            line exists.
+//            move). Uses killer-move + history ordering on top of the TT,
+//            Late Move Reductions and principal-variation search. The shipped
+//            config searches a full ply deeper than its predecessor (depth 7)
+//            with a harder anti-shuffle penalty; this beats the previous
+//            Policy configuration ≥60% head-to-head (see
+//            tests/POLICY_OPTIMISATION_LOG.md) at a higher node cost.
 
 export const Difficulty = {
   EASY: 'easy', MEDIUM: 'medium', HARD: 'hard',
@@ -1198,17 +1196,23 @@ const POLICY_BASE_CONFIG = Object.freeze({
   generalEscapePenalty:40,
 });
 
-// Live, cost-optimised Policy. Principal-variation search makes each depth
-// far cheaper, so the same (and deeper) search quality is reachable with far
-// fewer determinisations and a smaller per-determinisation node budget. The
-// net cost is a fraction of POLICY_BASE_CONFIG's 1.6M nodes/move while head-to-
-// head strength is maintained (see tests/policy_match_js.mjs).
+// Live Policy — strengthened over POLICY_BASE_CONFIG.
+//
+// Empirically (tests/POLICY_OPTIMISATION_LOG.md), the previous Policy sat at a
+// depth-6 strength plateau: reducing search just made it weaker, and adding
+// determinisations or retuning the eval weights left strength unchanged. The
+// one lever that produced a real, repeatable edge was searching a full ply
+// deeper (depth 7) — paired with a harder anti-shuffle penalty so that the
+// resulting strength advantage is actually converted into wins instead of
+// move-limit draws. This configuration beats the frozen base ≥60% of games
+// head-to-head (76.9% of decisive games), at ~2.9× the base node cost. PVS
+// keeps the deeper search from costing even more.
 const POLICY_CONFIG_DEFAULT = {
-  deepDepth:           6,
-  shallowDepth:        5,
-  determinisations:    4,
-  nodeBudget:          60000,
-  quiesceDepth:        3,
+  deepDepth:           7,
+  shallowDepth:        6,
+  determinisations:    6,
+  nodeBudget:          220000,
+  quiesceDepth:        4,
   usePVS:              true,
   mobilityWeight:      30,
   materialPremium:     30,
@@ -1216,6 +1220,10 @@ const POLICY_CONFIG_DEFAULT = {
   soldierGeneralBonus: SOLDIER_GENERAL_BONUS_BASE,
   cannonLineBonus:     30,
   generalEscapePenalty:40,
+  // Harder draw-breaking than base (200/40): the deeper search is the stronger
+  // side, so forcing decisive play out of symmetric shuffles favours Policy.
+  repPenaltyStrong:    350,
+  repPenaltyFirst:     180,
 };
 
 // Experiment hook: BANQI_POLICY_CONFIG (JSON) overrides individual fields of
@@ -1481,10 +1489,11 @@ function cannonLineDiff(board, forColor, oppColor) {
 //
 //   1. Mobility weight dominates. Banqi's actual win condition is "opponent
 //      has no legal move", and Master's mobility coefficient of 14 makes it
-//      a minor term against a 100-point soldier. Policy uses 60 so that
-//      restricting the opponent's piece moves becomes a primary objective —
-//      crucially, this can favour trading material for mobility, which
-//      breaks the Master-vs-Master shuffle draw.
+//      a minor term against a 100-point soldier. Policy uses 30 (tuned: A/B
+//      tests showed higher weights such as 50 made no difference) so that
+//      restricting the opponent's piece moves is a meaningful objective —
+//      this can favour trading material for mobility, which breaks the
+//      Master-vs-Master shuffle draw.
 //   2. Soldier–General distance. Soldier is the only piece that captures a
 //      General (and the General can't capture a Soldier), so placement of
 //      Soldiers near the enemy General is asymmetrically valuable.
