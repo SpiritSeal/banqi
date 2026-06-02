@@ -18,6 +18,7 @@
 
 import { fork } from 'node:child_process';
 import { cpus } from 'node:os';
+import { appendFileSync, readFileSync, existsSync } from 'node:fs';
 import { chooseMove, Difficulty, __testing } from '../ai/index.mjs';
 
 const { createReferee, viewFor, applyRefereeMove } = __testing;
@@ -33,6 +34,7 @@ function flagVal(name, def) {
 const MAX_MOVES = Number(flagVal('--max-moves', '400'));
 const WORKERS   = Number(flagVal('--workers', String(Math.max(1, cpus().length))));
 const PASS      = Number(flagVal('--pass', '0.60'));
+const RESULTS   = flagVal('--results', null);   // JSONL checkpoint file (resume)
 const CHILD_IDX = flagVal('--child', null);
 
 function difficultyFromName(n) {
@@ -137,9 +139,20 @@ const NUM_GAMES = Number(gamesStr || '40');
 
 console.log(`Match (JS ×${WORKERS}): ${nameA} vs ${nameB} — ${NUM_GAMES} games, max-moves=${MAX_MOVES}, pass>=${(PASS*100)|0}%`);
 
-const queue = [];
-for (let i = 0; i < NUM_GAMES; i++) queue.push(i);
 const results = new Array(NUM_GAMES);
+// Resume: load any games already recorded in the checkpoint file so a crashed
+// or interrupted run picks up where it left off instead of starting over.
+if (RESULTS && existsSync(RESULTS)) {
+  for (const line of readFileSync(RESULTS, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try { const r = JSON.parse(line); if (r.idx >= 0 && r.idx < NUM_GAMES) results[r.idx] = r; }
+    catch { /* skip malformed line */ }
+  }
+  const have = results.filter(r => r != null).length;
+  if (have) console.log(`Resuming: ${have}/${NUM_GAMES} games already in ${RESULTS}`);
+}
+const queue = [];
+for (let i = 0; i < NUM_GAMES; i++) if (results[i] == null) queue.push(i);
 let inflight = 0;
 const startTime = Date.now();
 
@@ -162,6 +175,11 @@ function dispatchOne() {
     } else {
       try { results[idx] = JSON.parse(buf.trim()); }
       catch { console.error(`worker ${idx} bad output: ${buf.slice(0,200)}`); results[idx] = { firstAgentResult: 0, error: true }; }
+    }
+    // Checkpoint each completed game immediately so an interrupted run loses
+    // nothing and can resume from the JSONL file.
+    if (RESULTS && results[idx] && !results[idx].error) {
+      try { appendFileSync(RESULTS, JSON.stringify({ idx, ...results[idx] }) + '\n'); } catch { /* best-effort */ }
     }
     const completed = results.filter(r => r != null).length;
     if (completed % Math.max(1, Math.floor(NUM_GAMES / 10)) === 0 || completed === NUM_GAMES) {
@@ -200,5 +218,9 @@ function finish() {
   else { console.log(`FAIL: ${(winrate*100).toFixed(1)}% < ${(PASS*100)|0}%`); process.exit(1); }
 }
 
-const initial = Math.min(WORKERS, NUM_GAMES);
-for (let i = 0; i < initial; i++) dispatchOne();
+if (queue.length === 0) {
+  finish();   // everything already in the checkpoint file
+} else {
+  const initial = Math.min(WORKERS, queue.length);
+  for (let i = 0; i < initial; i++) dispatchOne();
+}
