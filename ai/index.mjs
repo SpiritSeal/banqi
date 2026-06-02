@@ -1773,16 +1773,15 @@ function chooseMovePolicy(state, legal, playerIndex, opts, cfg = POLICY_CONFIG) 
       if (c >= 2) {
         // Position seen at least twice in recent history → genuine shuffle.
         // The penalty here is the search-space equivalent of a Cannon's
-        // value (200) per determinisation × 8 dets = 1600 per repeat, so
-        // Policy will trade up to a Cannon to break a 3rd repetition but
-        // won't sacrifice a Chariot or higher.
-        const penalty = 200 * c * cfg.determinisations;
+        // value (repPenaltyStrong) per determinisation × dets per repeat, so
+        // Policy will trade up to that value to break a 3rd repetition.
+        const penalty = (cfg.repPenaltyStrong ?? 200) * c * cfg.determinisations;
         scores.set(moveKey(m), scores.get(moveKey(m)) - penalty);
       } else if (c === 1) {
         // First revisit gets only a token nudge — enough to prefer a fresh
         // move when it's a near-equivalent option, not enough to abandon a
         // genuinely better quiet move.
-        const penalty = 40 * cfg.determinisations;
+        const penalty = (cfg.repPenaltyFirst ?? 40) * cfg.determinisations;
         scores.set(moveKey(m), scores.get(moveKey(m)) - penalty);
       }
     }
