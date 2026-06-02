@@ -131,6 +131,15 @@ class Board {
   // ---- Move generation (mirrors C++ BanqiRules::legal_moves) ----
   legalMoves(playerIndex) {
     if (this.over || playerIndex !== this.sidePlayer) return [];
+    // Memoize the side-to-move's move list. _advanceTurn() already generates it
+    // once per applied move (for stalemate detection); the search kernel then
+    // asks for it again when that position becomes a node. Returning the cached
+    // array avoids regenerating moves twice per node. The list is consumed by a
+    // single node visit (the kernel may sort it in place, which is fine — each
+    // Board instance is visited once), and any mutation that could change the
+    // moves (applyMove/applyFlip) flips sidePlayer and re-caches, so a stale
+    // entry can never be served. Results are identical to recomputing.
+    if (this._mcSide === playerIndex && this._mc !== undefined) return this._mc;
     const out = [];
 
     // Flips
@@ -184,6 +193,8 @@ class Board {
         }
       }
     }
+    this._mc = out;
+    this._mcSide = playerIndex;
     return out;
   }
 
