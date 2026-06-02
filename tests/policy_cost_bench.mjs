@@ -19,6 +19,7 @@
 // (i.e. we're confident, not just lucky), else 1.
 
 import { fork } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import createBanqiModule from '../web/banqi.js';
 import { chooseMove as chooseGrand, Difficulty as DiffNew, getLastMoveNodes } from '../ai/index.mjs';
 import { chooseMove as choosePolicy, Difficulty as DiffBase } from './policy_baseline.mjs';
@@ -33,6 +34,7 @@ function flagVal(name, def) {
 }
 const MAX_MOVES = Number(flagVal('--max-moves', '300'));
 const WORKERS   = Number(flagVal('--workers', '4'));
+const LOG_FILE  = flagVal('--log', null) || process.env.BENCH_LOG || null;
 const CHILD_IDX = flagVal('--child', null);
 const NUM_GAMES = Number(argv[0] || '60');
 
@@ -115,7 +117,11 @@ async function playOneGame(firstAgentIsPlayer0) {
 if (CHILD_IDX != null) {
   const idx = Number(CHILD_IDX);
   const r = await playOneGame(idx % 2 === 0);
-  process.stdout.write(JSON.stringify({ idx, ...r }) + '\n');
+  const payload = { idx, ...r };
+  // Each child appends its own result so accumulated data survives even if the
+  // parent (a multi-hour run) is reaped. The standalone tally reads this log.
+  if (LOG_FILE) { try { appendFileSync(LOG_FILE, JSON.stringify(payload) + '\n'); } catch {} }
+  process.stdout.write(JSON.stringify(payload) + '\n');
   process.exit(0);
 }
 
@@ -159,7 +165,12 @@ function dispatchOne() {
     const completed = results.filter(r => r != null).length;
     const r = results[idx];
     const tag = r?.firstAgentResult > 0 ? 'grand' : r?.firstAgentResult < 0 ? 'policy' : 'draw';
-    console.log(`  game ${String(idx + 1).padStart(3)} → ${tag.padEnd(6)} moves=${String(r?.moves ?? '?').padStart(3)}  [${completed}/${NUM_GAMES}]`);
+    // Running tally so a long run is monitorable (and usable) before it ends.
+    let gw = 0, pw = 0, dr = 0;
+    for (const x of results) { if (!x) continue; if (x.firstAgentResult > 0) gw++; else if (x.firstAgentResult < 0) pw++; else dr++; }
+    const rw = wilson(gw, gw + pw);
+    const line = `game ${String(idx + 1).padStart(3)} ${tag.padEnd(6)} moves=${String(r?.moves ?? '?').padStart(3)}  [${completed}/${NUM_GAMES}]  tally g${gw}-p${pw} d${dr}  decisive-wr ${(rw.p*100).toFixed(1)}% (LB ${(rw.lo*100).toFixed(1)}%)`;
+    console.log('  ' + line);
     dispatchOne();
     if (inflight === 0 && queue.length === 0) finish();
   });
