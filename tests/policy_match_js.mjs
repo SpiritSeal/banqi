@@ -35,6 +35,7 @@ const MAX_MOVES = Number(flagVal('--max-moves', '400'));
 const WORKERS   = Number(flagVal('--workers', String(Math.max(1, cpus().length))));
 const PASS      = Number(flagVal('--pass', '0.60'));
 const RESULTS   = flagVal('--results', null);   // JSONL checkpoint file (resume)
+const HISTWIN   = Number(flagVal('--hist-window', '16'));  // anti-shuffle lookback
 const CHILD_IDX = flagVal('--child', null);
 
 function difficultyFromName(n) {
@@ -63,7 +64,7 @@ function stateKey(view) {
   }
   return s + view.side_to_move;
 }
-const HISTORY_WINDOW = 16;
+const HISTORY_WINDOW = HISTWIN;
 
 function playOneGame(diffFirst, diffOther, firstAgentIsPlayer0) {
   const board = createReferee();
@@ -162,7 +163,7 @@ function dispatchOne() {
   inflight++;
   const child = fork(
     new URL(import.meta.url).pathname,
-    [nameA, nameB, '--child', String(idx), '--max-moves', String(MAX_MOVES)],
+    [nameA, nameB, '--child', String(idx), '--max-moves', String(MAX_MOVES), '--hist-window', String(HISTWIN)],
     { stdio: ['ignore', 'pipe', 'inherit', 'ipc'] }
   );
   let buf = '';
