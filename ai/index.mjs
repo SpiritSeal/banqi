@@ -1543,6 +1543,8 @@ function chooseMovePolicy(state, legal, playerIndex, opts) {
   const scores = new Map();
   for (const m of legal) scores.set(moveKey(m), 0);
 
+  _lastMoveNodes = 0;
+
   for (let d = 0; d < POLICY_DETERMINISATIONS; d++) {
     const det = determinise(baseBoard, state);
     const ctx = {
@@ -1575,6 +1577,7 @@ function chooseMovePolicy(state, legal, playerIndex, opts) {
     if (lastCompleted) {
       for (const [k, s] of lastCompleted) scores.set(k, scores.get(k) + s);
     }
+    _lastMoveNodes += ctx.nodes;
   }
 
   // Repetition penalty: when the caller passes `opts.recentBoardKeys`, count
