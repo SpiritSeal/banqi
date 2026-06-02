@@ -42,6 +42,7 @@ function difficultyFromName(n) {
   if (k === 'expert') return Difficulty.EXPERT;
   if (k === 'master') return Difficulty.MASTER;
   if (k === 'policy') return Difficulty.POLICY;
+  if (k === 'grand')  return Difficulty.GRAND;
   throw new Error(`unknown difficulty: ${n}`);
 }
 

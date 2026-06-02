@@ -82,7 +82,7 @@ export async function getUser(db, id) {
 // AI opponents. One row per difficulty, seeded at server boot with a
 // per-difficulty starting Elo. Re-runs must NOT clobber the Elo column —
 // AI ratings evolve like human ones once games start being played.
-export const AI_DIFFICULTIES = ['easy', 'medium', 'hard', 'expert', 'master', 'policy'];
+export const AI_DIFFICULTIES = ['easy', 'medium', 'hard', 'expert', 'master', 'policy', 'grand'];
 
 const AI_USER_SEED = {
   easy:   { displayName: 'Banqi AI · Easy',   elo:  900 },
@@ -91,6 +91,7 @@ const AI_USER_SEED = {
   expert: { displayName: 'Banqi AI · Expert', elo: 1500 },
   master: { displayName: 'Banqi AI · Master', elo: 1700 },
   policy: { displayName: 'Banqi AI · Policy', elo: 1900 },
+  grand:  { displayName: 'Banqi AI · Grandmaster', elo: 2100 },
 };
 
 export async function ensureAiUsers(db) {

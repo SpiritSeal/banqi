@@ -27,23 +27,11 @@
 //            that symmetric tactical play leads to move-limit draws —
 //            though Policy is the stronger of the two when a decisive
 //            line exists.
-//   GRAND  – "Grandmaster": the cheaper-and-stronger successor to Policy. Same
-//            policy-shaped evaluation, but Principal Variation Search plus
-//            per-root-move aspiration windows reach equal-or-greater effective
-//            depth for far fewer nodes, so it runs at a fraction of Policy's
-//            node budget while beating Policy head-to-head. See chooseMoveGrand.
 
 export const Difficulty = {
   EASY: 'easy', MEDIUM: 'medium', HARD: 'hard',
-  EXPERT: 'expert', MASTER: 'master', POLICY: 'policy', GRAND: 'grand',
+  EXPERT: 'expert', MASTER: 'master', POLICY: 'policy',
 };
-
-// Cost instrumentation. chooseMoveGrand records the total interior nodes it
-// searched for the most recent move here; benchmarks read it via
-// getLastMoveNodes() to compare the new tier's search cost against the frozen
-// baseline. Only the Grand driver updates this — other tiers leave it stale.
-let _lastMoveNodes = 0;
-export function getLastMoveNodes() { return _lastMoveNodes; }
 
 // Piece type constants (match C++ PieceType enum values)
 const SOLDIER=1, CANNON=2, HORSE=3, CHARIOT=4, ELEPHANT=5, ADVISOR=6, GENERAL=7;
@@ -458,7 +446,7 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
   const repWindow = ctx.repWindow;
   const savedProgress = ctx.pliesSinceProgress;
 
-  const tryChild = (m, aWin, bWin) => {
+  const tryChild = (m) => {
     const cap = isCaptureMove(board, m);
     const flip = isFlipMove(m);
 
@@ -504,14 +492,14 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
     } else if (S.useLMR && depth >= 3 && i >= 4 && !cap && !flip &&
                !(ttMove && S.sameMove(m, ttMove))) {
       // LMR: reduce search depth on late quiet non-capture, non-flip moves.
-      score = minimaxKernel(nb, forColor, depth - 2, aWin, bWin, ctx, ply + 1, S);
+      score = minimaxKernel(nb, forColor, depth - 2, alpha, beta, ctx, ply + 1, S);
       // Re-search at full depth if the reduced search beat the bound that
       // matters for the side to move.
-      if (myTurn ? (score > aWin) : (score < bWin)) {
-        score = minimaxKernel(nb, forColor, depth - 1, aWin, bWin, ctx, ply + 1, S);
+      if (myTurn ? (score > alpha) : (score < beta)) {
+        score = minimaxKernel(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1, S);
       }
     } else {
-      score = minimaxKernel(nb, forColor, depth - 1, aWin, bWin, ctx, ply + 1, S);
+      score = minimaxKernel(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1, S);
     }
 
     // Restore window state.
@@ -531,19 +519,7 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
   if (myTurn) {
     bestVal = -Infinity;
     for (const m of moves) {
-      // Principal Variation Search (gated): after the first move establishes a
-      // PV, probe later moves with a null window [alpha, alpha+1]. Most fail
-      // low (confirming the PV) for far less work; only a move that beats alpha
-      // triggers a full-window re-search. Byte-identical to plain alpha-beta
-      // when S.usePVS is unset.
-      let res;
-      if (S.usePVS && i > 0) {
-        res = tryChild(m, alpha, alpha + 1);
-        if (res.score > alpha && res.score < beta) res = tryChild(m, alpha, beta);
-      } else {
-        res = tryChild(m, alpha, beta);
-      }
-      const { score, cap, flip } = res;
+      const { score, cap, flip } = tryChild(m);
       if (score > bestVal) { bestVal = score; bestMove = m; }
       if (bestVal > alpha) alpha = bestVal;
       if (alpha >= beta) {
@@ -555,14 +531,7 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
   } else {
     bestVal = Infinity;
     for (const m of moves) {
-      let res;
-      if (S.usePVS && i > 0) {
-        res = tryChild(m, beta - 1, beta);
-        if (res.score < beta && res.score > alpha) res = tryChild(m, alpha, beta);
-      } else {
-        res = tryChild(m, alpha, beta);
-      }
-      const { score, cap, flip } = res;
+      const { score, cap, flip } = tryChild(m);
       if (score < bestVal) { bestVal = score; bestMove = m; }
       if (bestVal < beta) beta = bestVal;
       if (alpha >= beta) {
@@ -648,7 +617,6 @@ export function chooseMove(state, playerIndex, difficulty, opts) {
     case Difficulty.EXPERT: return chooseMoveExpert(state, legal, playerIndex);
     case Difficulty.MASTER: return chooseMoveMaster(state, legal, playerIndex);
     case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex, opts);
-    case Difficulty.GRAND:  return chooseMoveGrand(state, legal, playerIndex, opts);
     default:                return chooseMoveEasy(state, legal);
   }
 }
@@ -1606,178 +1574,6 @@ function chooseMovePolicy(state, legal, playerIndex, opts) {
         // genuinely better quiet move.
         const penalty = 40 * POLICY_DETERMINISATIONS;
         scores.set(moveKey(m), scores.get(moveKey(m)) - penalty);
-      }
-    }
-  }
-
-  let bestMove = legal[0], bestScore = -Infinity;
-  for (const m of legal) {
-    const s = scores.get(moveKey(m));
-    if (s > bestScore) { bestScore = s; bestMove = m; }
-  }
-  return bestMove;
-}
-
-// ---------------------------------------------------------------------------
-// Grand (Grandmaster): the cheaper-and-stronger successor to Policy.
-//
-// Same policy-shaped evaluation and the same iterative-deepening PIMC skeleton
-// as Policy, but two search-efficiency upgrades let it reach equal-or-greater
-// effective depth at a fraction of Policy's node count:
-//
-//   1. Principal Variation Search (NegaScout) inside the shared kernel
-//      (gated by `usePVS`). After the first move establishes the PV, siblings
-//      are probed with a null window and only re-searched full-window if they
-//      beat it. Banqi's small branching factor + the existing TT/killer/history
-//      ordering means most probes fail low cheaply.
-//   2. Per-root-move aspiration windows. Policy searches every root move with
-//      a full (-inf, inf) window at every iterative-deepening depth — by far
-//      its biggest source of wasted work, since the previous depth already
-//      gives a tight score estimate per move. Grand re-searches each root move
-//      inside a narrow window centred on its previous-depth score, widening
-//      only on a fail. The shared per-determinisation TT makes the rare
-//      widening re-search nearly free (it hits cached subtrees).
-//
-// Both upgrades are exact (a failed narrow search is re-searched wider), so
-// Grand never plays a worse move than the same search with a full window —
-// it just gets there for less compute. That headroom is then spent: at equal
-// strength Grand runs with fewer determinisations and a smaller node budget
-// than Policy, which is where the wall-clock cost reduction comes from.
-//
-// The GRAND_* knobs are overridable via environment variables (GRAND_DETS,
-// GRAND_BUDGET, GRAND_DEEP, GRAND_SHALLOW, GRAND_QUIESCE, GRAND_MOBILITY,
-// GRAND_ASPIRE) purely to make head-to-head cost/strength sweeps scriptable
-// without editing source; each defaults to the tuned shipping value below.
-// ---------------------------------------------------------------------------
-function _grandEnvNum(key, def) {
-  const v = (typeof process !== 'undefined' && process.env) ? process.env[key] : undefined;
-  if (v == null || v === '') return def;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : def;
-}
-const GRAND_DEEP_DEPTH       = _grandEnvNum('GRAND_DEEP', 6);
-const GRAND_SHALLOW_DEPTH    = _grandEnvNum('GRAND_SHALLOW', 5);
-const GRAND_DETERMINISATIONS = _grandEnvNum('GRAND_DETS', 4);
-const GRAND_NODE_BUDGET      = _grandEnvNum('GRAND_BUDGET', 110000);
-const GRAND_QUIESCE_DEPTH    = _grandEnvNum('GRAND_QUIESCE', 3);
-const GRAND_MOBILITY_WEIGHT  = _grandEnvNum('GRAND_MOBILITY', 30);
-// Initial half-width of the per-root-move aspiration window. Widened ×4 on a
-// fail until the score is bracketed or the window goes full. ~1.2× a Soldier:
-// wide enough that most depth-to-depth score drifts land inside on the first
-// try, narrow enough to prune hard.
-const GRAND_ASPIRATION       = _grandEnvNum('GRAND_ASPIRE', 120);
-
-const GRAND_STRATEGIES = {
-  useTT: true,
-  useLMR: true,
-  useBudget: true,
-  usePVS: true,
-  leafEval: (b, c, ctx) => evaluatePolicy(b, c, ctx),
-  quiesce: (b, c, a, be, qd, ctx) => quiescePolicy(b, c, a, be, qd, ctx),
-  orderMoves: orderMovesPolicy,
-  onCutoff: recordPolicyCutoff,
-  sameMove,
-};
-
-function alphaBetaGrand(board, forColor, depth, alpha, beta, ctx, ply) {
-  return minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, GRAND_STRATEGIES);
-}
-
-function chooseMoveGrand(state, legal, playerIndex, opts) {
-  const myColor = state.my_color;
-  if (!state.first_flip_done || !myColor) return chooseMoveMaster(state, legal, playerIndex);
-
-  const baseBoard = Board.fromState(state);
-
-  let facedown = 0;
-  for (const c of state.cells) if (c.state === 'facedown') facedown++;
-  const maxDepth = facedown > 20 ? GRAND_SHALLOW_DEPTH : GRAND_DEEP_DEPTH;
-
-  const moveKey = m => `${m.from},${m.to}`;
-  const scores = new Map();
-  for (const m of legal) scores.set(moveKey(m), 0);
-
-  _lastMoveNodes = 0;
-
-  for (let d = 0; d < GRAND_DETERMINISATIONS; d++) {
-    const det = determinise(baseBoard, state);
-    const ctx = {
-      nodes: 0,
-      budget: GRAND_NODE_BUDGET,
-      tt: makeBoundedTT(),
-      qdepth: GRAND_QUIESCE_DEPTH,
-      mobilityWeight: GRAND_MOBILITY_WEIGHT,
-      killers: [],
-      history: new Map(),
-      repWindow: [],
-      pliesSinceProgress: 0,
-    };
-
-    // Pre-clone each root child once per determinisation; the iterative
-    // deepening loop re-searches the same children at increasing depth.
-    const children = legal.map(m => {
-      const nb = det.clone();
-      if (m.from < 0) nb.applyFlipKnown(m.to);
-      else            nb.applyMove(m.from, m.to);
-      return nb;
-    });
-
-    let lastCompleted = null;   // deepest fully-searched depth's scores
-    let prevScores = null;      // previous depth's scores → aspiration centres
-    for (let depth = 2; depth <= maxDepth; depth++) {
-      if (ctx.nodes >= ctx.budget) break;
-      const iter = new Map();
-      let aborted = false;
-      for (let mi = 0; mi < legal.length; mi++) {
-        if (ctx.nodes >= ctx.budget) { aborted = true; break; }
-        const m = legal[mi];
-        const key = moveKey(m);
-        const nb = children[mi];
-        const prev = prevScores ? prevScores.get(key) : undefined;
-        let s;
-        if (prev === undefined) {
-          s = alphaBetaGrand(nb, myColor, depth - 1, -Infinity, Infinity, ctx, 1);
-        } else {
-          // Aspiration window centred on the previous depth's score, widening
-          // ×4 on a fail. The shared ctx.tt makes each re-search cheap.
-          let w = GRAND_ASPIRATION;
-          let lo = prev - w, hi = prev + w;
-          s = alphaBetaGrand(nb, myColor, depth - 1, lo, hi, ctx, 1);
-          while (s <= lo || s >= hi) {
-            w *= 4;
-            if (w >= 4000) { lo = -Infinity; hi = Infinity; }
-            else           { lo = prev - w;  hi = prev + w; }
-            s = alphaBetaGrand(nb, myColor, depth - 1, lo, hi, ctx, 1);
-            if (lo === -Infinity) break;
-          }
-        }
-        iter.set(key, s);
-      }
-      if (!aborted) { lastCompleted = iter; prevScores = iter; }
-    }
-    if (lastCompleted) {
-      for (const [k, s] of lastCompleted) scores.set(k, scores.get(k) + s);
-    }
-    _lastMoveNodes += ctx.nodes;
-  }
-
-  // Shuffle-draw repetition penalty — identical policy to Policy's.
-  const recent = opts?.recentBoardKeys;
-  if (recent && recent.length) {
-    const recentCount = new Map();
-    for (const k of recent) recentCount.set(k, (recentCount.get(k) || 0) + 1);
-    for (const m of legal) {
-      if (m.from < 0) continue;
-      const dst = state.cells[m.to];
-      if (dst.state === 'faceup') continue;
-      const nb = baseBoard.clone();
-      nb.applyMove(m.from, m.to);
-      const k = boardKey(nb);
-      const c = recentCount.get(k) || 0;
-      if (c >= 2) {
-        scores.set(moveKey(m), scores.get(moveKey(m)) - 200 * c * GRAND_DETERMINISATIONS);
-      } else if (c === 1) {
-        scores.set(moveKey(m), scores.get(moveKey(m)) - 40 * GRAND_DETERMINISATIONS);
       }
     }
   }
