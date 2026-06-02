@@ -36,13 +36,28 @@ const MAX_MOVES = Number(flagVal('--max-moves', '300'));
 const WORKERS   = Number(flagVal('--workers', '4'));
 const LOG_FILE  = flagVal('--log', null) || process.env.BENCH_LOG || null;
 const CHILD_IDX = flagVal('--child', null);
+// baseline=live uses the working module's policy (faster, node-instrumented,
+// algorithmically identical to the frozen engine — PVS is gated off for policy
+// and the legalMoves memoization preserves both move choice and node count).
+// baseline=frozen uses the immutable snapshot for an independent strength check.
+const BASELINE  = flagVal('--baseline', 'live');
 const NUM_GAMES = Number(argv[0] || '60');
 
-// grand = the NEW engine under test (player "first"); policy = frozen baseline.
+// grand = the NEW engine under test (player "first"); policy = the baseline.
 const NAME_NEW = 'grand', NAME_BASE = 'policy';
+const policyEngine = BASELINE === 'frozen'
+  ? { fn: choosePolicy,  diff: DiffBase.POLICY, live: false }   // frozen snapshot (no node count)
+  : { fn: chooseGrand,   diff: DiffNew.POLICY,  live: true  };  // working module (node-instrumented)
+// --new selects what the "new" slot plays: grand (default) or policy (live).
+// `--new policy --baseline frozen` pits the working policy against the frozen
+// snapshot — an equivalence check that should come out ~balanced.
+const NEW_KIND = flagVal('--new', 'grand');
+const newEngine = NEW_KIND === 'policy'
+  ? { fn: chooseGrand, diff: DiffNew.POLICY }   // live policy in the "new" slot
+  : { fn: chooseGrand, diff: DiffNew.GRAND  };
 const chooseFns = {
-  [NAME_NEW]:  { fn: chooseGrand,  diff: DiffNew.GRAND  },
-  [NAME_BASE]: { fn: choosePolicy, diff: DiffBase.POLICY },
+  [NAME_NEW]:  newEngine,
+  [NAME_BASE]: policyEngine,
 };
 
 function stateKey(st) {
@@ -57,6 +72,20 @@ function stateKey(st) {
 }
 const HISTORY_WINDOW = 16;
 
+// Adjudication: with two near-equal strong engines most games hit the move cap
+// as draws, so the decisive-win-rate metric accrues signal very slowly. The
+// final faceup material balance is a high-power continuous proxy — every game,
+// drawn or not, contributes. Reported alongside (not in place of) the decisive
+// win-rate. type index → value: [_,S,C,H,Ch,E,A,G].
+const PIECE_VALUE = [0, 100, 200, 300, 400, 500, 600, 700];
+function faceupMaterial(state, color) {
+  let m = 0;
+  for (const c of state.cells) {
+    if (c.state === 'faceup' && c.color === color) m += PIECE_VALUE[c.type] || 0;
+  }
+  return m;
+}
+
 // firstAgentIsPlayer0: grand ("first") plays P0 in even games, P1 in odd.
 async function playOneGame(firstAgentIsPlayer0) {
   const Module = await createBanqiModule();
@@ -66,10 +95,12 @@ async function playOneGame(firstAgentIsPlayer0) {
     ? [chooseFns[NAME_NEW], chooseFns[NAME_BASE]]
     : [chooseFns[NAME_BASE], chooseFns[NAME_NEW]];
 
+  const grandEng = chooseFns[NAME_NEW], policyEng = chooseFns[NAME_BASE];
   const recentBoardKeys = [];
   let moves = 0;
   const totalMs    = [0, 0];
-  let nodesNew = 0, movesNew = 0;     // grand-only cost accounting
+  let nodesNew = 0, movesNew = 0;     // grand cost accounting (interior nodes/move)
+  let nodesBase = 0, movesBase = 0;   // policy cost accounting (live baseline only)
 
   while (moves < MAX_MOVES) {
     if (g.gameOver()) break;
@@ -82,7 +113,8 @@ async function playOneGame(firstAgentIsPlayer0) {
     const t0 = performance.now();
     const move = eng.fn(st, st.my_player_index, eng.diff, { recentBoardKeys });
     totalMs[stm] += performance.now() - t0;
-    if (eng.fn === chooseGrand) { nodesNew += getLastMoveNodes(); movesNew++; }
+    if (eng === grandEng)              { nodesNew  += getLastMoveNodes(); movesNew++;  }
+    else if (eng === policyEng && eng.live) { nodesBase += getLastMoveNodes(); movesBase++; }
     if (!move) throw new Error(`null move @ ${moves}`);
     if (move.from < 0) g.applyFlip(stm, move.to);
     else               g.applyMove(stm, move.from, move.to);
@@ -105,11 +137,18 @@ async function playOneGame(firstAgentIsPlayer0) {
   else if (winnerPlayer === 1 - firstAgentPlayer) firstAgentResult = -1;
   else firstAgentResult = 0;
 
+  // Adjudicated material edge for the first agent (grand), color-corrected.
+  const firstColor = firstAgentPlayer === 0 ? p0Color : p1Color;
+  const otherColor = firstAgentPlayer === 0 ? p1Color : p0Color;
+  const matFirst = (firstColor && otherColor)
+    ? faceupMaterial(finalState, firstColor) - faceupMaterial(finalState, otherColor)
+    : 0;
+
   return {
-    moves, firstAgentResult,
+    moves, firstAgentResult, matFirst,
     msFirst: firstAgentIsPlayer0 ? totalMs[0] : totalMs[1],
     msOther: firstAgentIsPlayer0 ? totalMs[1] : totalMs[0],
-    nodesNew, movesNew,
+    nodesNew, movesNew, nodesBase, movesBase,
   };
 }
 
@@ -138,7 +177,7 @@ function wilson(wins, n) {
 // ---- parent mode ----
 const cfg = ['GRAND_DETS','GRAND_BUDGET','GRAND_DEEP','GRAND_SHALLOW','GRAND_QUIESCE','GRAND_MOBILITY','GRAND_ASPIRE']
   .map(k => `${k}=${process.env[k] ?? '(default)'}`).join(' ');
-console.log(`Cost bench: ${NAME_NEW} (new) vs ${NAME_BASE} (frozen) — ${NUM_GAMES} games, ×${WORKERS}, max-moves=${MAX_MOVES}`);
+console.log(`Cost bench: ${NAME_NEW} (new) vs ${NAME_BASE} (${BASELINE}) — ${NUM_GAMES} games, ×${WORKERS}, max-moves=${MAX_MOVES}`);
 console.log(`grand config: ${cfg}`);
 
 const queue = [];
@@ -153,7 +192,8 @@ function dispatchOne() {
   inflight++;
   const child = fork(
     new URL(import.meta.url).pathname,
-    [String(NUM_GAMES), '--child', String(idx), '--max-moves', String(MAX_MOVES)],
+    [String(NUM_GAMES), '--child', String(idx), '--max-moves', String(MAX_MOVES),
+     '--baseline', BASELINE, '--new', NEW_KIND],
     { stdio: ['ignore', 'pipe', 'inherit', 'ipc'] }
   );
   let buf = '';
@@ -178,7 +218,8 @@ function dispatchOne() {
 
 function finish() {
   let grandWins = 0, policyWins = 0, draws = 0;
-  let msNew = 0, msBase = 0, nodesNew = 0, movesNew = 0;
+  let msNew = 0, msBase = 0, nodesNew = 0, movesNew = 0, nodesBase = 0, movesBase = 0;
+  let matSum = 0, matAhead = 0, matBehind = 0, matN = 0;
   for (const r of results) {
     if (!r) continue;
     if (r.firstAgentResult > 0) grandWins++;
@@ -186,6 +227,9 @@ function finish() {
     else draws++;
     msNew += r.msFirst || 0; msBase += r.msOther || 0;
     nodesNew += r.nodesNew || 0; movesNew += r.movesNew || 0;
+    nodesBase += r.nodesBase || 0; movesBase += r.movesBase || 0;
+    if (r.matFirst != null) { matSum += r.matFirst; matN++;
+      if (r.matFirst > 0) matAhead++; else if (r.matFirst < 0) matBehind++; }
   }
   const decisive = grandWins + policyWins;
   const w = wilson(grandWins, decisive);
@@ -194,11 +238,26 @@ function finish() {
   console.log(`Decisive: ${decisive}/${NUM_GAMES}`);
   console.log(`grand decisive win-rate: ${(w.p*100).toFixed(1)}%  (Wilson 95%: ${(w.lo*100).toFixed(1)}%–${(w.hi*100).toFixed(1)}%)`);
   console.log(`grand all-games win-rate: ${(grandWins/NUM_GAMES*100).toFixed(1)}%`);
+  // Adjudicated material proxy (high power: uses every game).
+  if (matN > 0) {
+    const aw = wilson(matAhead, matAhead + matBehind);
+    console.log(`Adjudicated (final faceup material): grand ahead ${matAhead} / behind ${matBehind} / even ${matN - matAhead - matBehind}`);
+    console.log(`  adjudicated win-rate: ${(aw.p*100).toFixed(1)}%  (Wilson 95%: ${(aw.lo*100).toFixed(1)}%–${(aw.hi*100).toFixed(1)}%)  avg material edge: ${(matSum/matN>=0?'+':'')}${(matSum/matN).toFixed(0)}`);
+  }
+  const gNodes = movesNew  > 0 ? nodesNew  / movesNew  : 0;
+  const pNodes = movesBase > 0 ? nodesBase / movesBase : 0;
   if (movesNew > 0) {
-    console.log(`grand  avg ms/move: ${(msNew/movesNew).toFixed(1)}   avg nodes/move: ${(nodesNew/movesNew).toFixed(0)}`);
+    console.log(`grand  avg ms/move: ${(msNew/movesNew).toFixed(1)}   avg nodes/move: ${gNodes.toFixed(0)}`);
   }
   // policy ms/move uses its own move count ≈ movesNew (alternating, symmetric).
   if (movesNew > 0) console.log(`policy avg ms/move: ${(msBase/movesNew).toFixed(1)}`);
+  if (pNodes > 0) {
+    console.log(`policy avg nodes/move: ${pNodes.toFixed(0)}   (over ${movesBase} moves)`);
+    console.log(`COST (nodes): grand uses ${(100*gNodes/pNodes).toFixed(0)}% of policy nodes/move` +
+                `  → ${gNodes < pNodes ? 'CHEAPER ✓' : 'not cheaper ✗'}`);
+  } else {
+    console.log(`(frozen baseline: no policy node count — use --baseline live or tests/grand_nodecost.mjs)`);
+  }
   console.log(`Wall clock: ${((Date.now()-startTime)/1000).toFixed(1)}s`);
   if (w.lo >= 0.60) {
     console.log(`PASS: grand decisive win-rate lower bound ${(w.lo*100).toFixed(1)}% >= 60%`);
