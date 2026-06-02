@@ -36,6 +36,9 @@ export const Difficulty = {
   // can be measured against the configuration it replaced. It is not exposed
   // in the player-facing difficulty registry.
   POLICY_BASE: 'policy_base',
+  // POLICY_ALT is a second tunable Policy used only by the offline A/B tuning
+  // harness (BANQI_POLICY_CONFIG_ALT). Not exposed to players.
+  POLICY_ALT: 'policy_alt',
 };
 
 // Piece type constants (match C++ PieceType enum values)
@@ -644,6 +647,7 @@ export function chooseMove(state, playerIndex, difficulty, opts) {
     case Difficulty.MASTER: return chooseMoveMaster(state, legal, playerIndex);
     case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_CONFIG);
     case Difficulty.POLICY_BASE: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_BASE_CONFIG);
+    case Difficulty.POLICY_ALT: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_CONFIG_ALT);
     default:                return chooseMoveEasy(state, legal);
   }
 }
@@ -1218,15 +1222,20 @@ const POLICY_CONFIG_DEFAULT = {
 // the live config at module load. Used only by the offline tuning harness; it
 // has no effect in the browser (no `process`) and the shipped defaults above
 // are what real games use.
-function applyPolicyConfigEnv(base) {
+function applyPolicyConfigEnv(base, varName) {
   try {
-    if (typeof process !== 'undefined' && process.env && process.env.BANQI_POLICY_CONFIG) {
-      return Object.assign({}, base, JSON.parse(process.env.BANQI_POLICY_CONFIG));
+    if (typeof process !== 'undefined' && process.env && process.env[varName]) {
+      return Object.assign({}, base, JSON.parse(process.env[varName]));
     }
   } catch (e) { /* ignore malformed override */ }
   return base;
 }
-const POLICY_CONFIG = Object.freeze(applyPolicyConfigEnv(POLICY_CONFIG_DEFAULT));
+const POLICY_CONFIG = Object.freeze(applyPolicyConfigEnv(POLICY_CONFIG_DEFAULT, 'BANQI_POLICY_CONFIG'));
+// Second tunable config used only by the offline A/B tuning harness so two
+// candidate eval/search settings can be played head-to-head cheaply (without
+// paying the expensive frozen-base cost on every game). Defaults to the same
+// as POLICY_CONFIG when BANQI_POLICY_CONFIG_ALT is unset.
+const POLICY_CONFIG_ALT = Object.freeze(applyPolicyConfigEnv(POLICY_CONFIG_DEFAULT, 'BANQI_POLICY_CONFIG_ALT'));
 
 // Back-compat aliases for the handful of module-level references kept below.
 const POLICY_MOBILITY_WEIGHT  = POLICY_BASE_CONFIG.mobilityWeight;
