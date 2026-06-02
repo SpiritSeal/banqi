@@ -1657,10 +1657,20 @@ function _grandEnvNum(key, def) {
 }
 const GRAND_DEEP_DEPTH       = _grandEnvNum('GRAND_DEEP', 6);
 const GRAND_SHALLOW_DEPTH    = _grandEnvNum('GRAND_SHALLOW', 5);
-const GRAND_DETERMINISATIONS = _grandEnvNum('GRAND_DETS', 4);
+const GRAND_DETERMINISATIONS = _grandEnvNum('GRAND_DETS', 5);
 const GRAND_NODE_BUDGET      = _grandEnvNum('GRAND_BUDGET', 110000);
 const GRAND_QUIESCE_DEPTH    = _grandEnvNum('GRAND_QUIESCE', 3);
 const GRAND_MOBILITY_WEIGHT  = _grandEnvNum('GRAND_MOBILITY', 30);
+// Endgame depth extension. As the board reveals and pieces come off, the
+// branching factor collapses, so extra plies cost almost nothing — but that is
+// exactly where games are decided and where deeper search beats wider
+// determinisation sampling (little hidden information remains). We therefore
+// keep Policy's depth-6 in the dense, high-variance midgame (where more
+// determinisations matter and Grand already runs fewer than Policy) and spend
+// the freed compute on extra depth only once the position simplifies. Bounded
+// by GRAND_MAX_DEPTH so a pathological sparse position can't run away.
+const GRAND_ENDGAME_EXT      = _grandEnvNum('GRAND_EXT', 0);     // 1=on, 0=off
+const GRAND_MAX_DEPTH        = _grandEnvNum('GRAND_MAXDEPTH', 12);
 // Initial half-width of the per-root-move aspiration window. Widened ×4 on a
 // fail until the score is bracketed or the window goes full. ~1.2× a Soldier:
 // wide enough that most depth-to-depth score drifts land inside on the first
@@ -1689,9 +1699,21 @@ function chooseMoveGrand(state, legal, playerIndex, opts) {
 
   const baseBoard = Board.fromState(state);
 
-  let facedown = 0;
-  for (const c of state.cells) if (c.state === 'facedown') facedown++;
-  const maxDepth = facedown > 20 ? GRAND_SHALLOW_DEPTH : GRAND_DEEP_DEPTH;
+  let facedown = 0, faceup = 0;
+  for (const c of state.cells) {
+    if (c.state === 'facedown') facedown++;
+    else if (c.state === 'faceup') faceup++;
+  }
+  let maxDepth = facedown > 20 ? GRAND_SHALLOW_DEPTH : GRAND_DEEP_DEPTH;
+  // Spend the determinisation savings on depth where it's cheap and decisive:
+  // sparse, mostly-revealed positions. Each tier adds two plies as the board
+  // simplifies; the tiny branching factor keeps the node cost in check.
+  if (GRAND_ENDGAME_EXT) {
+    if (facedown <= 6 && faceup <= 12) maxDepth += 2;
+    if (facedown <= 4 && faceup <= 8)  maxDepth += 2;
+    if (facedown <= 2 && faceup <= 5)  maxDepth += 2;
+    if (maxDepth > GRAND_MAX_DEPTH) maxDepth = GRAND_MAX_DEPTH;
+  }
 
   const moveKey = m => `${m.from},${m.to}`;
   const scores = new Map();
