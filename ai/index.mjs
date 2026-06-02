@@ -1371,24 +1371,100 @@ function cannonLineScore(board, color) {
 
 function soldierGeneralScore(board, forColor, bonus = SOLDIER_GENERAL_BONUS) {
   const oppColor = forColor === RED ? BLACK : RED;
+  return soldierGeneralScoreCached(board, forColor, oppColor,
+    findGeneral(board, forColor), findGeneral(board, oppColor), bonus);
+}
+
+// As soldierGeneralScore but with the General cells supplied (avoids two
+// findGeneral board scans). Single pass over the board: every Soldier
+// contributes ±bonus[dist] depending on whose Soldier it is and which General
+// it threatens. Identical result to the two-loop version.
+function soldierGeneralScoreCached(board, forColor, oppColor, myGen, oppGen, bonus) {
   let score = 0;
-  const oppGen = findGeneral(board, oppColor);
-  if (oppGen >= 0) {
-    for (let i = 0; i < CELLS; i++) {
-      const c = board.cells[i];
-      if (!c || c.fd || c.color !== forColor || c.type !== SOLDIER) continue;
-      score += bonus[Math.min(chebyshev(i, oppGen), 7)];
-    }
-  }
-  const myGen = findGeneral(board, forColor);
-  if (myGen >= 0) {
-    for (let i = 0; i < CELLS; i++) {
-      const c = board.cells[i];
-      if (!c || c.fd || c.color !== oppColor || c.type !== SOLDIER) continue;
-      score -= bonus[Math.min(chebyshev(i, myGen), 7)];
+  const cells = board.cells;
+  for (let i = 0; i < CELLS; i++) {
+    const c = cells[i];
+    if (!c || c.fd || c.type !== SOLDIER) continue;
+    if (c.color === forColor) {
+      if (oppGen >= 0) score += bonus[Math.min(chebyshev(i, oppGen), 7)];
+    } else {
+      if (myGen >= 0)  score -= bonus[Math.min(chebyshev(i, myGen), 7)];
     }
   }
   return score;
+}
+
+// Mobility differential (forColor minus oppColor) in a single board scan.
+// Mirrors countPieceMoves' generation exactly but accumulates both colours at
+// once, so the eval pays one scan instead of two.
+function mobilityDiff(board, forColor, oppColor) {
+  const cells = board.cells;
+  let diff = 0;
+  for (let from = 0; from < CELLS; from++) {
+    const src = cells[from];
+    if (!src || src.fd) continue;
+    const sign = src.color === forColor ? 1 : (src.color === oppColor ? -1 : 0);
+    if (!sign) continue;
+    const r = rowOf(from), co = colOf(from);
+    let n = 0;
+    if (src.type === CANNON) {
+      for (let d = 0; d < 4; d++) {
+        const nr = r + DR[d], nc = co + DC[d];
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        if (!cells[rcIdx(nr, nc)]) n++;
+      }
+      for (let d = 0; d < 4; d++) {
+        let nr = r + DR[d], nc = co + DC[d], screens = 0;
+        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+          const tc = cells[rcIdx(nr, nc)];
+          if (tc) {
+            if (++screens === 2) {
+              if (!tc.fd && tc.color !== src.color) n++;
+              break;
+            }
+          }
+          nr += DR[d]; nc += DC[d];
+        }
+      }
+    } else {
+      for (let d = 0; d < 4; d++) {
+        const nr = r + DR[d], nc = co + DC[d];
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        const dst = cells[rcIdx(nr, nc)];
+        if (!dst) n++;
+        else if (!dst.fd && canCapture(src, dst)) n++;
+      }
+    }
+    diff += sign * n;
+  }
+  return diff;
+}
+
+// Cannon line-of-attack differential (forColor minus oppColor) in one scan.
+function cannonLineDiff(board, forColor, oppColor) {
+  const cells = board.cells;
+  let diff = 0;
+  for (let i = 0; i < CELLS; i++) {
+    const c = cells[i];
+    if (!c || c.fd || c.type !== CANNON) continue;
+    const sign = c.color === forColor ? 1 : (c.color === oppColor ? -1 : 0);
+    if (!sign) continue;
+    const r = rowOf(i), co = colOf(i);
+    for (let d = 0; d < 4; d++) {
+      let nr = r + DR[d], nc = co + DC[d], screens = 0;
+      while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+        const t = cells[rcIdx(nr, nc)];
+        if (t) {
+          if (++screens === 2) {
+            if (!t.fd && t.color !== c.color) diff += sign;
+            break;
+          }
+        }
+        nr += DR[d]; nc += DC[d];
+      }
+    }
+  }
+  return diff;
 }
 
 // Policy's evaluation deliberately diverges from Master's in three places
@@ -1412,15 +1488,28 @@ function evaluatePolicy(board, forColor, ctx) {
     return 0;
   }
   const oppColor = forColor === RED ? BLACK : RED;
+  const cells = board.cells;
   let score = 0;
   let myPieces = 0, oppPieces = 0, facedownCount = 0;
+  let myGen = -1, oppGen = -1;
+
+  // Single primary scan: material, piece counts, and General locations. The
+  // remaining positional terms (safety, mobility, soldier–general, cannon
+  // lines, escape) are computed from combined-pass helpers below. This keeps
+  // the eval to a handful of board scans instead of the ~10 it used to take,
+  // while producing identical scores.
   for (let i = 0; i < CELLS; i++) {
-    const c = board.cells[i];
+    const c = cells[i];
     if (!c) continue;
     if (c.fd) { facedownCount++; continue; }
     const v = PIECE_VALUE[c.type] || 0;
-    if (c.color === forColor) { score += v; myPieces++; }
-    else                      { score -= v; oppPieces++; }
+    if (c.color === forColor) {
+      score += v; myPieces++;
+      if (c.type === GENERAL) myGen = i;
+    } else {
+      score -= v; oppPieces++;
+      if (c.type === GENERAL) oppGen = i;
+    }
   }
   // Material premium: lower than Master's 50 so trades are seen more
   // favourably (every trade reduces piece count, which is good for the
@@ -1434,7 +1523,7 @@ function evaluatePolicy(board, forColor, ctx) {
   // Piece-safety: pieces attacked-but-not-defended are basically lost. Use
   // Master's helpers so we get the same tactical accuracy.
   for (let i = 0; i < CELLS; i++) {
-    const c = board.cells[i];
+    const c = cells[i];
     if (!c || c.fd) continue;
     const v = PIECE_VALUE[c.type] || 0;
     if (c.color === forColor) {
@@ -1449,21 +1538,22 @@ function evaluatePolicy(board, forColor, ctx) {
   }
 
   // Mobility — the dominant positional term. Heavily weighted so the
-  // engine actively pursues stalemate wins.
+  // engine actively pursues stalemate wins. Computed in a single combined
+  // pass for both colours.
   const mw = ctx?.mobilityWeight ?? POLICY_MOBILITY_WEIGHT;
-  score += (countPieceMoves(board, forColor) - countPieceMoves(board, oppColor)) * mw;
+  score += mobilityDiff(board, forColor, oppColor) * mw;
 
-  // Soldier–General threat axis.
-  score += soldierGeneralScore(board, forColor, ctx?.soldierGeneralBonus ?? SOLDIER_GENERAL_BONUS);
+  // Soldier–General threat axis (uses the Generals located in the primary
+  // scan instead of re-scanning the board).
+  score += soldierGeneralScoreCached(board, forColor, oppColor, myGen, oppGen,
+                                     ctx?.soldierGeneralBonus ?? SOLDIER_GENERAL_BONUS);
 
-  // Cannon line-of-attack pressure.
+  // Cannon line-of-attack pressure (single combined pass for both colours).
   const cannonBonus = ctx?.cannonLineBonus ?? CANNON_LINE_BONUS;
-  score += (cannonLineScore(board, forColor) - cannonLineScore(board, oppColor)) * cannonBonus;
+  score += cannonLineDiff(board, forColor, oppColor) * cannonBonus;
 
   // Trapped-General penalty.
   const genEscPenalty = ctx?.generalEscapePenalty ?? GENERAL_ESCAPE_PENALTY;
-  const myGen  = findGeneral(board, forColor);
-  const oppGen = findGeneral(board, oppColor);
   if (myGen  >= 0) score -= (4 - escapeCount(board, myGen))  * genEscPenalty;
   if (oppGen >= 0) score += (4 - escapeCount(board, oppGen)) * genEscPenalty;
 
