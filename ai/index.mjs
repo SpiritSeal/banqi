@@ -1685,11 +1685,14 @@ const GRAND_MOBILITY_WEIGHT  = _grandEnvNum('GRAND_MOBILITY', 30);
 // by GRAND_MAX_DEPTH so a pathological sparse position can't run away.
 const GRAND_ENDGAME_EXT      = _grandEnvNum('GRAND_EXT', 0);     // 1=on, 0=off
 const GRAND_MAX_DEPTH        = _grandEnvNum('GRAND_MAXDEPTH', 12);
-// Initial half-width of the per-root-move aspiration window. Widened ×4 on a
-// fail until the score is bracketed or the window goes full. ~1.2× a Soldier:
-// wide enough that most depth-to-depth score drifts land inside on the first
-// try, narrow enough to prune hard.
-const GRAND_ASPIRATION       = _grandEnvNum('GRAND_ASPIRE', 120);
+// Initial half-width of the per-root-move aspiration window (0 = disabled,
+// always full-window). Measurement showed a narrow window is counterproductive
+// here: banqi's depth-to-depth score swings are large (a capture surfacing one
+// ply deeper moves the eval by a whole piece, 200–700), so a ~Soldier-width
+// window fails on most root moves and the ×4 re-searches cost ~+37% interior
+// nodes for zero change in the move chosen (aspiration is exact). Default off;
+// the knob remains for sweeps.
+const GRAND_ASPIRATION       = _grandEnvNum('GRAND_ASPIRE', 0);
 
 const GRAND_STRATEGIES = {
   useTT: true,
@@ -1771,7 +1774,7 @@ function chooseMoveGrand(state, legal, playerIndex, opts) {
         const nb = children[mi];
         const prev = prevScores ? prevScores.get(key) : undefined;
         let s;
-        if (prev === undefined) {
+        if (prev === undefined || GRAND_ASPIRATION <= 0) {
           s = alphaBetaGrand(nb, myColor, depth - 1, -Infinity, Infinity, ctx, 1);
         } else {
           // Aspiration window centred on the previous depth's score, widening
