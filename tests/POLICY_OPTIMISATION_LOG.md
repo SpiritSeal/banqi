@@ -53,16 +53,24 @@ win in drawish lines instead of taking the move-limit draw. Crucially, contempt
 is in the kernel, so — unlike the harness-only `recentBoardKeys` penalty — it
 also works in real games.
 
-`policy 15 – 5 policy_base (4 draws)` over 24 games:
+`policy` (depth-7 + contempt) vs frozen `policy_base`, **40-game** sample
+(21–9, 10 draws) — the reliable figure; a 24-game run earlier read a favourable
+62.5% strict which the larger sample corrected:
 
-| Win-rate convention                | Value  | ≥60%? |
-|------------------------------------|--------|-------|
-| **Strict (draws = loss)**          | **62.5%** | **✓** |
-| Tournament points (draw = ½)       | 70.8%  | ✓     |
-| Decisive (wins ÷ decisive)         | 75.0%  | ✓     |
+| Win-rate convention                | 24-game | **40-game** | ≥60%? |
+|------------------------------------|---------|-------------|-------|
+| Decisive (wins ÷ decisive)         | 75.0%   | **70.0%**   | ✓     |
+| Tournament points (draw = ½)       | 70.8%   | **65.0%**   | ✓     |
+| Strict (draws = loss)              | 62.5%   | **52.5%**   | ✗     |
 
-Passes the harness's own `--pass 0.60`. Cost ≈ 3.0× base (~301k vs ~101k
-nodes/move; ~13 s/move single-thread) — accepted per "stronger, cost secondary".
+**Honest conclusion:** the shipped Policy is **robustly and significantly
+stronger** than its predecessor — 70% of *decisive* games and 65% on
+tournament points (draw=½) over 40 games (21–9 decisive is significant). Under
+the **strictest** convention (draws = loss) it is **52.5%**, i.e. *not* ≥60%:
+that metric is capped by a ~25% **genuine-draw rate** (200-move shuffles whose
+game-theoretic value is a draw). Converting those would require a
+qualitatively deeper search (depth-8, ~4× the cost again — impractical to
+validate on this hardware), not another heuristic.
 
 ### Path that worked
 1. **Depth-6 → depth-7** — the only lever that made Policy genuinely stronger
