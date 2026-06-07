@@ -1795,7 +1795,7 @@ const GRAND_STRATEGIES = {
   useLMR: true,
   useBudget: true,
   usePVS: true,
-  leafEval: (b, c, ctx) => evaluateGrand(b, c, ctx),
+  leafEval: (b, c, ctx) => ctx.evalFn(b, c, ctx),
   quiesce: (b, c, a, be, qd, ctx) => quiescePolicy(b, c, a, be, qd, ctx),
   orderMoves: orderMovesGrand,
   onCutoff: recordPolicyCutoff,
@@ -1832,6 +1832,11 @@ function chooseMoveGrand(state, legal, playerIndex, opts) {
   const scores = new Map();
   for (const m of legal) scores.set(moveKey(m), 0);
 
+  // A/B hook: opts.evalKind==='policy' runs grand's exact search (same dets,
+  // depth, quiescence, ordering, PVS) with Policy's leaf eval instead of the
+  // SEE eval, isolating evaluateGrand's contribution in head-to-head tests.
+  const leafEvalFn = opts?.evalKind === 'policy' ? evaluatePolicy : evaluateGrand;
+
   _lastMoveNodes = 0;
 
   for (let d = 0; d < GRAND_DETERMINISATIONS; d++) {
@@ -1842,7 +1847,7 @@ function chooseMoveGrand(state, legal, playerIndex, opts) {
       tt: makeBoundedTT(),
       qdepth: GRAND_QUIESCE_DEPTH,
       mobilityWeight: GRAND_MOBILITY_WEIGHT,
-      evalFn: evaluateGrand,
+      evalFn: leafEvalFn,
       killers: [],
       history: new Map(),
       repWindow: [],

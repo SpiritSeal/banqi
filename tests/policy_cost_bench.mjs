@@ -45,9 +45,12 @@ const NUM_GAMES = Number(argv[0] || '60');
 
 // grand = the NEW engine under test (player "first"); policy = the baseline.
 const NAME_NEW = 'grand', NAME_BASE = 'policy';
-const policyEngine = BASELINE === 'frozen'
-  ? { fn: choosePolicy,  diff: DiffBase.POLICY, live: false }   // frozen snapshot (no node count)
-  : { fn: chooseGrand,   diff: DiffNew.POLICY,  live: true  };  // working module (node-instrumented)
+// baseline=grandpe: grand's exact search with Policy's leaf eval (opts.evalKind),
+// for a confound-free A/B isolating evaluateGrand vs the SEE eval in the new slot.
+const policyEngine =
+    BASELINE === 'frozen' ? { fn: choosePolicy, diff: DiffBase.POLICY, live: false }
+  : BASELINE === 'grandpe' ? { fn: chooseGrand, diff: DiffNew.GRAND, live: true, opts: { evalKind: 'policy' } }
+  :                          { fn: chooseGrand, diff: DiffNew.POLICY, live: true };
 // --new selects what the "new" slot plays: grand (default) or policy (live).
 // `--new policy --baseline frozen` pits the working policy against the frozen
 // snapshot — an equivalence check that should come out ~balanced.
@@ -111,7 +114,7 @@ async function playOneGame(firstAgentIsPlayer0) {
     if (!legal.length) throw new Error(`empty legal moves at move ${moves}, stm=${stm}`);
     const eng = engineByPlayer[stm];
     const t0 = performance.now();
-    const move = eng.fn(st, st.my_player_index, eng.diff, { recentBoardKeys });
+    const move = eng.fn(st, st.my_player_index, eng.diff, { recentBoardKeys, ...(eng.opts || {}) });
     totalMs[stm] += performance.now() - t0;
     if (eng === grandEng)              { nodesNew  += getLastMoveNodes(); movesNew++;  }
     else if (eng === policyEng && eng.live) { nodesBase += getLastMoveNodes(); movesBase++; }

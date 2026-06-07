@@ -14,6 +14,7 @@ const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean);
 let gw = 0, pw = 0, dr = 0, msNew = 0, msBase = 0, nodesNew = 0, movesNew = 0;
 let nodesBase = 0, movesBase = 0, games = 0;
 let matSum = 0, matAhead = 0, matBehind = 0, matN = 0;
+const matVals = [];
 const seen = new Set();
 for (const ln of lines) {
   let r; try { r = JSON.parse(ln); } catch { continue; }
@@ -23,7 +24,7 @@ for (const ln of lines) {
   msNew += r.msFirst || 0; msBase += r.msOther || 0;
   nodesNew += r.nodesNew || 0; movesNew += r.movesNew || 0;
   nodesBase += r.nodesBase || 0; movesBase += r.movesBase || 0;
-  if (r.matFirst != null) { matSum += r.matFirst; matN++;
+  if (r.matFirst != null) { matSum += r.matFirst; matN++; matVals.push(r.matFirst);
     if (r.matFirst > 0) matAhead++; else if (r.matFirst < 0) matBehind++; }
 }
 const dec = gw + pw, w = wilson(gw, dec);
@@ -31,7 +32,15 @@ console.log(`games=${games}  grand ${gw} – ${pw} policy  (${dr} draws)`);
 console.log(`decisive=${dec}  grand decisive win-rate ${(w.p*100).toFixed(1)}%  Wilson95 ${(w.lo*100).toFixed(1)}%–${(w.hi*100).toFixed(1)}%`);
 if (matN > 0) {
   const aw = wilson(matAhead, matAhead + matBehind);
-  console.log(`adjudicated: grand ahead ${matAhead}/behind ${matBehind}/even ${matN-matAhead-matBehind}  win-rate ${(aw.p*100).toFixed(1)}% (Wilson95 ${(aw.lo*100).toFixed(1)}%–${(aw.hi*100).toFixed(1)}%)  avg edge ${matSum/matN>=0?'+':''}${(matSum/matN).toFixed(0)}`);
+  const mean = matSum / matN;
+  // 95% CI of the mean material edge — the high-power significance read. If the
+  // interval excludes 0, the eval difference is a real material effect.
+  let varSum = 0; for (const v of matVals) varSum += (v - mean) * (v - mean);
+  const se = matN > 1 ? Math.sqrt(varSum / (matN - 1) / matN) : 0;
+  const lo = mean - 1.96 * se, hi = mean + 1.96 * se;
+  const verdict = lo > 0 ? 'SIGNIF +' : hi < 0 ? 'SIGNIF -' : 'n.s. (straddles 0)';
+  console.log(`adjudicated: grand ahead ${matAhead}/behind ${matBehind}/even ${matN-matAhead-matBehind}  win-rate ${(aw.p*100).toFixed(1)}% (Wilson95 ${(aw.lo*100).toFixed(1)}%–${(aw.hi*100).toFixed(1)}%)`);
+  console.log(`material edge: mean ${mean>=0?'+':''}${mean.toFixed(0)}  95%CI [${lo>=0?'+':''}${lo.toFixed(0)}, ${hi>=0?'+':''}${hi.toFixed(0)}]  → ${verdict}`);
 }
 const gNodes = movesNew > 0 ? nodesNew / movesNew : 0;
 const pNodes = movesBase > 0 ? nodesBase / movesBase : 0;
