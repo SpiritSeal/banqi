@@ -42,6 +42,8 @@ const DIFF_LABEL = {
   [Difficulty.HARD]: 'Hard',
   [Difficulty.EXPERT]: 'Expert',
   [Difficulty.MASTER]: 'Master',
+  [Difficulty.POLICY]: 'Policy',
+  [Difficulty.GRAND]: 'Grandmaster',
 };
 
 // ---- main play function ----

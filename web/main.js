@@ -1759,7 +1759,7 @@ function refreshAI() {
   }
   $('ai-banner').textContent = banner;
   $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
-  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'master', master: 'policy', policy: 'easy' }[active.difficulty] || 'medium';
+  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'master', master: 'policy', policy: 'grand', grand: 'easy' }[active.difficulty] || 'medium';
   $('ai-meta').innerHTML = `
     <span class="meta-label">Difficulty</span>
     <button id="ai-diff-chip" class="diff-chip" type="button"

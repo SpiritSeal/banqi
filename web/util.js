@@ -28,7 +28,7 @@ export function modeLabel(m) {
 // in ../ai/index.mjs — these are display labels only.
 export const AI_DIFFICULTY_LABELS = {
   easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', master: 'Master',
-  policy: 'Policy',
+  policy: 'Policy', grand: 'Grandmaster',
 };
 export function aiDifficultyLabel(d) { return AI_DIFFICULTY_LABELS[d] || (d || ''); }
 
