@@ -19,18 +19,33 @@
 //            valuable), cannon line-of-attack scoring, trapped-General
 //            penalty, and a higher mobility weight than Master to lean
 //            toward Banqi's actual win condition (opponent has no legal
-//            move). Uses killer-move + history ordering on top of the TT
-//            and Late Move Reductions, and runs at roughly 2× Master's
-//            total node budget to convert the better-tuned eval into actual
-//            depth at the search horizon. In head-to-head play against
-//            Master it draws frequently — both engines are strong enough
-//            that symmetric tactical play leads to move-limit draws —
-//            though Policy is the stronger of the two when a decisive
-//            line exists.
+//            move). Uses killer-move + history ordering on top of the TT,
+//            Late Move Reductions and principal-variation search. The shipped
+//            config searches a full ply deeper than its predecessor (depth 7)
+//            with a harder anti-shuffle penalty; this beats the previous
+//            Policy configuration ≥60% head-to-head (see
+//            tests/POLICY_OPTIMISATION_LOG.md) at a higher node cost.
 
 export const Difficulty = {
   EASY: 'easy', MEDIUM: 'medium', HARD: 'hard',
   EXPERT: 'expert', MASTER: 'master', POLICY: 'policy',
+};
+
+// Internal-only difficulty identifiers used by the offline benchmark / A/B
+// tuning harnesses. They are deliberately kept OUT of the player-facing
+// `Difficulty` enum — and therefore out of the server's AI_DIFFICULTIES
+// whitelist and the lobby dropdown — because they are never selectable by
+// players. The match harness passes these strings to chooseMove() directly.
+// (Keeping them in `Difficulty` would break the registry-sync invariant in
+// server/tests/ai_difficulty_registry.mjs.)
+export const BenchmarkDifficulty = {
+  // Frozen snapshot of the pre-optimisation Policy engine. Exists purely as a
+  // fixed benchmark opponent so the strengthened Policy can be measured
+  // against the configuration it replaced.
+  POLICY_BASE: 'policy_base',
+  // Second tunable Policy used only by the offline A/B tuning harness
+  // (BANQI_POLICY_CONFIG_ALT).
+  POLICY_ALT: 'policy_alt',
 };
 
 // Piece type constants (match C++ PieceType enum values)
@@ -446,7 +461,11 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
   const repWindow = ctx.repWindow;
   const savedProgress = ctx.pliesSinceProgress;
 
-  const tryChild = (m) => {
+  // Search a single child within the window [a, b]. `idx` is the move's
+  // ordering position (used for the LMR late-move guard). With S.usePVS the
+  // caller passes a null window for non-first moves and re-invokes with the
+  // full window when the probe indicates a new principal variation.
+  const tryChild = (m, a, b, idx) => {
     const cap = isCaptureMove(board, m);
     const flip = isFlipMove(m);
 
@@ -488,18 +507,25 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
 
     let score;
     if (drewRep) {
-      score = 0; // draw
-    } else if (S.useLMR && depth >= 3 && i >= 4 && !cap && !flip &&
+      // Draw. With a contempt factor the side running the search values a draw
+      // as slightly negative (from `forColor`'s perspective), so a stronger
+      // engine avoids drawish repetition/no-progress lines and plays on for the
+      // win instead of acquiescing to a move-limit draw. Unlike the harness-only
+      // recentBoardKeys penalty, this lives in the kernel and so is active in
+      // real games. ctx.contempt defaults to 0 (exact draw) for every other
+      // engine and for policy_base.
+      score = -(ctx.contempt || 0); // draw (0 unless contempt set)
+    } else if (S.useLMR && depth >= 3 && idx >= 4 && !cap && !flip &&
                !(ttMove && S.sameMove(m, ttMove))) {
       // LMR: reduce search depth on late quiet non-capture, non-flip moves.
-      score = minimaxKernel(nb, forColor, depth - 2, alpha, beta, ctx, ply + 1, S);
+      score = minimaxKernel(nb, forColor, depth - 2, a, b, ctx, ply + 1, S);
       // Re-search at full depth if the reduced search beat the bound that
       // matters for the side to move.
-      if (myTurn ? (score > alpha) : (score < beta)) {
-        score = minimaxKernel(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1, S);
+      if (myTurn ? (score > a) : (score < b)) {
+        score = minimaxKernel(nb, forColor, depth - 1, a, b, ctx, ply + 1, S);
       }
     } else {
-      score = minimaxKernel(nb, forColor, depth - 1, alpha, beta, ctx, ply + 1, S);
+      score = minimaxKernel(nb, forColor, depth - 1, a, b, ctx, ply + 1, S);
     }
 
     // Restore window state.
@@ -519,7 +545,17 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
   if (myTurn) {
     bestVal = -Infinity;
     for (const m of moves) {
-      const { score, cap, flip } = tryChild(m);
+      let r;
+      if (!S.usePVS || i === 0 || beta - alpha <= 1) {
+        r = tryChild(m, alpha, beta, i);
+      } else {
+        // PVS: probe with a null window first. Only if the probe beats alpha
+        // (and the real window is wider than the probe) do we pay for a full
+        // re-search. This is exact — it never changes the minimax value.
+        r = tryChild(m, alpha, alpha + 1, i);
+        if (r.score > alpha && r.score < beta) r = tryChild(m, alpha, beta, i);
+      }
+      const { score, cap, flip } = r;
       if (score > bestVal) { bestVal = score; bestMove = m; }
       if (bestVal > alpha) alpha = bestVal;
       if (alpha >= beta) {
@@ -531,7 +567,14 @@ function minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S) {
   } else {
     bestVal = Infinity;
     for (const m of moves) {
-      const { score, cap, flip } = tryChild(m);
+      let r;
+      if (!S.usePVS || i === 0 || beta - alpha <= 1) {
+        r = tryChild(m, alpha, beta, i);
+      } else {
+        r = tryChild(m, beta - 1, beta, i);
+        if (r.score < beta && r.score > alpha) r = tryChild(m, alpha, beta, i);
+      }
+      const { score, cap, flip } = r;
       if (score < bestVal) { bestVal = score; bestMove = m; }
       if (bestVal < beta) beta = bestVal;
       if (alpha >= beta) {
@@ -616,7 +659,9 @@ export function chooseMove(state, playerIndex, difficulty, opts) {
     case Difficulty.HARD:   return chooseMoveHard(state, legal, playerIndex);
     case Difficulty.EXPERT: return chooseMoveExpert(state, legal, playerIndex);
     case Difficulty.MASTER: return chooseMoveMaster(state, legal, playerIndex);
-    case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex, opts);
+    case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_CONFIG);
+    case BenchmarkDifficulty.POLICY_BASE: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_BASE_CONFIG);
+    case BenchmarkDifficulty.POLICY_ALT: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_CONFIG_ALT);
     default:                return chooseMoveEasy(state, legal);
   }
 }
@@ -1122,38 +1167,128 @@ function chooseMoveMaster(state, legal, playerIndex) {
 //      The wider determinisation sample reduces the variance from random
 //      hidden-piece assignments, which is where PIMC most often goes wrong.
 // ---------------------------------------------------------------------------
-// Policy uses ≈2× Master's total node budget (8×200k = 1.6M vs Master's
-// 6×120k = 720k). The extra search depth + the policy-shaped evaluation give
-// it a measurable strength edge over Master in head-to-head play.
-const POLICY_DEEP_DEPTH       = 6;
-const POLICY_SHALLOW_DEPTH    = 5;
-const POLICY_DETERMINISATIONS = 8;
-const POLICY_NODE_BUDGET      = 200000;
-const POLICY_QUIESCE_DEPTH    = 3;
-// Mobility weight: well above Master's 14. Restricting opponent mobility is
-// Banqi's actual win condition ("opponent has no legal move"), so it deserves
-// to drive move choice. Tuned to a value that breaks Master-vs-Master shuffle
-// draws without leading to mass piece-sacrifice for mobility.
-const POLICY_MOBILITY_WEIGHT  = 30;
+// ---------------------------------------------------------------------------
+// Policy configuration.
+//
+// The Policy engine's search cost and evaluation shaping are fully described
+// by a config object so that different cost/strength trade-offs can be
+// benchmarked head-to-head. POLICY_BASE_CONFIG is the frozen pre-optimisation
+// configuration (8 determinisations × 200k nodes = 1.6M nodes/move); it is
+// kept only as a fixed benchmark opponent. POLICY_CONFIG is the live
+// configuration the shipped `policy` difficulty uses.
+//
+// Cost knobs:
+//   deepDepth / shallowDepth – iterative-deepening ceiling (shallow used when
+//                              >20 pieces are still face-down)
+//   determinisations         – PIMC samples averaged per move
+//   nodeBudget               – per-determinisation interior-node cap
+//   quiesceDepth             – quiescence horizon
+//   usePVS                   – principal-variation (null-window) search, an
+//                              exact alpha-beta optimisation that cuts node
+//                              counts sharply when move ordering is good
+// Evaluation knobs (see evaluatePolicy):
+//   mobilityWeight, materialPremium, emptyWeight, soldierGeneralBonus,
+//   cannonLineBonus, generalEscapePenalty
+// ---------------------------------------------------------------------------
 
 // Soldier–General threat. A soldier `d` Chebyshev-steps away from an enemy
-// General (face-up) contributes this much to its owner. Capped at the
-// maximum reachable distance on a 4×8 board (7 steps). Tuned to exploit
-// the key blind spot in Master's flat-material eval: Master treats a
-// Soldier as worth 100 regardless of position, so it leaves Soldiers
-// exposed near its General and doesn't see incoming attacks on its General
-// from Soldiers (Master's piece-safety check is rank-based and General is
-// rank 7, so it incorrectly thinks the General is safe).
-const SOLDIER_GENERAL_BONUS = [0, 280, 160, 90, 40, 20, 8, 0];
+// General (face-up) contributes this much to its owner. (See note below.)
+const SOLDIER_GENERAL_BONUS_BASE = [0, 280, 160, 90, 40, 20, 8, 0];
+
+// Frozen pre-optimisation Policy. Do not change — it is the benchmark the
+// live config is measured against.
+const POLICY_BASE_CONFIG = Object.freeze({
+  deepDepth:           6,
+  shallowDepth:        5,
+  determinisations:    8,
+  nodeBudget:          200000,
+  quiesceDepth:        3,
+  usePVS:              false,
+  mobilityWeight:      30,
+  materialPremium:     30,
+  emptyWeight:         12,
+  soldierGeneralBonus: SOLDIER_GENERAL_BONUS_BASE,
+  cannonLineBonus:     30,
+  generalEscapePenalty:40,
+});
+
+// Live Policy — strengthened over POLICY_BASE_CONFIG.
+//
+// Empirically (tests/POLICY_OPTIMISATION_LOG.md), the previous Policy sat at a
+// depth-6 strength plateau: reducing search just made it weaker, and adding
+// determinisations or retuning the eval weights left strength unchanged. The
+// one lever that produced a real, repeatable edge was searching a full ply
+// deeper (depth 7) — paired with a harder anti-shuffle penalty so that the
+// resulting strength advantage is actually converted into wins instead of
+// move-limit draws. This configuration beats the frozen base ≥60% of games
+// head-to-head (76.9% of decisive games), at ~2.9× the base node cost. PVS
+// keeps the deeper search from costing even more.
+const POLICY_CONFIG_DEFAULT = {
+  deepDepth:           7,
+  shallowDepth:        6,
+  determinisations:    6,
+  nodeBudget:          220000,
+  quiesceDepth:        4,
+  usePVS:              true,
+  mobilityWeight:      30,
+  materialPremium:     30,
+  emptyWeight:         12,
+  soldierGeneralBonus: SOLDIER_GENERAL_BONUS_BASE,
+  cannonLineBonus:     30,
+  generalEscapePenalty:40,
+  // Harder draw-breaking than base (200/40): the deeper search is the stronger
+  // side, so forcing decisive play out of symmetric shuffles favours Policy.
+  // (Note: these only act when the caller supplies recentBoardKeys.)
+  repPenaltyStrong:    350,
+  repPenaltyFirst:     180,
+  // Contempt: value a draw as -50 (from Policy's perspective) so the stronger
+  // engine plays on for the win in drawish repetition/no-progress lines instead
+  // of acquiescing to a move-limit draw. Active in the search kernel, so it
+  // works in real games (the recentBoardKeys penalty above does not — the
+  // server doesn't pass history). This is what lifts the head-to-head result
+  // past 60% on the strict (draws-as-loss) metric, not just decisive games.
+  contempt:            50,
+};
+
+// Experiment hook: BANQI_POLICY_CONFIG (JSON) overrides individual fields of
+// the live config at module load. Used only by the offline tuning harness; it
+// has no effect in the browser (no `process`) and the shipped defaults above
+// are what real games use.
+function applyPolicyConfigEnv(base, varName) {
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env[varName]) {
+      return Object.assign({}, base, JSON.parse(process.env[varName]));
+    }
+  } catch (e) { /* ignore malformed override */ }
+  return base;
+}
+const POLICY_CONFIG = Object.freeze(applyPolicyConfigEnv(POLICY_CONFIG_DEFAULT, 'BANQI_POLICY_CONFIG'));
+// Second tunable config used only by the offline A/B tuning harness so two
+// candidate eval/search settings can be played head-to-head cheaply (without
+// paying the expensive frozen-base cost on every game). Defaults to the same
+// as POLICY_CONFIG when BANQI_POLICY_CONFIG_ALT is unset.
+const POLICY_CONFIG_ALT = Object.freeze(applyPolicyConfigEnv(POLICY_CONFIG_DEFAULT, 'BANQI_POLICY_CONFIG_ALT'));
+
+// Back-compat aliases for the handful of module-level references kept below.
+const POLICY_MOBILITY_WEIGHT  = POLICY_BASE_CONFIG.mobilityWeight;
+
+// Default evaluation-shaping constants. These are the fallbacks used when a
+// search context does not override them; both POLICY_BASE_CONFIG and
+// POLICY_CONFIG currently pin them to these same values. The Soldier–General
+// distance bonus exploits the key blind spot in Master's flat-material eval
+// (a Soldier is worth 100 regardless of position there), so a Soldier next to
+// the enemy General — the only piece that can capture it — is scored far
+// higher here.
+const SOLDIER_GENERAL_BONUS = SOLDIER_GENERAL_BONUS_BASE;
 
 // Per-cannon-line bonus when the cannon has a legal jump available (screen
 // + face-up enemy target on the same row/column).
-const CANNON_LINE_BONUS = 30;
+const CANNON_LINE_BONUS = POLICY_BASE_CONFIG.cannonLineBonus;
 
 // Each missing escape square (out of 4) on a General penalises that side.
 // Trapped Generals are a major loss vector since Banqi ends on "no legal
 // moves" and the General is hard to replace mid-game.
-const GENERAL_ESCAPE_PENALTY = 40;
+const GENERAL_ESCAPE_PENALTY = POLICY_BASE_CONFIG.generalEscapePenalty;
 
 // SEE: returns the net material swing (positive = `attackerColor` gains) of
 // playing all profitable captures on `cell`, with both sides choosing their
@@ -1275,26 +1410,102 @@ function cannonLineScore(board, color) {
   return n;
 }
 
-function soldierGeneralScore(board, forColor) {
+function soldierGeneralScore(board, forColor, bonus = SOLDIER_GENERAL_BONUS) {
   const oppColor = forColor === RED ? BLACK : RED;
+  return soldierGeneralScoreCached(board, forColor, oppColor,
+    findGeneral(board, forColor), findGeneral(board, oppColor), bonus);
+}
+
+// As soldierGeneralScore but with the General cells supplied (avoids two
+// findGeneral board scans). Single pass over the board: every Soldier
+// contributes ±bonus[dist] depending on whose Soldier it is and which General
+// it threatens. Identical result to the two-loop version.
+function soldierGeneralScoreCached(board, forColor, oppColor, myGen, oppGen, bonus) {
   let score = 0;
-  const oppGen = findGeneral(board, oppColor);
-  if (oppGen >= 0) {
-    for (let i = 0; i < CELLS; i++) {
-      const c = board.cells[i];
-      if (!c || c.fd || c.color !== forColor || c.type !== SOLDIER) continue;
-      score += SOLDIER_GENERAL_BONUS[Math.min(chebyshev(i, oppGen), 7)];
-    }
-  }
-  const myGen = findGeneral(board, forColor);
-  if (myGen >= 0) {
-    for (let i = 0; i < CELLS; i++) {
-      const c = board.cells[i];
-      if (!c || c.fd || c.color !== oppColor || c.type !== SOLDIER) continue;
-      score -= SOLDIER_GENERAL_BONUS[Math.min(chebyshev(i, myGen), 7)];
+  const cells = board.cells;
+  for (let i = 0; i < CELLS; i++) {
+    const c = cells[i];
+    if (!c || c.fd || c.type !== SOLDIER) continue;
+    if (c.color === forColor) {
+      if (oppGen >= 0) score += bonus[Math.min(chebyshev(i, oppGen), 7)];
+    } else {
+      if (myGen >= 0)  score -= bonus[Math.min(chebyshev(i, myGen), 7)];
     }
   }
   return score;
+}
+
+// Mobility differential (forColor minus oppColor) in a single board scan.
+// Mirrors countPieceMoves' generation exactly but accumulates both colours at
+// once, so the eval pays one scan instead of two.
+function mobilityDiff(board, forColor, oppColor) {
+  const cells = board.cells;
+  let diff = 0;
+  for (let from = 0; from < CELLS; from++) {
+    const src = cells[from];
+    if (!src || src.fd) continue;
+    const sign = src.color === forColor ? 1 : (src.color === oppColor ? -1 : 0);
+    if (!sign) continue;
+    const r = rowOf(from), co = colOf(from);
+    let n = 0;
+    if (src.type === CANNON) {
+      for (let d = 0; d < 4; d++) {
+        const nr = r + DR[d], nc = co + DC[d];
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        if (!cells[rcIdx(nr, nc)]) n++;
+      }
+      for (let d = 0; d < 4; d++) {
+        let nr = r + DR[d], nc = co + DC[d], screens = 0;
+        while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+          const tc = cells[rcIdx(nr, nc)];
+          if (tc) {
+            if (++screens === 2) {
+              if (!tc.fd && tc.color !== src.color) n++;
+              break;
+            }
+          }
+          nr += DR[d]; nc += DC[d];
+        }
+      }
+    } else {
+      for (let d = 0; d < 4; d++) {
+        const nr = r + DR[d], nc = co + DC[d];
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        const dst = cells[rcIdx(nr, nc)];
+        if (!dst) n++;
+        else if (!dst.fd && canCapture(src, dst)) n++;
+      }
+    }
+    diff += sign * n;
+  }
+  return diff;
+}
+
+// Cannon line-of-attack differential (forColor minus oppColor) in one scan.
+function cannonLineDiff(board, forColor, oppColor) {
+  const cells = board.cells;
+  let diff = 0;
+  for (let i = 0; i < CELLS; i++) {
+    const c = cells[i];
+    if (!c || c.fd || c.type !== CANNON) continue;
+    const sign = c.color === forColor ? 1 : (c.color === oppColor ? -1 : 0);
+    if (!sign) continue;
+    const r = rowOf(i), co = colOf(i);
+    for (let d = 0; d < 4; d++) {
+      let nr = r + DR[d], nc = co + DC[d], screens = 0;
+      while (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+        const t = cells[rcIdx(nr, nc)];
+        if (t) {
+          if (++screens === 2) {
+            if (!t.fd && t.color !== c.color) diff += sign;
+            break;
+          }
+        }
+        nr += DR[d]; nc += DC[d];
+      }
+    }
+  }
+  return diff;
 }
 
 // Policy's evaluation deliberately diverges from Master's in three places
@@ -1302,10 +1513,11 @@ function soldierGeneralScore(board, forColor) {
 //
 //   1. Mobility weight dominates. Banqi's actual win condition is "opponent
 //      has no legal move", and Master's mobility coefficient of 14 makes it
-//      a minor term against a 100-point soldier. Policy uses 60 so that
-//      restricting the opponent's piece moves becomes a primary objective —
-//      crucially, this can favour trading material for mobility, which
-//      breaks the Master-vs-Master shuffle draw.
+//      a minor term against a 100-point soldier. Policy uses 30 (tuned: A/B
+//      tests showed higher weights such as 50 made no difference) so that
+//      restricting the opponent's piece moves is a meaningful objective —
+//      this can favour trading material for mobility, which breaks the
+//      Master-vs-Master shuffle draw.
 //   2. Soldier–General distance. Soldier is the only piece that captures a
 //      General (and the General can't capture a Soldier), so placement of
 //      Soldiers near the enemy General is asymmetrically valuable.
@@ -1318,27 +1530,42 @@ function evaluatePolicy(board, forColor, ctx) {
     return 0;
   }
   const oppColor = forColor === RED ? BLACK : RED;
+  const cells = board.cells;
   let score = 0;
   let myPieces = 0, oppPieces = 0, facedownCount = 0;
+  let myGen = -1, oppGen = -1;
+
+  // Single primary scan: material, piece counts, and General locations. The
+  // remaining positional terms (safety, mobility, soldier–general, cannon
+  // lines, escape) are computed from combined-pass helpers below. This keeps
+  // the eval to a handful of board scans instead of the ~10 it used to take,
+  // while producing identical scores.
   for (let i = 0; i < CELLS; i++) {
-    const c = board.cells[i];
+    const c = cells[i];
     if (!c) continue;
     if (c.fd) { facedownCount++; continue; }
     const v = PIECE_VALUE[c.type] || 0;
-    if (c.color === forColor) { score += v; myPieces++; }
-    else                      { score -= v; oppPieces++; }
+    if (c.color === forColor) {
+      score += v; myPieces++;
+      if (c.type === GENERAL) myGen = i;
+    } else {
+      score -= v; oppPieces++;
+      if (c.type === GENERAL) oppGen = i;
+    }
   }
   // Material premium: lower than Master's 50 so trades are seen more
   // favourably (every trade reduces piece count, which is good for the
   // stronger side's mobility differential, which is what wins games).
-  score += (myPieces - oppPieces) * 30;
+  const materialPremium = ctx?.materialPremium ?? POLICY_BASE_CONFIG.materialPremium;
+  const emptyWeight     = ctx?.emptyWeight ?? POLICY_BASE_CONFIG.emptyWeight;
+  score += (myPieces - oppPieces) * materialPremium;
   const emptyCount = 32 - facedownCount - myPieces - oppPieces;
-  score += emptyCount * 12;
+  score += emptyCount * emptyWeight;
 
   // Piece-safety: pieces attacked-but-not-defended are basically lost. Use
   // Master's helpers so we get the same tactical accuracy.
   for (let i = 0; i < CELLS; i++) {
-    const c = board.cells[i];
+    const c = cells[i];
     if (!c || c.fd) continue;
     const v = PIECE_VALUE[c.type] || 0;
     if (c.color === forColor) {
@@ -1353,21 +1580,24 @@ function evaluatePolicy(board, forColor, ctx) {
   }
 
   // Mobility — the dominant positional term. Heavily weighted so the
-  // engine actively pursues stalemate wins.
+  // engine actively pursues stalemate wins. Computed in a single combined
+  // pass for both colours.
   const mw = ctx?.mobilityWeight ?? POLICY_MOBILITY_WEIGHT;
-  score += (countPieceMoves(board, forColor) - countPieceMoves(board, oppColor)) * mw;
+  score += mobilityDiff(board, forColor, oppColor) * mw;
 
-  // Soldier–General threat axis.
-  score += soldierGeneralScore(board, forColor);
+  // Soldier–General threat axis (uses the Generals located in the primary
+  // scan instead of re-scanning the board).
+  score += soldierGeneralScoreCached(board, forColor, oppColor, myGen, oppGen,
+                                     ctx?.soldierGeneralBonus ?? SOLDIER_GENERAL_BONUS);
 
-  // Cannon line-of-attack pressure.
-  score += (cannonLineScore(board, forColor) - cannonLineScore(board, oppColor)) * CANNON_LINE_BONUS;
+  // Cannon line-of-attack pressure (single combined pass for both colours).
+  const cannonBonus = ctx?.cannonLineBonus ?? CANNON_LINE_BONUS;
+  score += cannonLineDiff(board, forColor, oppColor) * cannonBonus;
 
   // Trapped-General penalty.
-  const myGen  = findGeneral(board, forColor);
-  const oppGen = findGeneral(board, oppColor);
-  if (myGen  >= 0) score -= (4 - escapeCount(board, myGen))  * GENERAL_ESCAPE_PENALTY;
-  if (oppGen >= 0) score += (4 - escapeCount(board, oppGen)) * GENERAL_ESCAPE_PENALTY;
+  const genEscPenalty = ctx?.generalEscapePenalty ?? GENERAL_ESCAPE_PENALTY;
+  if (myGen  >= 0) score -= (4 - escapeCount(board, myGen))  * genEscPenalty;
+  if (oppGen >= 0) score += (4 - escapeCount(board, oppGen)) * genEscPenalty;
 
   // Side-to-move tempo bonus.
   if (board.playerColors[board.sidePlayer] === forColor) score += 15;
@@ -1471,43 +1701,56 @@ function recordPolicyCutoff(m, _board, ctx, ply, depth, cap, flip) {
   ctx.history.set(hk, (ctx.history.get(hk) || 0) + depth * depth);
 }
 
+// PVS-on and PVS-off strategy variants. They are otherwise identical; the
+// config's `usePVS` flag selects between them so principal-variation search is
+// scoped to the live Policy without altering Master/Expert/Hard.
 const POLICY_STRATEGIES = {
   useTT: true,
   useLMR: true,
   useBudget: true,
+  usePVS: true,
   leafEval: (b, c, ctx) => evaluatePolicy(b, c, ctx),
   quiesce: (b, c, a, be, qd, ctx) => quiescePolicy(b, c, a, be, qd, ctx),
   orderMoves: orderMovesPolicy,
   onCutoff: recordPolicyCutoff,
   sameMove,
 };
+const POLICY_STRATEGIES_NO_PVS = { ...POLICY_STRATEGIES, usePVS: false };
 
-function alphaBetaPolicy(board, forColor, depth, alpha, beta, ctx, ply) {
-  return minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, POLICY_STRATEGIES);
+function alphaBetaPolicy(board, forColor, depth, alpha, beta, ctx, ply, S = POLICY_STRATEGIES) {
+  return minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, S);
 }
 
-function chooseMovePolicy(state, legal, playerIndex, opts) {
+function chooseMovePolicy(state, legal, playerIndex, opts, cfg = POLICY_CONFIG) {
   const myColor = state.my_color;
   if (!state.first_flip_done || !myColor) return chooseMoveMaster(state, legal, playerIndex);
 
   const baseBoard = Board.fromState(state);
+  const strategies = cfg.usePVS ? POLICY_STRATEGIES : POLICY_STRATEGIES_NO_PVS;
+  const stats = opts?.stats;   // optional { nodes } accumulator for benchmarks
 
   let facedown = 0;
   for (const c of state.cells) if (c.state === 'facedown') facedown++;
-  const maxDepth = facedown > 20 ? POLICY_SHALLOW_DEPTH : POLICY_DEEP_DEPTH;
+  const maxDepth = facedown > 20 ? cfg.shallowDepth : cfg.deepDepth;
 
   const moveKey = m => `${m.from},${m.to}`;
   const scores = new Map();
   for (const m of legal) scores.set(moveKey(m), 0);
 
-  for (let d = 0; d < POLICY_DETERMINISATIONS; d++) {
+  for (let d = 0; d < cfg.determinisations; d++) {
     const det = determinise(baseBoard, state);
     const ctx = {
       nodes: 0,
-      budget: POLICY_NODE_BUDGET,
+      budget: cfg.nodeBudget,
       tt: makeBoundedTT(),
-      qdepth: POLICY_QUIESCE_DEPTH,
-      mobilityWeight: POLICY_MOBILITY_WEIGHT,
+      qdepth: cfg.quiesceDepth,
+      contempt: cfg.contempt ?? 0,
+      mobilityWeight: cfg.mobilityWeight,
+      materialPremium: cfg.materialPremium,
+      emptyWeight: cfg.emptyWeight,
+      soldierGeneralBonus: cfg.soldierGeneralBonus,
+      cannonLineBonus: cfg.cannonLineBonus,
+      generalEscapePenalty: cfg.generalEscapePenalty,
       killers: [],
       history: new Map(),
       repWindow: [],
@@ -1525,13 +1768,14 @@ function chooseMovePolicy(state, legal, playerIndex, opts) {
         if (m.from < 0) nb.applyFlipKnown(m.to);
         else            nb.applyMove(m.from, m.to);
         iter.set(moveKey(m),
-                 alphaBetaPolicy(nb, myColor, depth - 1, -Infinity, Infinity, ctx, 1));
+                 alphaBetaPolicy(nb, myColor, depth - 1, -Infinity, Infinity, ctx, 1, strategies));
       }
       if (!aborted) lastCompleted = iter;
     }
     if (lastCompleted) {
       for (const [k, s] of lastCompleted) scores.set(k, scores.get(k) + s);
     }
+    if (stats) stats.nodes = (stats.nodes || 0) + ctx.nodes;
   }
 
   // Repetition penalty: when the caller passes `opts.recentBoardKeys`, count
@@ -1563,16 +1807,15 @@ function chooseMovePolicy(state, legal, playerIndex, opts) {
       if (c >= 2) {
         // Position seen at least twice in recent history → genuine shuffle.
         // The penalty here is the search-space equivalent of a Cannon's
-        // value (200) per determinisation × 8 dets = 1600 per repeat, so
-        // Policy will trade up to a Cannon to break a 3rd repetition but
-        // won't sacrifice a Chariot or higher.
-        const penalty = 200 * c * POLICY_DETERMINISATIONS;
+        // value (repPenaltyStrong) per determinisation × dets per repeat, so
+        // Policy will trade up to that value to break a 3rd repetition.
+        const penalty = (cfg.repPenaltyStrong ?? 200) * c * cfg.determinisations;
         scores.set(moveKey(m), scores.get(moveKey(m)) - penalty);
       } else if (c === 1) {
         // First revisit gets only a token nudge — enough to prefer a fresh
         // move when it's a near-equivalent option, not enough to abandon a
         // genuinely better quiet move.
-        const penalty = 40 * POLICY_DETERMINISATIONS;
+        const penalty = (cfg.repPenaltyFirst ?? 40) * cfg.determinisations;
         scores.set(moveKey(m), scores.get(moveKey(m)) - penalty);
       }
     }
@@ -1585,3 +1828,85 @@ function chooseMovePolicy(state, legal, playerIndex, opts) {
   }
   return bestMove;
 }
+
+// ---------------------------------------------------------------------------
+// Test-only internals.
+//
+// Exposed so the pure-JS match harness (tests/policy_match_js.mjs) can drive
+// full games without the WASM Game binding: it builds a referee Board with all
+// hidden-piece identities populated, renders per-player state views for the
+// AI, and applies the chosen moves. Mirrors the rules the WASM engine enforces
+// (legal-move generation, no-legal-move loss, capture-general mode) since both
+// derive from the same C++ BanqiRules source. Not part of the runtime API.
+// ---------------------------------------------------------------------------
+export const __testing = {
+  Board,
+  makePiecePool,
+  shuffleInPlace,
+  POLICY_CONFIG,
+  POLICY_BASE_CONFIG,
+  // Create a fresh referee board: all 32 cells face-down with their true
+  // hidden identity (`hp`) assigned from a shuffled pool. Player 0 moves first.
+  createReferee() {
+    const deck = shuffleInPlace(makePiecePool());
+    const b = new Board();
+    for (let i = 0; i < CELLS; i++) b.cells[i] = { fd: true, hp: deck[i] };
+    b.firstFlipDone = false;
+    b.sidePlayer = 0;
+    b.playerColors = [0, 0];
+    b.over = false;
+    b.winner = 0;
+    b.mode = 'standard';
+    return b;
+  },
+  // Render the WASM-stateJson-equivalent view for `playerIndex` from a referee
+  // board. Face-down cells are hidden (no identity leaked); face-up pieces are
+  // fully visible. `legal_moves_for_me` is generated for the side to move.
+  viewFor(board, playerIndex) {
+    const cells = board.cells.map(c => {
+      if (!c) return { state: 'empty' };
+      if (c.fd) return { state: 'facedown' };
+      return { state: 'faceup', color: c.color, type: c.type };
+    });
+    return {
+      cells,
+      first_flip_done: board.firstFlipDone,
+      side_to_move: board.sidePlayer,
+      game_over: board.over,
+      winner: board.winner,
+      my_player_index: playerIndex,
+      my_color: board.playerColors[playerIndex] || 0,
+      player0_color: board.playerColors[0],
+      player1_color: board.playerColors[1],
+      mode: board.mode,
+      legal_moves_for_me: board.legalMoves(playerIndex),
+    };
+  },
+  // Apply a chosen move to the referee board, revealing true identity on flips.
+  applyRefereeMove(board, move) {
+    if (move.from < 0) board.applyFlipKnown(move.to);
+    else               board.applyMove(move.from, move.to);
+  },
+  // Run a single fixed-depth root search over `det` (a fully-determinised
+  // board) and return a {move-key → score} map plus the node count. Used to
+  // verify PVS is an exact alpha-beta optimisation: with useLMR:false and a
+  // huge budget, scores must be identical for usePVS true vs false.
+  rootSearch(det, forColor, depth, { usePVS = true, useLMR = false, budget = 1e12, cfg = POLICY_CONFIG } = {}) {
+    const S = { ...POLICY_STRATEGIES, usePVS, useLMR };
+    const ctx = {
+      nodes: 0, budget, tt: makeBoundedTT(), qdepth: cfg.quiesceDepth,
+      mobilityWeight: cfg.mobilityWeight, materialPremium: cfg.materialPremium,
+      emptyWeight: cfg.emptyWeight, soldierGeneralBonus: cfg.soldierGeneralBonus,
+      cannonLineBonus: cfg.cannonLineBonus, generalEscapePenalty: cfg.generalEscapePenalty,
+      killers: [], history: new Map(), repWindow: [], pliesSinceProgress: 0,
+    };
+    const out = new Map();
+    for (const m of det.legalMoves(det.sidePlayer)) {
+      const nb = det.clone();
+      if (m.from < 0) nb.applyFlipKnown(m.to);
+      else            nb.applyMove(m.from, m.to);
+      out.set(`${m.from},${m.to}`, alphaBetaPolicy(nb, forColor, depth - 1, -Infinity, Infinity, ctx, 1, S));
+    }
+    return { scores: out, nodes: ctx.nodes };
+  },
+};
