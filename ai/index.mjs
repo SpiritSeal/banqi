@@ -29,13 +29,22 @@
 export const Difficulty = {
   EASY: 'easy', MEDIUM: 'medium', HARD: 'hard',
   EXPERT: 'expert', MASTER: 'master', POLICY: 'policy',
-  // POLICY_BASE is a frozen snapshot of the pre-optimisation Policy engine.
-  // It exists purely as a fixed benchmark opponent so the cost-reduced Policy
-  // can be measured against the configuration it replaced. It is not exposed
-  // in the player-facing difficulty registry.
+};
+
+// Internal-only difficulty identifiers used by the offline benchmark / A/B
+// tuning harnesses. They are deliberately kept OUT of the player-facing
+// `Difficulty` enum — and therefore out of the server's AI_DIFFICULTIES
+// whitelist and the lobby dropdown — because they are never selectable by
+// players. The match harness passes these strings to chooseMove() directly.
+// (Keeping them in `Difficulty` would break the registry-sync invariant in
+// server/tests/ai_difficulty_registry.mjs.)
+export const BenchmarkDifficulty = {
+  // Frozen snapshot of the pre-optimisation Policy engine. Exists purely as a
+  // fixed benchmark opponent so the strengthened Policy can be measured
+  // against the configuration it replaced.
   POLICY_BASE: 'policy_base',
-  // POLICY_ALT is a second tunable Policy used only by the offline A/B tuning
-  // harness (BANQI_POLICY_CONFIG_ALT). Not exposed to players.
+  // Second tunable Policy used only by the offline A/B tuning harness
+  // (BANQI_POLICY_CONFIG_ALT).
   POLICY_ALT: 'policy_alt',
 };
 
@@ -651,8 +660,8 @@ export function chooseMove(state, playerIndex, difficulty, opts) {
     case Difficulty.EXPERT: return chooseMoveExpert(state, legal, playerIndex);
     case Difficulty.MASTER: return chooseMoveMaster(state, legal, playerIndex);
     case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_CONFIG);
-    case Difficulty.POLICY_BASE: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_BASE_CONFIG);
-    case Difficulty.POLICY_ALT: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_CONFIG_ALT);
+    case BenchmarkDifficulty.POLICY_BASE: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_BASE_CONFIG);
+    case BenchmarkDifficulty.POLICY_ALT: return chooseMovePolicy(state, legal, playerIndex, opts, POLICY_CONFIG_ALT);
     default:                return chooseMoveEasy(state, legal);
   }
 }

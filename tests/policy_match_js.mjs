@@ -19,7 +19,7 @@
 import { fork } from 'node:child_process';
 import { cpus } from 'node:os';
 import { appendFileSync, readFileSync, existsSync } from 'node:fs';
-import { chooseMove, Difficulty, __testing } from '../ai/index.mjs';
+import { chooseMove, Difficulty, BenchmarkDifficulty, __testing } from '../ai/index.mjs';
 
 const { createReferee, viewFor, applyRefereeMove } = __testing;
 
@@ -46,8 +46,8 @@ function difficultyFromName(n) {
   if (k === 'expert')      return Difficulty.EXPERT;
   if (k === 'master')      return Difficulty.MASTER;
   if (k === 'policy')      return Difficulty.POLICY;
-  if (k === 'policy_base') return Difficulty.POLICY_BASE;
-  if (k === 'policy_alt')  return Difficulty.POLICY_ALT;
+  if (k === 'policy_base') return BenchmarkDifficulty.POLICY_BASE;
+  if (k === 'policy_alt')  return BenchmarkDifficulty.POLICY_ALT;
   throw new Error(`unknown difficulty: ${n}`);
 }
 
