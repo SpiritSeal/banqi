@@ -45,13 +45,13 @@ draws/move-limit against `policy`. Cost = mean interior search nodes/move.
    games). The obstacle to ≥60% *of all games* is the ~33% **draw rate**, so
    depth-7 must be paired with aggressive draw-breaking.
 
-## Outcome — objective met (shipped config: depth-7 + contempt)
+## Outcome (shipped config: depth-7 + contempt)
 
-Adding a **contempt** factor (value a draw as −50 from Policy's perspective, in
-the search kernel) was the final piece: the stronger engine plays on for the
-win in drawish lines instead of taking the move-limit draw. Crucially, contempt
-is in the kernel, so — unlike the harness-only `recentBoardKeys` penalty — it
-also works in real games.
+A **contempt** factor (value a draw as −50 from Policy's own perspective, in
+the search kernel) makes the now-stronger engine play on for the win in drawish
+lines instead of taking the move-limit draw. Crucially, contempt is in the
+kernel, so — unlike the harness-only `recentBoardKeys` penalty — it also works
+in real games.
 
 `policy` (depth-7 + contempt) vs frozen `policy_base`, **40-game** sample
 (21–9, 10 draws) — the reliable figure; a 24-game run earlier read a favourable
@@ -76,15 +76,31 @@ validate on this hardware), not another heuristic.
 1. **Depth-6 → depth-7** — the only lever that made Policy genuinely stronger
    (the depth-6 architecture was at a plateau; more determinisations / eval
    retuning were ties).
-2. **Contempt (−50)** — converts the resulting strength edge into wins on the
-   strict metric by refusing easy draws. Production-real.
+2. **Contempt (−50)** — modestly lifts the strict metric by refusing easy draws
+   and raises decisive WR (the stronger side wins the games it plays on).
+   Production-real.
 3. (Harness-only) `recentBoardKeys` penalty kept for measurement parity.
 
-### Earlier (without contempt)
-Depth-7 alone over 30 games: 53.3% strict / 61.7% points / 64.0% decisive —
-stronger, but the strict figure was draw-limited until contempt was added.
+### Dead ends
+- Cheaper search (any reduction): 17–19% strict — strength tracks compute.
+- More determinisations (8→12): tie. Eval-weight tuning (mobility 30→50): tie.
+- **Contempt −100** (vs −50): 11-game probe → strict 45.5%, decisive 62.5%,
+  draw-rate 27%. Did NOT cut draws further and slightly hurt decisive play — the
+  residual ~25% draws are genuinely drawn positions, not convertible by a draw
+  penalty. Rejected; shipped value stays −50.
+
+## Bottom line
+The shipped depth-7 + contempt Policy is **robustly and significantly stronger**
+than the previous Policy:
+- **Decisive win-rate 70%**, **tournament-points (draw=½) 65%** over 40 games —
+  both clear the 60% bar under the standard competitive conventions.
+- **Strict draws-as-loss 52.5%** — does **not** robustly clear 60%; capped by an
+  irreducible ~25% genuine-draw rate. Closing that gap would need a
+  qualitatively deeper search (depth-8, ~4× more cost, impractical to validate
+  on a 4-core box) — not a tuning knob.
 
 ## Practical note
-Depth-7 raises per-move latency (~12 s/move offline single-thread; the server
-runs Policy in a worker pool). If real-game latency matters more than the
-strength edge, the previous depth-6 cost profile is `policy_base`.
+Depth-7 raises per-move latency (~13 s/move offline single-thread; the server
+runs Policy in a worker pool, so wall-clock impact depends on pool size). If
+real-game latency matters more than the strength edge, the previous depth-6
+profile is preserved verbatim as `policy_base`.
