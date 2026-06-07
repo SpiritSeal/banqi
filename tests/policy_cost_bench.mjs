@@ -45,12 +45,9 @@ const NUM_GAMES = Number(argv[0] || '60');
 
 // grand = the NEW engine under test (player "first"); policy = the baseline.
 const NAME_NEW = 'grand', NAME_BASE = 'policy';
-// baseline=grandpe: grand's exact search with Policy's leaf eval (opts.evalKind),
-// for a confound-free A/B isolating evaluateGrand vs the SEE eval in the new slot.
-const policyEngine =
-    BASELINE === 'frozen' ? { fn: choosePolicy, diff: DiffBase.POLICY, live: false }
-  : BASELINE === 'grandpe' ? { fn: chooseGrand, diff: DiffNew.GRAND, live: true, opts: { evalKind: 'policy' } }
-  :                          { fn: chooseGrand, diff: DiffNew.POLICY, live: true };
+const policyEngine = BASELINE === 'frozen'
+  ? { fn: choosePolicy, diff: DiffBase.POLICY, live: false }   // frozen snapshot (no node count)
+  : { fn: chooseGrand,  diff: DiffNew.POLICY,  live: true  };  // working module (node-instrumented)
 // --new selects what the "new" slot plays: grand (default) or policy (live).
 // `--new policy --baseline frozen` pits the working policy against the frozen
 // snapshot — an equivalence check that should come out ~balanced.
