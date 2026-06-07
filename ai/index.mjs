@@ -1514,6 +1514,37 @@ function recordPolicyCutoff(m, _board, ctx, ply, depth, cap, flip) {
   ctx.history.set(hk, (ctx.history.get(hk) || 0) + depth * depth);
 }
 
+// Grand's move ordering: Policy's (TT > captures > killers > history) but with
+// SEE-lite capture classification. Policy orders EVERY capture by MVV-LVA above
+// the quiets, so in tactical positions a losing capture — a heavier attacker
+// moving into a defended square, lost on the obvious recapture — is often
+// searched first. Under PVS that makes the null-window search of the real best
+// move fail high and get re-searched, which is why grand's PVS only broke even
+// on nodes. Demoting losing captures below the quiets makes the first move the
+// real best far more often, so the null-window probes succeed. Ordering never
+// changes which move is finally chosen, only the interior node count — exact.
+function orderMovesGrand(moves, board, ctx, ply, ttMove) {
+  const k0 = ctx.killers[ply * 2]     || null;
+  const k1 = ctx.killers[ply * 2 + 1] || null;
+  function moveScore(m) {
+    if (ttMove && sameMove(m, ttMove)) return 1_000_000;
+    if (isCaptureMove(board, m)) {
+      const vic = board.cells[m.to];
+      const victim   = PIECE_VALUE[vic?.type] || 0;
+      const attacker = PIECE_VALUE[board.cells[m.from]?.type] || 0;
+      // Heavier attacker into a defended square → recapture nets a loss; bury it.
+      if (attacker > victim && vic && isDefended(board, m.to, vic.color)) {
+        return -100_000 + victim * 10 - attacker;
+      }
+      return 100_000 + victim * 10 - attacker;
+    }
+    if (sameMove(m, k0)) return 50_000;
+    if (sameMove(m, k1)) return 49_000;
+    return ctx.history.get(`${m.from},${m.to}`) || 0;
+  }
+  moves.sort((a, b) => moveScore(b) - moveScore(a));
+}
+
 const POLICY_STRATEGIES = {
   useTT: true,
   useLMR: true,
@@ -1701,7 +1732,7 @@ const GRAND_STRATEGIES = {
   usePVS: true,
   leafEval: (b, c, ctx) => evaluatePolicy(b, c, ctx),
   quiesce: (b, c, a, be, qd, ctx) => quiescePolicy(b, c, a, be, qd, ctx),
-  orderMoves: orderMovesPolicy,
+  orderMoves: orderMovesGrand,
   onCutoff: recordPolicyCutoff,
   sameMove,
 };
