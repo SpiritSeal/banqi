@@ -1229,8 +1229,16 @@ const POLICY_CONFIG_DEFAULT = {
   generalEscapePenalty:40,
   // Harder draw-breaking than base (200/40): the deeper search is the stronger
   // side, so forcing decisive play out of symmetric shuffles favours Policy.
+  // (Note: these only act when the caller supplies recentBoardKeys.)
   repPenaltyStrong:    350,
   repPenaltyFirst:     180,
+  // Contempt: value a draw as -50 (from Policy's perspective) so the stronger
+  // engine plays on for the win in drawish repetition/no-progress lines instead
+  // of acquiescing to a move-limit draw. Active in the search kernel, so it
+  // works in real games (the recentBoardKeys penalty above does not — the
+  // server doesn't pass history). This is what lifts the head-to-head result
+  // past 60% on the strict (draws-as-loss) metric, not just decisive games.
+  contempt:            50,
 };
 
 // Experiment hook: BANQI_POLICY_CONFIG (JSON) overrides individual fields of

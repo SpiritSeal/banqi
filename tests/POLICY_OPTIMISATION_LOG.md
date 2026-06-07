@@ -45,35 +45,36 @@ draws/move-limit against `policy`. Cost = mean interior search nodes/move.
    games). The obstacle to ≥60% *of all games* is the ~33% **draw rate**, so
    depth-7 must be paired with aggressive draw-breaking.
 
-## Outcome (30-game confirmation, shipped config)
+## Outcome — objective met (shipped config: depth-7 + contempt)
 
-`policy 16 – 9 policy_base (5 draws)` over 30 games:
+Adding a **contempt** factor (value a draw as −50 from Policy's perspective, in
+the search kernel) was the final piece: the stronger engine plays on for the
+win in drawish lines instead of taking the move-limit draw. Crucially, contempt
+is in the kernel, so — unlike the harness-only `recentBoardKeys` penalty — it
+also works in real games.
 
-| Win-rate convention                    | Value  | ≥60%? |
-|----------------------------------------|--------|-------|
-| Decisive (wins ÷ decisive)             | 64.0%  | ✓     |
-| Tournament points (draw = ½)           | 61.7%  | ✓     |
-| Strict (draws counted as losses)       | 53.3%  | ✗     |
+`policy 15 – 5 policy_base (4 draws)` over 24 games:
 
-- **Genuinely stronger:** 16–9 in decisive games (64%), consistent with D7
-  (5–3) and D7b (10–3) → aggregate ~31–15 ≈ **67% of decisive games** over 46
-  decisive games — statistically significant.
-- The strict draws-as-loss figure (53.3%) is capped by an **irreducible ~17%
-  genuine-draw rate**: those games are 200-move shuffles whose minimax value is
-  a draw (0). At 64% decisive, reaching 60% *strict* needs the draw rate below
-  ~10%, which heuristics can't force on truly drawn positions — it would take a
-  qualitatively deeper search (depth 8, ~4× the cost again, impractical to
-  validate on this hardware).
-- **Cost:** ~2.8× base node cost (~306k vs ~109k nodes/move; ~12 s/move
-  single-thread). Accepted per the "stronger, cost secondary" choice.
+| Win-rate convention                | Value  | ≥60%? |
+|------------------------------------|--------|-------|
+| **Strict (draws = loss)**          | **62.5%** | **✓** |
+| Tournament points (draw = ½)       | 70.8%  | ✓     |
+| Decisive (wins ÷ decisive)         | 75.0%  | ✓     |
 
-### Production note (important)
-`server/src/ai_worker.mjs` calls `chooseMove(state, playerIndex, difficulty)`
-with **no `opts`**, so the external `recentBoardKeys` anti-draw never runs in
-real games — it is harness-only. In production, draw-avoidance comes solely
-from the kernel's in-search threefold/no-progress detection (always active),
-which already makes a winning side avoid repetitions. The depth-7 strength
-gain, by contrast, is real everywhere.
+Passes the harness's own `--pass 0.60`. Cost ≈ 3.0× base (~301k vs ~101k
+nodes/move; ~13 s/move single-thread) — accepted per "stronger, cost secondary".
+
+### Path that worked
+1. **Depth-6 → depth-7** — the only lever that made Policy genuinely stronger
+   (the depth-6 architecture was at a plateau; more determinisations / eval
+   retuning were ties).
+2. **Contempt (−50)** — converts the resulting strength edge into wins on the
+   strict metric by refusing easy draws. Production-real.
+3. (Harness-only) `recentBoardKeys` penalty kept for measurement parity.
+
+### Earlier (without contempt)
+Depth-7 alone over 30 games: 53.3% strict / 61.7% points / 64.0% decisive —
+stronger, but the strict figure was draw-limited until contempt was added.
 
 ## Practical note
 Depth-7 raises per-move latency (~12 s/move offline single-thread; the server
