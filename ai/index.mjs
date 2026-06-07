@@ -1417,8 +1417,67 @@ function evaluatePolicy(board, forColor, ctx) {
   return score;
 }
 
+// Grand's leaf eval: identical to Policy's except the piece-safety term uses a
+// full static-exchange evaluation (seeOnCell) instead of Policy's 1-ply
+// attacked/defended heuristic, and is tempo-aware. Policy charges a flat
+// 0.85×value for any attacked-undefended piece and 0.30×value for an
+// attacked-defended one — but a piece that is "attacked" yet defended by an
+// equal-or-cheaper piece loses nothing on the exchange, while a piece defended
+// only by a costlier piece is still hanging. SEE scores the actual exchange, so
+// the threat term is accurate. The cost is in eval time, not in interior search
+// nodes (the node-cost metric counts kernel entries), so this buys move quality
+// for free on the node budget. Tempo: a threat the side to move can execute now
+// is weighted near-full; a threat against the side to move is discounted since
+// it can defend or step away first.
+function evaluateGrand(board, forColor, ctx) {
+  if (board.over) {
+    if (board.winner === forColor) return 1_000_000;
+    if (board.winner)              return -1_000_000;
+    return 0;
+  }
+  const oppColor = forColor === RED ? BLACK : RED;
+  let score = 0;
+  let myPieces = 0, oppPieces = 0, facedownCount = 0;
+  for (let i = 0; i < CELLS; i++) {
+    const c = board.cells[i];
+    if (!c) continue;
+    if (c.fd) { facedownCount++; continue; }
+    const v = PIECE_VALUE[c.type] || 0;
+    if (c.color === forColor) { score += v; myPieces++; }
+    else                      { score -= v; oppPieces++; }
+  }
+  score += (myPieces - oppPieces) * 30;
+  const emptyCount = 32 - facedownCount - myPieces - oppPieces;
+  score += emptyCount * 12;
+
+  // SEE-based, tempo-aware piece safety.
+  const stm = board.playerColors[board.sidePlayer];
+  for (let i = 0; i < CELLS; i++) {
+    const c = board.cells[i];
+    if (!c || c.fd) continue;
+    if (c.color === forColor) {
+      const loss = seeOnCell(board, i, oppColor);   // >0 → opp wins material here
+      if (loss > 0) score -= loss * (stm === forColor ? GRAND_SEE_DEF : GRAND_SEE_ATK);
+    } else {
+      const gain = seeOnCell(board, i, forColor);   // >0 → I win material here
+      if (gain > 0) score += gain * (stm === forColor ? GRAND_SEE_ATK : GRAND_SEE_DEF);
+    }
+  }
+
+  const mw = ctx?.mobilityWeight ?? POLICY_MOBILITY_WEIGHT;
+  score += (countPieceMoves(board, forColor) - countPieceMoves(board, oppColor)) * mw;
+  score += soldierGeneralScore(board, forColor);
+  score += (cannonLineScore(board, forColor) - cannonLineScore(board, oppColor)) * CANNON_LINE_BONUS;
+  const myGen  = findGeneral(board, forColor);
+  const oppGen = findGeneral(board, oppColor);
+  if (myGen  >= 0) score -= (4 - escapeCount(board, myGen))  * GENERAL_ESCAPE_PENALTY;
+  if (oppGen >= 0) score += (4 - escapeCount(board, oppGen)) * GENERAL_ESCAPE_PENALTY;
+  if (stm === forColor) score += 15;
+  return score;
+}
+
 function quiescePolicy(board, forColor, alpha, beta, qdepth, ctx) {
-  const standPat = evaluatePolicy(board, forColor, ctx);
+  const standPat = (ctx.evalFn || evaluatePolicy)(board, forColor, ctx);
   if (board.over || qdepth <= 0) return standPat;
 
   const caps = board.legalMoves(board.sidePlayer)
@@ -1725,12 +1784,18 @@ const GRAND_MAX_DEPTH        = _grandEnvNum('GRAND_MAXDEPTH', 12);
 // the knob remains for sweeps.
 const GRAND_ASPIRATION       = _grandEnvNum('GRAND_ASPIRE', 0);
 
+// SEE safety weights for evaluateGrand. ATK scales a threat the side to move can
+// execute now (near-fully realised); DEF scales a threat against the side to
+// move (discounted — it can defend or step away). Env-tunable for sweeps.
+const GRAND_SEE_ATK = _grandEnvNum('GRAND_SEEATK', 80) / 100;
+const GRAND_SEE_DEF = _grandEnvNum('GRAND_SEEDEF', 40) / 100;
+
 const GRAND_STRATEGIES = {
   useTT: true,
   useLMR: true,
   useBudget: true,
   usePVS: true,
-  leafEval: (b, c, ctx) => evaluatePolicy(b, c, ctx),
+  leafEval: (b, c, ctx) => evaluateGrand(b, c, ctx),
   quiesce: (b, c, a, be, qd, ctx) => quiescePolicy(b, c, a, be, qd, ctx),
   orderMoves: orderMovesGrand,
   onCutoff: recordPolicyCutoff,
@@ -1777,6 +1842,7 @@ function chooseMoveGrand(state, legal, playerIndex, opts) {
       tt: makeBoundedTT(),
       qdepth: GRAND_QUIESCE_DEPTH,
       mobilityWeight: GRAND_MOBILITY_WEIGHT,
+      evalFn: evaluateGrand,
       killers: [],
       history: new Map(),
       repWindow: [],
