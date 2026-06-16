@@ -1,11 +1,13 @@
-// Head-to-head match runner: pits two AI difficulties against each other
+// Head-to-head match runner: pits two AI agents against each other
 // over N games, alternating which side moves first, and reports the
 // win/loss/draw split.
 //
 // Usage:
 //   node tests/policy_match.mjs <a> <b> [games] [--max-moves N] [--seed S]
 //
-//   <a> and <b> are difficulty names: easy | medium | hard | expert | master | policy
+//   <a> and <b> are agent keys: 1.1 | 2.1 | 3.1 | 3.2 | 3.3 | 4.1
+//   (or the corresponding Difficulty constant names random_v1, greedy_v1,
+//   minimax_v1, minimax_v2, minimax_v3, policy_v1).
 //   The first arg plays as player 0 in even games, player 1 in odd games.
 //
 // Exit code: 0 if the first agent wins >= 90% of decisive games, else 1.
@@ -35,14 +37,13 @@ if (!nameA || !nameB) {
 const NUM_GAMES = Number(gamesStr || '20');
 
 function difficultyFromName(n) {
-  const k = n.toLowerCase();
-  if (k === 'easy')   return Difficulty.EASY;
-  if (k === 'medium') return Difficulty.MEDIUM;
-  if (k === 'hard')   return Difficulty.HARD;
-  if (k === 'expert') return Difficulty.EXPERT;
-  if (k === 'master') return Difficulty.MASTER;
-  if (k === 'policy') return Difficulty.POLICY;
-  throw new Error(`unknown difficulty: ${n}`);
+  // Accept either the numeric agent key ('3.2') or the constant name
+  // ('minimax_v2' / 'MINIMAX_V2'). Anything else throws.
+  const k = String(n);
+  if (Object.values(Difficulty).includes(k)) return k;
+  const upper = k.toUpperCase();
+  if (Object.prototype.hasOwnProperty.call(Difficulty, upper)) return Difficulty[upper];
+  throw new Error(`unknown agent: ${n}`);
 }
 
 const diffA = difficultyFromName(nameA);

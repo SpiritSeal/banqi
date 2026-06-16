@@ -1,36 +1,50 @@
 // Banqi AI engine.
 //
-// Provides move selection at three difficulty levels using a pure-JS
+// Provides move selection at several agent levels using a pure-JS
 // board simulator for lookahead. Real moves are executed through the
 // WASM Game API in main.js.
 //
-// Difficulty levels:
-//   EASY   – random move with light preference for captures
-//   MEDIUM – 1-ply greedy: maximises immediate material gain, penalises exposure
-//   HARD   – alpha-beta minimax (depth 4) over N determinisations of unknown pieces
-//   EXPERT – deeper alpha-beta (depth 6) with quiescence search and a
-//            safety-aware evaluation, over N determinisations
-//   MASTER – iterative-deepening alpha-beta up to depth 7 with deeper
-//            quiescence and more determinisations; the iterative-deepening
-//            TT ordering makes the deeper search affordable
-//   POLICY – iterative-deepening alpha-beta with a policy-shaped evaluation:
-//            a soldier–general threat axis (Soldier is the only piece that
-//            can capture a General, so its placement is asymmetrically
-//            valuable), cannon line-of-attack scoring, trapped-General
-//            penalty, and a higher mobility weight than Master to lean
-//            toward Banqi's actual win condition (opponent has no legal
-//            move). Uses killer-move + history ordering on top of the TT
-//            and Late Move Reductions, and runs at roughly 2× Master's
-//            total node budget to convert the better-tuned eval into actual
-//            depth at the search horizon. In head-to-head play against
-//            Master it draws frequently — both engines are strong enough
-//            that symmetric tactical play leads to move-limit draws —
-//            though Policy is the stronger of the two when a decisive
-//            line exists.
+// Agent registry. Keys are family.version (e.g. 3.2 = Minimax v2). Adding
+// a new agent = pick the next free family number for a new algorithm, or
+// the next version inside an existing family for an iteration on a known
+// approach. The DB ties each row to a `users` row by provider_id, so the
+// numeric key stays stable forever once shipped.
+//
+//   1.1  RANDOM_V1   random move with light preference for captures
+//   2.1  GREEDY_V1   1-ply greedy: maximises immediate material gain,
+//                    penalises exposure
+//   3.1  MINIMAX_V1  alpha-beta minimax (depth 4) over N determinisations
+//                    of unknown pieces
+//   3.2  MINIMAX_V2  deeper alpha-beta (depth 6) with quiescence search
+//                    and a safety-aware evaluation, over N determinisations
+//   3.3  MINIMAX_V3  iterative-deepening alpha-beta up to depth 7 with
+//                    deeper quiescence and more determinisations; the
+//                    iterative-deepening TT ordering makes the deeper
+//                    search affordable
+//   4.1  POLICY_V1   iterative-deepening alpha-beta with a policy-shaped
+//                    evaluation: a soldier–general threat axis (Soldier is
+//                    the only piece that can capture a General, so its
+//                    placement is asymmetrically valuable), cannon
+//                    line-of-attack scoring, trapped-General penalty, and a
+//                    higher mobility weight than Minimax v3 to lean toward
+//                    Banqi's actual win condition (opponent has no legal
+//                    move). Uses killer-move + history ordering on top of
+//                    the TT and Late Move Reductions, and runs at roughly
+//                    2× Minimax v3's total node budget to convert the
+//                    better-tuned eval into actual depth at the search
+//                    horizon. In head-to-head play against Minimax v3 it
+//                    draws frequently — both engines are strong enough that
+//                    symmetric tactical play leads to move-limit draws —
+//                    though Policy v1 is the stronger of the two when a
+//                    decisive line exists.
 
 export const Difficulty = {
-  EASY: 'easy', MEDIUM: 'medium', HARD: 'hard',
-  EXPERT: 'expert', MASTER: 'master', POLICY: 'policy',
+  RANDOM_V1:  '1.1',
+  GREEDY_V1:  '2.1',
+  MINIMAX_V1: '3.1',
+  MINIMAX_V2: '3.2',
+  MINIMAX_V3: '3.3',
+  POLICY_V1:  '4.1',
 };
 
 // Piece type constants (match C++ PieceType enum values)
@@ -596,13 +610,14 @@ function alphaBeta(board, forColor, depth, alpha, beta) {
 //
 // `state`        – parsed stateJson() from the AI's Game object
 // `playerIndex`  – the AI's player index (usually 1)
-// `difficulty`   – Difficulty.EASY | MEDIUM | HARD | EXPERT | MASTER | POLICY
+// `difficulty`   – one of Difficulty.* (RANDOM_V1, GREEDY_V1, MINIMAX_V1,
+//                  MINIMAX_V2, MINIMAX_V3, POLICY_V1)
 // `opts`         – optional { recentBoardKeys: string[] }. When provided,
-//                  Policy uses the recent-positions history to penalise moves
-//                  that lead back to a position the game has already visited
-//                  in the last few moves. This is what breaks the symmetric
-//                  shuffle-draws that Master-vs-Policy otherwise produces.
-//                  All other difficulties ignore opts.
+//                  Policy v1 uses the recent-positions history to penalise
+//                  moves that lead back to a position the game has already
+//                  visited in the last few moves. This is what breaks the
+//                  symmetric shuffle-draws that Minimax v3 vs Policy v1
+//                  otherwise produces. All other agents ignore opts.
 //
 // Returns a move object { from, to } where from < 0 means flip.
 // ---------------------------------------------------------------------------
@@ -611,18 +626,18 @@ export function chooseMove(state, playerIndex, difficulty, opts) {
   if (!legal.length) return null;
 
   switch (difficulty) {
-    case Difficulty.EASY:   return chooseMoveEasy(state, legal);
-    case Difficulty.MEDIUM: return chooseMoveMedium(state, legal, playerIndex);
-    case Difficulty.HARD:   return chooseMoveHard(state, legal, playerIndex);
-    case Difficulty.EXPERT: return chooseMoveExpert(state, legal, playerIndex);
-    case Difficulty.MASTER: return chooseMoveMaster(state, legal, playerIndex);
-    case Difficulty.POLICY: return chooseMovePolicy(state, legal, playerIndex, opts);
-    default:                return chooseMoveEasy(state, legal);
+    case Difficulty.RANDOM_V1:  return chooseMoveRandomV1(state, legal);
+    case Difficulty.GREEDY_V1:  return chooseMoveGreedyV1(state, legal, playerIndex);
+    case Difficulty.MINIMAX_V1: return chooseMoveMinimaxV1(state, legal, playerIndex);
+    case Difficulty.MINIMAX_V2: return chooseMoveMinimaxV2(state, legal, playerIndex);
+    case Difficulty.MINIMAX_V3: return chooseMoveMinimaxV3(state, legal, playerIndex);
+    case Difficulty.POLICY_V1:  return chooseMovePolicyV1(state, legal, playerIndex, opts);
+    default:                    return chooseMoveRandomV1(state, legal);
   }
 }
 
-// ---- Easy: random with slight capture preference ----
-function chooseMoveEasy(state, legal) {
+// ---- Random v1: random with slight capture preference ----
+function chooseMoveRandomV1(state, legal) {
   const captures = legal.filter(m => {
     if (m.from < 0) return false;
     return state.cells[m.to].state !== 'empty';
@@ -631,9 +646,9 @@ function chooseMoveEasy(state, legal) {
   return pool[(Math.random() * pool.length) | 0];
 }
 
-// ---- Medium: 1-ply greedy ----
+// ---- Greedy v1: 1-ply greedy ----
 // Priority: good capture > flip > passive move (with danger adjustment).
-function chooseMoveMedium(state, legal, playerIndex) {
+function chooseMoveGreedyV1(state, legal, playerIndex) {
   const myColor = state.my_color;
   let bestMove = legal[0], bestScore = -Infinity;
 
@@ -683,12 +698,12 @@ function chooseMoveMedium(state, legal, playerIndex) {
   return bestMove;
 }
 
-// ---- Hard: determinisation + alpha-beta ----
-function chooseMoveHard(state, legal, playerIndex) {
+// ---- Minimax v1: determinisation + alpha-beta ----
+function chooseMoveMinimaxV1(state, legal, playerIndex) {
   const myColor = state.my_color;
 
-  // Before the first flip the AI doesn't know its color yet — fall back to medium.
-  if (!state.first_flip_done || !myColor) return chooseMoveMedium(state, legal, playerIndex);
+  // Before the first flip the AI doesn't know its color yet — fall back to greedy.
+  if (!state.first_flip_done || !myColor) return chooseMoveGreedyV1(state, legal, playerIndex);
 
   const baseBoard = Board.fromState(state);
 
@@ -970,11 +985,11 @@ function alphaBetaExpert(board, forColor, depth, alpha, beta, ctx) {
   return minimaxKernel(board, forColor, depth, alpha, beta, ctx, 0, EXPERT_STRATEGIES);
 }
 
-// ---- Expert: determinisation + deep alpha-beta with quiescence ----
-function chooseMoveExpert(state, legal, playerIndex) {
+// ---- Minimax v2: determinisation + deep alpha-beta with quiescence ----
+function chooseMoveMinimaxV2(state, legal, playerIndex) {
   const myColor = state.my_color;
-  // Before the first flip the AI doesn't know its color — fall back to Hard.
-  if (!state.first_flip_done || !myColor) return chooseMoveHard(state, legal, playerIndex);
+  // Before the first flip the AI doesn't know its color — fall back to Minimax v1.
+  if (!state.first_flip_done || !myColor) return chooseMoveMinimaxV1(state, legal, playerIndex);
 
   const baseBoard = Board.fromState(state);
 
@@ -1019,15 +1034,15 @@ function chooseMoveExpert(state, legal, playerIndex) {
 }
 
 // ---------------------------------------------------------------------------
-// Master: iterative-deepening alpha-beta, deeper than Expert, with a deeper
-// quiescence and more determinisations.
+// Minimax v3: iterative-deepening alpha-beta, deeper than Minimax v2, with
+// a deeper quiescence and more determinisations.
 //
 // The key trick is iterative deepening with a shared TT: searching at depths
 // 2, 3, …, N in sequence means every iteration's best-move entries supply
 // near-perfect move ordering for the next, which makes reaching depth 7
 // affordable. We also keep the deepest fully-completed iteration's scores,
-// so if the node budget is hit partway through a depth, Master still has a
-// solid answer from the previous depth.
+// so if the node budget is hit partway through a depth, Minimax v3 still has
+// a solid answer from the previous depth.
 // ---------------------------------------------------------------------------
 const MASTER_DEEP_DEPTH       = 6;
 const MASTER_SHALLOW_DEPTH    = 5;     // used while most of the board is hidden
@@ -1037,10 +1052,10 @@ const MASTER_QUIESCE_DEPTH    = 3;
 const MASTER_MOBILITY_WEIGHT  = 14;    // vs Expert's default of 6 — pushes harder
                                        // toward Banqi's stalemate win condition
 
-function chooseMoveMaster(state, legal, playerIndex) {
+function chooseMoveMinimaxV3(state, legal, playerIndex) {
   const myColor = state.my_color;
-  // Before the first flip the AI doesn't know its colour — fall back to Expert.
-  if (!state.first_flip_done || !myColor) return chooseMoveExpert(state, legal, playerIndex);
+  // Before the first flip the AI doesn't know its colour — fall back to Minimax v2.
+  if (!state.first_flip_done || !myColor) return chooseMoveMinimaxV2(state, legal, playerIndex);
 
   const baseBoard = Board.fromState(state);
 
@@ -1486,9 +1501,9 @@ function alphaBetaPolicy(board, forColor, depth, alpha, beta, ctx, ply) {
   return minimaxKernel(board, forColor, depth, alpha, beta, ctx, ply, POLICY_STRATEGIES);
 }
 
-function chooseMovePolicy(state, legal, playerIndex, opts) {
+function chooseMovePolicyV1(state, legal, playerIndex, opts) {
   const myColor = state.my_color;
-  if (!state.first_flip_done || !myColor) return chooseMoveMaster(state, legal, playerIndex);
+  if (!state.first_flip_done || !myColor) return chooseMoveMinimaxV3(state, legal, playerIndex);
 
   const baseBoard = Board.fromState(state);
 

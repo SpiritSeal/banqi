@@ -106,11 +106,11 @@ after(async () => {
 });
 
 describe('vs-AI persisted games', () => {
-  it('creates a game with opponent=ai:easy and the AI is pre-joined as player 1', async () => {
+  it('creates a game with opponent=ai:1.1 and the AI is pre-joined as player 1', async () => {
     const alice = await signInDev('AliceAi');
     const cr = await authedFetch(alice, '/api/games', {
       method: 'POST',
-      body: JSON.stringify({ mode: 'standard', opponent: 'ai:easy' }),
+      body: JSON.stringify({ mode: 'standard', opponent: 'ai:1.1' }),
     });
     assert.equal(cr.status, 200);
     const created = await cr.json();
@@ -120,15 +120,15 @@ describe('vs-AI persisted games', () => {
     assert.equal(view.my_role, 'host');
     assert.equal(view.status, 'playing');
     assert.equal(view.opponent_is_ai, true);
-    assert.equal(view.ai_difficulty, 'easy');
-    assert.match(view.join_name || '', /Easy/);
+    assert.equal(view.ai_difficulty, '1.1');
+    assert.match(view.join_name || '', /Random v1/);
   });
 
   it('after a human flip, the AI replies on its own within a short window', async () => {
     const alice = await signInDev('AliceAi2');
     const created = await (await authedFetch(alice, '/api/games', {
       method: 'POST',
-      body: JSON.stringify({ mode: 'standard', opponent: 'ai:easy' }),
+      body: JSON.stringify({ mode: 'standard', opponent: 'ai:1.1' }),
     })).json();
 
     const a = await openWs(alice, created.id);
@@ -139,7 +139,7 @@ describe('vs-AI persisted games', () => {
       (f) => f.type === 'event' && f.event.action.kind === 'flip' && f.event.mover === 0);
     assert.equal(humanEvent.event.action.to, 0);
 
-    // AI replies as player 1. Easy difficulty just picks any legal move.
+    // AI replies as player 1. Random v1 just picks any legal move.
     const aiEvent = await a.waitNext(
       (f) => f.type === 'event' && f.event.mover === 1, 4000);
     assert.ok(aiEvent.event.action);
@@ -158,7 +158,7 @@ describe('vs-AI persisted games', () => {
 
   it('resignation against the AI updates Elo for both sides', async () => {
     const alice = await signInDev('AliceAi3');
-    const aiUser = await getAiUserByDifficulty(db, 'easy');
+    const aiUser = await getAiUserByDifficulty(db, '1.1');
     const aliceBefore = await (await authedFetch(alice, '/api/me')).json();
     // Snapshot AI Elo directly from the DB row.
     const aiEloBefore = (await db.query(
@@ -166,7 +166,7 @@ describe('vs-AI persisted games', () => {
 
     const game = await (await authedFetch(alice, '/api/games', {
       method: 'POST',
-      body: JSON.stringify({ mode: 'standard', opponent: 'ai:easy' }),
+      body: JSON.stringify({ mode: 'standard', opponent: 'ai:1.1' }),
     })).json();
 
     const a = await openWs(alice, game.id);
@@ -200,11 +200,11 @@ describe('vs-AI persisted games', () => {
     a.close();
   });
 
-  it('AI difficulty appears on the leaderboard once it has a played game', async () => {
+  it('AI agent appears on the leaderboard once it has a played game', async () => {
     const board = await (await fetch(`${baseUrl}/api/leaderboard`)).json();
     assert.ok(Array.isArray(board));
-    assert.ok(board.some((u) => u.display_name === 'Banqi AI · Easy'),
-              'Banqi AI · Easy should be on the leaderboard');
+    assert.ok(board.some((u) => u.display_name === 'Banqi AI · Random v1'),
+              'Banqi AI · Random v1 should be on the leaderboard');
   });
 
   it('rejects opponent=ai:<bogus> with 400', async () => {
@@ -220,14 +220,14 @@ describe('vs-AI persisted games', () => {
     const guest = await signInGuest();
     const res = await authedFetch(guest, '/api/games', {
       method: 'POST',
-      body: JSON.stringify({ mode: 'standard', opponent: 'ai:easy' }),
+      body: JSON.stringify({ mode: 'standard', opponent: 'ai:1.1' }),
     });
     assert.equal(res.status, 403);
   });
 
   it('blocks match requests targeted at AI users', async () => {
     const alice = await signInDev('AliceAi5');
-    const aiUser = await getAiUserByDifficulty(db, 'easy');
+    const aiUser = await getAiUserByDifficulty(db, '1.1');
     const res = await authedFetch(alice, '/api/match-requests', {
       method: 'POST',
       body: JSON.stringify({ to_user_id: aiUser.id }),
@@ -236,19 +236,19 @@ describe('vs-AI persisted games', () => {
   });
 
   it('exposes provider on GET /api/users/:id for AI users so the SPA can branch', async () => {
-    const aiUser = await getAiUserByDifficulty(db, 'easy');
+    const aiUser = await getAiUserByDifficulty(db, '1.1');
     const res = await fetch(`${baseUrl}/api/users/${aiUser.id}`);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.provider, 'ai');
-    assert.equal(body.provider_id, 'easy');
+    assert.equal(body.provider_id, '1.1');
   });
 
   it('AI plays its move on session hydration after a server restart', async () => {
     const alice = await signInDev('AliceAi6');
     const game = await (await authedFetch(alice, '/api/games', {
       method: 'POST',
-      body: JSON.stringify({ mode: 'standard', opponent: 'ai:easy' }),
+      body: JSON.stringify({ mode: 'standard', opponent: 'ai:1.1' }),
     })).json();
 
     // Human plays the first flip — AI scheduled to move.

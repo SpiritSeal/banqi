@@ -79,21 +79,54 @@ export async function getUser(db, id) {
   return rows[0] || null;
 }
 
-// AI opponents. One row per difficulty, seeded at server boot with a
-// per-difficulty starting Elo. Re-runs must NOT clobber the Elo column —
+// AI opponents. One row per agent, seeded at server boot with a
+// per-agent starting Elo. Re-runs must NOT clobber the Elo column —
 // AI ratings evolve like human ones once games start being played.
-export const AI_DIFFICULTIES = ['easy', 'medium', 'hard', 'expert', 'master', 'policy'];
+//
+// Keys are family.version strings. Family numbers identify the algorithm
+// (1=Random, 2=Greedy, 3=Minimax, 4=Policy); versions iterate inside a
+// family. Keys are stable forever once shipped — the users row's id is
+// what's referenced by games / elo_history / match_requests, but URL
+// shapes like /api/games?opponent=ai:3.2 and persisted dashboards depend
+// on provider_id staying constant too.
+export const AI_DIFFICULTIES = ['1.1', '2.1', '3.1', '3.2', '3.3', '4.1'];
 
 const AI_USER_SEED = {
-  easy:   { displayName: 'Banqi AI · Easy',   elo:  900 },
-  medium: { displayName: 'Banqi AI · Medium', elo: 1100 },
-  hard:   { displayName: 'Banqi AI · Hard',   elo: 1300 },
-  expert: { displayName: 'Banqi AI · Expert', elo: 1500 },
-  master: { displayName: 'Banqi AI · Master', elo: 1700 },
-  policy: { displayName: 'Banqi AI · Policy', elo: 1900 },
+  '1.1': { displayName: 'Banqi AI · Random v1',  elo:  900 },
+  '2.1': { displayName: 'Banqi AI · Greedy v1',  elo: 1100 },
+  '3.1': { displayName: 'Banqi AI · Minimax v1', elo: 1300 },
+  '3.2': { displayName: 'Banqi AI · Minimax v2', elo: 1500 },
+  '3.3': { displayName: 'Banqi AI · Minimax v3', elo: 1700 },
+  '4.1': { displayName: 'Banqi AI · Policy v1',  elo: 1900 },
+};
+
+// One-time rename of the legacy word-keyed AI rows to the new numeric keys.
+// Idempotent: once a row's provider_id is migrated, the WHERE clause stops
+// matching and the UPDATE is a no-op forever. Preserves users.id (so all
+// game / elo / match-request FKs stay intact) and users.elo (so accumulated
+// ratings survive).
+const LEGACY_AI_KEY_MAP = {
+  easy:   '1.1',
+  medium: '2.1',
+  hard:   '3.1',
+  expert: '3.2',
+  master: '3.3',
+  policy: '4.1',
 };
 
 export async function ensureAiUsers(db) {
+  // Migrate legacy rows first, then seed any still-missing agents. If we
+  // seeded the new keys before migrating, the UPDATE would collide with the
+  // freshly-inserted row on the unique (provider, provider_id) constraint.
+  for (const [legacyKey, newKey] of Object.entries(LEGACY_AI_KEY_MAP)) {
+    await db.query(`
+      UPDATE users
+         SET provider_id  = $1,
+             display_name = $2
+       WHERE provider = 'ai' AND provider_id = $3
+    `, [newKey, AI_USER_SEED[newKey].displayName, legacyKey]);
+  }
+
   const now = Date.now();
   for (const difficulty of AI_DIFFICULTIES) {
     const seed = AI_USER_SEED[difficulty];

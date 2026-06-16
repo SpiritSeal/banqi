@@ -25,14 +25,13 @@ const WORKERS   = Number(flagVal('--workers', '4'));
 const CHILD_IDX = flagVal('--child', null);
 
 function difficultyFromName(n) {
-  const k = n.toLowerCase();
-  if (k === 'easy')   return Difficulty.EASY;
-  if (k === 'medium') return Difficulty.MEDIUM;
-  if (k === 'hard')   return Difficulty.HARD;
-  if (k === 'expert') return Difficulty.EXPERT;
-  if (k === 'master') return Difficulty.MASTER;
-  if (k === 'policy') return Difficulty.POLICY;
-  throw new Error(`unknown difficulty: ${n}`);
+  // Accept either the numeric agent key ('3.2') or the constant name
+  // ('minimax_v2' / 'MINIMAX_V2'). Anything else throws.
+  const k = String(n);
+  if (Object.values(Difficulty).includes(k)) return k;
+  const upper = k.toUpperCase();
+  if (Object.prototype.hasOwnProperty.call(Difficulty, upper)) return Difficulty[upper];
+  throw new Error(`unknown agent: ${n}`);
 }
 
 // Compact board-state key for repetition detection. Mirrors the boardKey()

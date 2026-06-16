@@ -1657,7 +1657,7 @@ async function localDragMove(from, to, state, mode) {
 const AI_THINK_DELAY_MS = 350;
 
 async function openAIGame() {
-  const difficulty = $('lobby-ai-difficulty')?.value || Difficulty.MEDIUM;
+  const difficulty = $('lobby-ai-difficulty')?.value || Difficulty.GREEDY_V1;
   const mode = normMode($('lobby-ai-mode')?.value);
   // Signed-in non-guest users get a server-persisted AI game that shows up
   // on their dashboard, contributes to Elo, and survives a refresh. Guests
@@ -1715,7 +1715,7 @@ function _startAIGame(difficulty, mode = 'standard') {
     refreshAI();
   };
   $('ai-new-game').onclick = () => {
-    const diff = active?.difficulty || Difficulty.MEDIUM;
+    const diff = active?.difficulty || Difficulty.GREEDY_V1;
     const m = active?.mode || 'standard';
     _startAIGame(diff, m);
   };
@@ -1759,7 +1759,14 @@ function refreshAI() {
   }
   $('ai-banner').textContent = banner;
   $('ai-counts').innerHTML = renderPieceCountsHtml(pieceCounts(view.cells, active.replay));
-  const nextDiff = { easy: 'medium', medium: 'hard', hard: 'expert', expert: 'master', master: 'policy', policy: 'easy' }[active.difficulty] || 'medium';
+  const nextDiff = {
+    [Difficulty.RANDOM_V1]:  Difficulty.GREEDY_V1,
+    [Difficulty.GREEDY_V1]:  Difficulty.MINIMAX_V1,
+    [Difficulty.MINIMAX_V1]: Difficulty.MINIMAX_V2,
+    [Difficulty.MINIMAX_V2]: Difficulty.MINIMAX_V3,
+    [Difficulty.MINIMAX_V3]: Difficulty.POLICY_V1,
+    [Difficulty.POLICY_V1]:  Difficulty.RANDOM_V1,
+  }[active.difficulty] || Difficulty.GREEDY_V1;
   $('ai-meta').innerHTML = `
     <span class="meta-label">Difficulty</span>
     <button id="ai-diff-chip" class="diff-chip" type="button"
@@ -3084,7 +3091,7 @@ async function renderProfile(userId) {
   const challengeBlock = isAi
     ? (me && !me.is_guest ? `
         <div class="row" style="margin:12px 0">
-          <button id="btn-play-ai-from-profile" class="primary">Play Banqi AI · ${escapeHtml((p.provider_id || '').replace(/^./, (c) => c.toUpperCase()))}</button>
+          <button id="btn-play-ai-from-profile" class="primary">Play Banqi AI · ${escapeHtml(aiDifficultyLabel(p.provider_id))}</button>
         </div>` : '')
     : (me && !isSelf ? `
         <div class="row" style="margin:12px 0">
@@ -3716,7 +3723,7 @@ function maybeShowGameOver(view) {
   const actions = [];
   if (active.isAI) {
     actions.push({ label: 'New game', primary: true, onClick: () => {
-      const diff = active?.difficulty || Difficulty.MEDIUM;
+      const diff = active?.difficulty || Difficulty.GREEDY_V1;
       const m = active?.mode || 'standard';
       _startAIGame(diff, m);
     }});
