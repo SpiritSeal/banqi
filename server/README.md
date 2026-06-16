@@ -134,6 +134,69 @@ Confirm with `curl https://YOUR_HOST/api/push/vapid-key` — it should return
 JSON with the public key, not 503. Then sign in (not as a guest), open
 **My games → Turn notifications**, and toggle push on.
 
+### Daily AI-Elo calibration
+
+The six AI users (`Banqi AI · Easy` … `Banqi AI · Policy`) are seeded with
+hand-picked starting Elos that are 200 points apart. To converge those
+ratings on the AIs' measured relative strength, a daily job plays every
+unordered pair of difficulties against each other a few times and writes
+the resulting games + Elo updates into the live DB through the same
+`recordEloChange` path human games use.
+
+The runner lives at [`scripts/calibrate_ai_elo.mjs`](scripts/calibrate_ai_elo.mjs).
+It is idempotent per `(date, pair, game-index)` via deterministic room
+codes (`CALIB-YYYY-MM-DD-<a>-vs-<b>-<n>`), so Cloud Scheduler retries
+won't double-record. Run locally with:
+
+```bash
+DATABASE_URL=postgresql://... node server/scripts/calibrate_ai_elo.mjs --games 5
+# or, to see what would happen without touching the DB:
+node server/scripts/calibrate_ai_elo.mjs --dry-run
+```
+
+To schedule it on Cloud Run, create a Job that reuses the existing image
+and override the entrypoint:
+
+```bash
+# One-time: create the job. Reuses the relay image — same WASM, same AI
+# engine, same db.mjs / elo.mjs as the live server.
+gcloud run jobs create banqi-ai-calibration --region=YOUR_REGION \
+  --image=gcr.io/YOUR_PROJECT/banqi-relay:vapid \
+  --command=node --args=scripts/calibrate_ai_elo.mjs \
+  --set-secrets=DATABASE_URL=banqi-database-url:latest \
+  --task-timeout=6h \
+  --max-retries=1
+
+# Schedule it daily at 08:00 UTC. Cloud Scheduler authenticates to the
+# Cloud Run admin API with OIDC, no shared secret to manage.
+gcloud scheduler jobs create http banqi-ai-calibration-daily \
+  --schedule="0 8 * * *" \
+  --time-zone=UTC \
+  --uri="https://YOUR_REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/YOUR_PROJECT/jobs/banqi-ai-calibration:run" \
+  --http-method=POST \
+  --oauth-service-account-email=YOUR_SCHEDULER_SA@YOUR_PROJECT.iam.gserviceaccount.com
+```
+
+The scheduler service account needs `roles/run.invoker` on the job, and
+the job's runtime service account needs read access to the
+`banqi-database-url` secret. With `--games 5` the job records 75 games
+(15 pairs × 5) per day. Expected wall clock on a 1-vCPU Cloud Run Job
+is **3–5 hours**, dominated by the four heavy-vs-heavy pairings (Master,
+Policy) where each game can take 5–10 minutes before terminating or
+hitting the move cap. Hence the 6h `--task-timeout` above. If you want
+faster turnaround, drop in a `policy_match_parallel.mjs`-style worker
+fan-out or run the script with `--max-moves 200` (calibration matches
+between two strong AIs that can't decide in 200 moves rarely change the
+outcome — they just keep drawing).
+
+A note on rating math: calibration games use the same K=40 the live
+`eloDelta` does, so individual days will move AI ratings noticeably.
+Over many days the noise averages out and the AI cluster converges on
+its true relative strength. If the day-to-day swings get disruptive,
+lower K specifically for bot-vs-bot games via an override on
+`eloDelta` — the calibration runner is the only caller passing two AI
+user IDs into `recordEloChange`.
+
 ## Threat model
 
 - The server is authoritative; clients render state and submit intents.
