@@ -33,6 +33,7 @@ import { showKeyboardHelp } from './ui/keyboard-help.js';
 import { confirmThreefoldIfNeeded } from './ui/threefold-modal.js';
 import { attachBoardKeyNav } from './ui/board-keynav.js';
 import { initServiceWorker } from './sw-init.js';
+import { pickChallengeMode } from './ui/challenge-mode-modal.js';
 
 // Initialise settings (applies theme / animation toggles to <body>) before
 // anything paints, so the first render uses the chosen palette.
@@ -3255,50 +3256,6 @@ function matchRequestChips(req, perspective) {
 // AI games are created via POST /api/games and don't carry first-mover / TC /
 // message; the full challenge-details screen is reserved for human directed
 // challenges. Resolves to the chosen mode string, or null if cancelled.
-function pickChallengeMode() {
-  return new Promise((resolve) => {
-    const root = document.getElementById('modal-root');
-    if (!root) { resolve(null); return; }
-    const previouslyFocused = document.activeElement;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cm-title" tabindex="-1">
-        <h2 id="cm-title">Start game</h2>
-        <p class="modal-body">Pick the win condition for this match.</p>
-        <div class="row" style="margin:8px 0 16px">
-          <label for="cm-mode">Win condition</label>
-          <select id="cm-mode">
-            <option value="standard" selected>Standard (no legal moves)</option>
-            <option value="capture_general">Capture the General</option>
-          </select>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn-cancel">Cancel</button>
-          <button type="button" class="btn-confirm primary">Start</button>
-        </div>
-      </div>`;
-    const close = (result) => {
-      overlay.remove();
-      document.removeEventListener('keydown', onKey, true);
-      try { previouslyFocused?.focus?.(); } catch (_) {}
-      resolve(result);
-    };
-    const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); close(null); }
-    };
-    overlay.querySelector('.btn-cancel').addEventListener('click', () => close(null));
-    overlay.querySelector('.btn-confirm').addEventListener('click', () => {
-      const v = overlay.querySelector('#cm-mode').value;
-      close(normMode(v));
-    });
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
-    document.addEventListener('keydown', onKey, true);
-    root.appendChild(overlay);
-    overlay.querySelector('.btn-confirm').focus();
-  });
-}
-
 // Full-screen view the challenger lands on after clicking "Challenge". Lets
 // them pick the win condition, who flips first, and an optional message,
 // then sends the match request via challengePlayer().
